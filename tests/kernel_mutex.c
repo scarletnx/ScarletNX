@@ -27,6 +27,7 @@ void logf_(int lvl, const char* fmt, ...) {
 u64 plat_ns(void) { return 0; }
 /* the wake of a futex waiter on a mutex word (sync.c, g_lock_futex), which no test turns on */
 void plat_wake_word_one(_Atomic u32* w) { (void)w; }
+void plat_wake_word(_Atomic u32* w) { (void)w; }
 void kobj_ref(KObj* o) { (void)o; }
 /* a restored thread's wait (sync_resume), which nothing here does */
 const SnxArmModule* g_arm_mod;
@@ -145,6 +146,24 @@ int main(void) {
     CHECK(svc_arbitrate_unlock(SNX_KMT_M) == 0 && b->woken && word(SNX_KMT_M) == handle(b),
           "handed to the waiter: word %x", word(SNX_KMT_M));
     CHECK(a->prio == 46, "owner back at %d after the handover", a->prio);
+
+    /* an unlock for a lock whose waiters also wait on its word (os_sync.c): a waiter in the kernel still gets it first,
+       the tag given ignored; with none there the word's waiter does, with the waiters bit, as others may wait on the
+       word too; with no tag either it is freed */
+    t = reset((const int[]){46, 44, 45, 40, 50, 30});
+    a = &t[0], b = &t[1];
+    int handed = -1;
+    lock(b, a, SNX_KMT_M);
+    CHECK(svc_arbitrate_unlock_to(SNX_KMT_M, 0x777, &handed) == 0 && !handed && b->woken &&
+              word(SNX_KMT_M) == handle(b),
+          "a kernel waiter first: handed %d, word %x", handed, word(SNX_KMT_M));
+    snx_st_le32(g_mem + SNX_KMT_M, handle(b) | HANDLE_WAIT);
+    CHECK(svc_arbitrate_unlock_to(SNX_KMT_M, 0x777, &handed) == 0 && handed &&
+              word(SNX_KMT_M) == (0x777u | HANDLE_WAIT),
+          "to the word's waiter: handed %d, word %x", handed, word(SNX_KMT_M));
+    snx_st_le32(g_mem + SNX_KMT_M, 0x777u | HANDLE_WAIT);
+    CHECK(svc_arbitrate_unlock_to(SNX_KMT_M, 0, &handed) == 0 && !handed && word(SNX_KMT_M) == 0,
+          "freed: handed %d, word %x", handed, word(SNX_KMT_M));
 
     /* of two waiters the best takes the mutex, and the other then waits for it: its priority goes with it */
     t = reset((const int[]){46, 44, 45, 40, 50, 30});

@@ -15,8 +15,9 @@ construction.
 
 ## Download and run
 
-The newest build of `main` for Linux (AppImage), Windows and Android is in
-[scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest); [Install](docs/user/install.md) lists each
+The newest nightly, the day's build of `main`, for Linux (AppImage), Windows and Android is in
+[scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest), and the build of the newest push to `main` is
+this repository's [prerelease](https://github.com/scarletnx/ScarletNX/releases); [Install](docs/user/install.md) lists each
 download. Games need a Vulkan 1.3 driver, and keys and games must be dumped from your own console.
 
 Started with no arguments, ScarletNX opens its [launcher](docs/user/gui.md): **Install Keys** installs your `prod.keys` for

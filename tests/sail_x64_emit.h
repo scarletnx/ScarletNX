@@ -11,7 +11,7 @@
 enum {
     SNX_X64_BMI1 = 1, SNX_X64_BMI2 = 2, SNX_X64_LZCNT = 4, SNX_X64_SSE3 = 8, SNX_X64_SSSE3 = 16, SNX_X64_SSE41 = 32,
     SNX_X64_SSE42 = 64, SNX_X64_PCLMUL = 128, SNX_X64_F16C = 256, SNX_X64_POPCNT = 512, SNX_X64_AVX = 1024,
-    SNX_X64_FMA = 2048, SNX_X64_WIN64 = 16384
+    SNX_X64_FMA = 2048, SNX_X64_WIN64 = 16384, SNX_X64_SSE2 = 262144
 };
 /* the calling convention of this host's C, which the test calls the code by */
 #if defined(_WIN32)
@@ -19,7 +19,7 @@ enum {
 #else
 #define SNX_X64_ABI 0
 #endif
-/* what the back end needs of every host (snx_x64_available): the 'plain' host of the tests */
+/* a host with SSE3 to SSE4.2, PCLMULQDQ and POPCNT, and none of the later features: the 'plain' host of the tests */
 #define SNX_X64_BASELINE \
     (SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL | SNX_X64_POPCNT | SNX_X64_ABI)
 

@@ -6,7 +6,7 @@
    The floating point is the exact helpers' (mach_a64.h's SGX_FP_HELPERS) for every operation: the host computes
    Arm's IEEE arithmetic itself, but only under the guest's FPCR, which the runtime's own C would then run under too,
    so that is left for the code that switches FPCR around the calls out. The exclusives and atomics are the host's own load-exclusive and
-   store-exclusive (or the LSE instruction), sequentially consistent as the LLVM back end's host atomics are: a
+   store-exclusive (or the LSE instruction), sequentially consistent: a
    store-exclusive is cpu.h's value-based monitor, a compare-and-swap from the value the load-exclusive read. The
    barriers are the guest's own DMB, DSB and ISB, and an acquire load and a release store a DMB beside them.
 
@@ -128,13 +128,14 @@ static inline void sgx_release(SgCtx* g, int after) {
 enum { SGX_M_NONE };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
-/* STP X29, X30, [SP, #-32]!; STP X19, X20, [SP, #16]; MOV X29, SP; MOV X19, X0; SUB SP, SP, #frame (patched) */
+/* STP X29, X30, [SP, #-32]!; STP X19, X20, [SP, #16]; MOV X29, SP; X19 from X0 (sga_state_in); SUB SP, SP, #frame
+   (patched) */
 static inline void sgx_prologue(SgXAsm* a) {
     SgXBuf* b = a->b;
     sga_w(b, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-4 & 0x7F, 2));
     sga_w(b, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));
     sga_w(b, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));
-    sga_w(b, sge_a64_orr_log_shift(19, SGA_ZR, 0, 0, 0, 1));
+    sga_state_in(b);
     if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
     sga_w(b, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
 }
@@ -208,6 +209,20 @@ static inline void sga_status(SgXBuf* b, const size_t* fail, size_t differ) {
             b->p[done + 3] = (unsigned char)(w >> 24);
     }
     sga_state(b, 0, 4, SGA_ZR, offsetof(CPU, excl_on));
+}
+/* the general-purpose registers each inline sequence below writes, its results' included, X16 and X17 (the
+   veneers' scratch, which no value or pin is in) aside: what its sg_ function declares, sgx_machine_declares checks */
+static inline unsigned sgx_machine_writes(const SgXIns* i) {
+    const unsigned op = (unsigned)(i->imm >> 2);
+    switch (i->op) {
+        case SGX_M_STX: return 1u << 0 | 1u << 1 | 1u << 6;
+        case SGX_M_STXP: return 1u << 0 | 1u << 1 | 1u << 6 | 1u << 7 | 1u << 8;
+        case SGX_M_CAS: return 1u << 0 | 1u << 6;
+        case SGX_M_CASP: return 1u << 0 | 1u << 1 | 1u << 8;
+        case SGX_M_RMW: return 1u << 0 | 1u << 6 | 1u << 7 | (op >= 4 && op <= 7 ? 1u << 8 : 0u);
+        case SGX_M_CRC: return 1u << 0;
+        default: return 0;
+    }
 }
 static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
     SgXBuf* b = a->b;
@@ -337,7 +352,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         if (a->pin_flush) a->pin_flush(a->machine);
         sga_movi(b, 1, (SnxU64)i->imm, 1);
         sga_state(b, 0, 8, 1, offsetof(CPU, pc));
-        sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1));
+        sga_state_out(b);
         sga_movi(b, 2, (SnxU64)(SnxU32)i->disp, 0);
         sga_state(b, 1, 8, 16, offsetof(CPU, rt));
         sga_ldst(b, 1, 8, 16, 16, -1, (int)offsetof(RtAPI, undef));
@@ -373,11 +388,14 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CAS:
         case SGX_M_CASP:
         case SGX_M_RMW:
-        case SGX_M_CRC: sgx_machine_inline(a, i); return;
+        case SGX_M_CRC:
+            sgx_machine_declares(a, at, sgx_machine_writes(i));
+            sgx_machine_inline(a, i);
+            return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             if (a->pin_cs) a->pin_cs(a->machine, 1);
-            if (i->w) sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19: the state */
+            if (i->w) sga_state_out(b); /* X0, the state */
             if (i->op == SGX_M_CALL_RT) {
                 sga_state(b, 1, 8, 16, offsetof(CPU, rt));
                 sga_ldst(b, 1, 8, 16, 16, -1, i->disp);

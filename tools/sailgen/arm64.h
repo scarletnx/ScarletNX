@@ -47,6 +47,15 @@ enum { SGX_ARM_EQ, SGX_ARM_NE, SGX_ARM_CS, SGX_ARM_CC, SGX_ARM_MI, SGX_ARM_PL, S
 /* no vector operand is implicit: every one is a field's */
 #define SGX_IMPLICIT_X0 0
 #define SGX_FRAME 31 /* SP, as a load's or a store's base */
+/* the state's address (X19, the callee's) plus SGX_BASE_BIAS: the A64 state's V registers (CPU.v) and the A32 one's
+   D registers (SnxArmCPU.d) start 8 past a multiple of 16, so a Q register's LDR or STR of them takes the scaled
+   offset (no ADD of the address first) only from 8 past the structure. sga_ldst and sga_fp_ldst take its fields'
+   offsets; what enters sets X19 = X0 + SGX_BASE_BIAS, and a call out passes X0 = X19 - SGX_BASE_BIAS */
+#define SGX_BASE        19
+#define SGX_BASE_BIAS   8
+/* X19 from the state's address in X0, at an entry; X0 the state's address, for a call out */
+static inline void sga_state_in(SgXBuf* b) { sga_w(b, sge_a64_add_addsub_imm(SGX_BASE, 0, SGX_BASE_BIAS, 0, 1)); }
+static inline void sga_state_out(SgXBuf* b) { sga_w(b, sge_a64_sub_addsub_imm(0, SGX_BASE, SGX_BASE_BIAS, 0, 1)); }
 #define SGA_X16 16
 #define SGA_X17 17
 #define SGA_ZR 31
@@ -186,7 +195,7 @@ SGA_E(rbit_32) { (void)imm, (void)cc; sga_w(b, sge_a64_rbit_int(r[0], r[1], 0));
 /* a load or a store of a general-purpose register at [base + index + disp] (b's), of bytes 1, 2, 4 or 8: LDR (and
    LDRB, LDRH) of an unsigned offset the size scales, LDUR of a signed 9-bit one, the register offset for an index of
    no displacement, else the address made in X16 first */
-static inline void sga_ldst(SgXBuf* b, int load, int bytes, int rt, int base, int index, int disp) {
+static inline void sga_ldst_at(SgXBuf* b, int load, int bytes, int rt, int base, int index, int disp) {
     unsigned size = bytes == 1 ? 0 : bytes == 2 ? 1 : bytes == 4 ? 2 : 3;
     if (index >= 0 && disp) {
         sga_w(b, sge_a64_add_addsub_shift(SGA_X16, (SnxU32)base, 0, (SnxU32)index, 0, 1));
@@ -235,8 +244,12 @@ static inline void sga_ldst(SgXBuf* b, int load, int bytes, int rt, int base, in
         int neg = disp < 0;
         sga_w(b, neg ? sge_a64_movn(SGA_X17, (SnxU32)(~d & 0xffff), 0, 1) : sge_a64_movz(SGA_X17, (SnxU32)(d & 0xffff), 0, 1));
         if (((d >> 16) & 0xffff) != (neg ? 0xffffu : 0u)) sga_w(b, sge_a64_movk(SGA_X17, (SnxU32)((d >> 16) & 0xffff), 1, 1));
-        sga_ldst(b, load, bytes, rt, base, SGA_X17, 0);
+        sga_ldst_at(b, load, bytes, rt, base, SGA_X17, 0);
     }
+}
+/* sga_ldst_at, a disp of the state being its field's offset */
+static inline void sga_ldst(SgXBuf* b, int load, int bytes, int rt, int base, int index, int disp) {
+    sga_ldst_at(b, load, bytes, rt, base, index, base == SGX_BASE ? disp - SGX_BASE_BIAS : disp);
 }
 /* a move whose operand rm may be memory (mach.h's memory operand: SGX_MEMR(base), b->index, b->disp): the load or the
    store of that many bytes, else the register's copy (ORR of the zero register) */
@@ -522,6 +535,7 @@ SGA_NS(cset)
    the address in X16 first */
 static inline void sga_fp_ldst(SgXBuf* b, int load, int bytes, int rt, int base, int index, int disp) {
     SnxU32 size = bytes == 16 ? 0 : bytes == 8 ? 3 : 2, opc = bytes == 16 ? (load ? 3 : 2) : (load ? 1 : 0);
+    if (base == SGX_BASE) disp -= SGX_BASE_BIAS; /* a disp of the state is its field's offset */
     if (index >= 0) {
         sga_w(b, sge_a64_add_addsub_shift(SGA_X16, (SnxU32)base, 0, (SnxU32)index, 0, 1));
         base = SGA_X16;
@@ -621,8 +635,7 @@ SGA_VF(clear, 2, 3)
 #define SGX_VF_LD4 (&sgx_v_ld4)
 #define SGX_VF_ST4 (&sgx_v_st4)
 
-/* the state's address (X19, the callee's), and a call's arguments from the state's (X0) on */
-#define SGX_BASE 19
+/* a call's arguments from the state's (X0) on */
 static const signed char sgx_arg_regs[6] = {0, 1, 2, 3, 4, 5};
 /* AArch32's calls' arguments after the state's (X1-X4), and its exclusive store's address, value and the memory's base
    (X1, X2, X3: mach_a32.h's SGX_A32_STREX), X4 and X5 its own */

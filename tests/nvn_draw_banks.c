@@ -368,6 +368,31 @@ static void test_vertex_formats(void) {
               cases[i].type, d.ds.vfmt.size[i], d.ds.vfmt.type[i]);
 }
 
+/* An Ounce device's bind of more than 16 vertex attributes, as one game's skinned meshes bind 17: attribute 16 (an
+   RGBX32F at offset 0x40 of stream 1) reaches the vertex format with the others. The bind was dropped whole, and those
+   draws took the attributes of the draw before */
+static void test_vertex_attributes_17(void) {
+    NvnPBindVAttr va = {0};
+    NvnPDraw r = {0};
+    va.count = 17;
+    for (u32 i = 0; i < 17; i++)
+        va.st[i] = (u32)nvn_set_field(0, NVN_VA_FORMAT, i == 16 ? NVN_FORMAT_RGBX32F : NVN_FORMAT_RGBA8);
+    va.st[16] = (u32)nvn_set_field(nvn_set_field(va.st[16], NVN_VA_OFFSET, 0x40), NVN_VA_STREAM, 1);
+    memcpy(g_mem + VATTR, &va, sizeof va);
+    r.count = 3;
+    r.instances = 1;
+    memcpy(g_mem + DRAW, &r, sizeof r);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    check(nvn_draw_record(&d, OP_BIND_VATTR, VATTR, sizeof va) == 1, "OP_BIND_VATTR of 17 was not taken");
+    check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
+    const DsVertexFormat* f = &d.ds.vfmt;
+    check(!(f->constant & 1u << 16) && f->size[16] == 0x01 && f->type[16] == 7 && f->stream[16] == 1 &&
+              f->offset[16] == 0x40 && f->size[15] == 0x0A && (f->stream_on & 3) == 3,
+          "attribute 16: constant %u, size %#x type %u stream %u offset %#x; attribute 15 size %#x",
+          (f->constant >> 16) & 1, f->size[16], f->type[16], f->stream[16], f->offset[16], f->size[15]);
+}
+
 /* OP_BIND_SSBO: storage buffer r of a graphics stage goes to that stage's bank 0, address then size, at its table's
    base + 16 r: the vertex stage's from 0x110, the geometry stage's from 0x410 (nxnative's dmsh_abi.h), the fragment
    stage's from 0x510, an Ounce's task and mesh stages' from 0x670 and 0x770, each in its own bank (the driver's
@@ -1689,6 +1714,7 @@ int main(int argc, char** argv) {
     test_window_origin();
     test_stencil_faces();
     test_vertex_formats();
+    test_vertex_attributes_17();
     test_storage_tables();
     test_compute_uniform_ranges();
     test_direct_instances();

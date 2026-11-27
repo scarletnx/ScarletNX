@@ -12,6 +12,8 @@
 #include "nds/hle/pxi.h"
 #include "nds/audio/spu.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2697,4 +2699,126 @@ void nds_sound_alarm(NdsBoard* board) {
     for (uint32_t i = 0; i < 8; ++i)
         if (alarm_due[i] <= board->cycles) on_alarm(i);
     alarm_set(0, alarm_due[0]);
+}
+
+/* ---- save states (runtime/state.c) ----
+   The driver's state, this file's variables, with each link as an index plus 1 (0 for none): a channel's track and
+   the next channel of its track, a track's first channel */
+typedef struct {
+    uint64_t alarm_due[8];
+    uint32_t cmd_queue[64];
+    unsigned cmd_queue_count;
+    uint32_t shared_mem, counter;
+    SndChannel channels[16];
+    SndSequence sequences[16];
+    SndTrack tracks[32];
+    SndAlarm alarms[8];
+    uint8_t chan_volume[16], chan_pan[16];
+    int master_pan, surround_decay, version;
+    uint8_t chan_track[16], chan_next[16], track_chans[32];
+} SoundState;
+#define CHANNELS (sizeof channels / sizeof *channels)
+#define TRACKS   (sizeof tracks / sizeof *tracks)
+
+uint64_t nds_sound_state_schema(void) {
+    static const SoundState s; /* only walked */
+    uint64_t h = SNX_FNV_BASIS ^ sizeof s;
+    __builtin_dump_struct(&s, snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.channels[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.sequences[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.tracks[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.alarms[0], snx_state_schema_out, &h);
+    return h;
+}
+
+int nds_sound_state_save(StateIo* io) {
+    SoundState* s = calloc(1, sizeof *s);
+    if (!s) return -1;
+    memcpy(s->alarm_due, alarm_due, sizeof alarm_due);
+    memcpy(s->cmd_queue, cmd_queue, sizeof cmd_queue);
+    s->cmd_queue_count = cmd_queue_count;
+    s->shared_mem = shared_mem;
+    s->counter = counter;
+    memcpy(s->channels, channels, sizeof channels);
+    memcpy(s->sequences, sequences, sizeof sequences);
+    memcpy(s->tracks, tracks, sizeof tracks);
+    memcpy(s->alarms, alarms, sizeof alarms);
+    memcpy(s->chan_volume, chan_volume, sizeof chan_volume);
+    memcpy(s->chan_pan, chan_pan, sizeof chan_pan);
+    s->master_pan = master_pan;
+    s->surround_decay = surround_decay;
+    s->version = version;
+    for (size_t i = 0; i < CHANNELS; ++i) {
+        s->chan_track[i] = channels[i].linked_track ? (uint8_t)(channels[i].linked_track - tracks + 1) : 0;
+        s->chan_next[i] = channels[i].next ? (uint8_t)(channels[i].next - channels + 1) : 0;
+        s->channels[i].linked_track = NULL;
+        s->channels[i].next = NULL;
+    }
+    for (size_t i = 0; i < TRACKS; ++i) {
+        s->track_chans[i] = tracks[i].chan_list ? (uint8_t)(tracks[i].chan_list - channels + 1) : 0;
+        s->tracks[i].chan_list = NULL;
+    }
+    int r = io_put(io, s, sizeof *s);
+    free(s);
+    return r;
+}
+
+void* nds_sound_state_parse(StateIo* io, char* why, size_t whysize) {
+    SoundState* s = malloc(sizeof *s);
+    if (!s) {
+        snprintf(why, whysize, "out of memory for the state's sound driver (%zu bytes)", sizeof *s);
+        return NULL;
+    }
+    if (io_get(io, s, sizeof *s)) {
+        snprintf(why, whysize, "its sound driver's section is damaged or cut short");
+        free(s);
+        return NULL;
+    }
+    for (size_t i = 0; i < CHANNELS; ++i)
+        if (s->chan_track[i] > TRACKS || s->chan_next[i] > CHANNELS) {
+            snprintf(why, whysize, "its sound driver's channel %zu links track %u and channel %u, past %zu and %zu", i,
+                     s->chan_track[i], s->chan_next[i], TRACKS, CHANNELS);
+            free(s);
+            return NULL;
+        }
+    for (size_t i = 0; i < TRACKS; ++i)
+        if (s->track_chans[i] > CHANNELS) {
+            snprintf(why, whysize, "its sound driver's track %zu links channel %u, past %zu", i, s->track_chans[i],
+                     CHANNELS);
+            free(s);
+            return NULL;
+        }
+    if (s->cmd_queue_count > sizeof cmd_queue / sizeof *cmd_queue) {
+        snprintf(why, whysize, "its sound driver has %u commands queued, past the %zu it holds", s->cmd_queue_count,
+                 sizeof cmd_queue / sizeof *cmd_queue);
+        free(s);
+        return NULL;
+    }
+    return s;
+}
+
+void nds_sound_state_install(NdsBoard* board, void* staged) {
+    SoundState* s = staged;
+    B = board;
+    memcpy(alarm_due, s->alarm_due, sizeof alarm_due);
+    memcpy(cmd_queue, s->cmd_queue, sizeof cmd_queue);
+    cmd_queue_count = s->cmd_queue_count;
+    shared_mem = s->shared_mem;
+    counter = s->counter;
+    memcpy(channels, s->channels, sizeof channels);
+    memcpy(sequences, s->sequences, sizeof sequences);
+    memcpy(tracks, s->tracks, sizeof tracks);
+    memcpy(alarms, s->alarms, sizeof alarms);
+    memcpy(chan_volume, s->chan_volume, sizeof chan_volume);
+    memcpy(chan_pan, s->chan_pan, sizeof chan_pan);
+    master_pan = s->master_pan;
+    surround_decay = s->surround_decay;
+    version = s->version;
+    for (size_t i = 0; i < CHANNELS; ++i) {
+        channels[i].linked_track = s->chan_track[i] ? &tracks[s->chan_track[i] - 1] : NULL;
+        channels[i].next = s->chan_next[i] ? &channels[s->chan_next[i] - 1] : NULL;
+    }
+    for (size_t i = 0; i < TRACKS; ++i)
+        tracks[i].chan_list = s->track_chans[i] ? &channels[s->track_chans[i] - 1] : NULL;
+    free(s);
 }

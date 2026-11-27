@@ -41,7 +41,7 @@
 #include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/state_fns.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,6 +50,8 @@
 #include <stdatomic.h>
 
 typedef char state_pointers_are_8_bytes[sizeof(void*) == 8 ? 1 : -1]; /* pointer fields hold the numbers below */
+static_assert(SNX_UI_IMAGE_W == SNX_STATE_THUMB_W && SNX_UI_IMAGE_H == SNX_STATE_THUMB_H,
+              "a state's thumbnail is the menu's picture, on every console");
 
 /* ============================================================ streams */
 /* a stream in memory: a section read whole before a load changes anything, or one written before it goes out */
@@ -99,58 +101,6 @@ static int section_write(StateWriter* w, const char* tag, u64 schema, const Buf*
 }
 
 /* ============================================================ the schema */
-/* A hash of the names and types of every field g_hle holds, and of the other types the state holds as raw bytes, from
-   Clang's walk of each struct (hle_walk.h): a state whose types had other fields isn't read as this runtime's. The
-   values the walk prints aren't part of it */
-static void hash_str(u64* h, const char* s) {
-    for (; *s; s++) *h = snx_fnv_step(*h, (u8)*s);
-    *h = snx_fnv_step(*h, 0x1F);
-}
-static int schema_out(u64* h, const char* fmt, ...) {
-    va_list ap;
-    const char* f;
-    int before = 1;
-    va_start(ap, fmt);
-    for (f = fmt; *f; f++) {
-        int longs = 0;
-        if (*f == '=') before = 0;
-        if (*f != '%') {
-            if (before) *h = snx_fnv_step(*h, (u8)*f);
-            continue;
-        }
-        f++;
-        while (*f == 'l' || *f == 'h' || *f == 'z' || *f == 'j' || *f == 't') longs += *f++ == 'l';
-        switch (*f) {
-            case 's': {
-                const char* s = va_arg(ap, const char*);
-                if (before && s) hash_str(h, s);
-                break;
-            }
-            case 'p': (void)va_arg(ap, void*); break;
-            case 'f':
-            case 'g':
-            case 'e': (void)va_arg(ap, double); break;
-            case 'c':
-            case 'd':
-            case 'i':
-            case 'u':
-            case 'x':
-            case 'X':
-            case 'o':
-                if (longs >= 2)
-                    (void)va_arg(ap, long long);
-                else if (longs)
-                    (void)va_arg(ap, long);
-                else
-                    (void)va_arg(ap, int);
-                break;
-            case 0: f--; break;
-            default: break;
-        }
-    }
-    va_end(ap);
-    return 0;
-}
 /* instances of the types written raw outside g_hle, for their walk */
 static const GpuChannel z_chan;
 static const ARState z_ar;
@@ -165,13 +115,15 @@ static const GMap z_gmap;
 static const GRun z_grun;
 static const VaRange z_va;
 static const MemBlock z_blk;
+/* A hash of the names and types of every field g_hle holds, and of the other types the state holds as raw bytes, from
+   Clang's walk of each struct (hle_walk.h, snx_state_schema_out) */
 static u64 state_schema(void) {
     static u64 hash;
     u64 h = 0xCBF29CE484222325ull ^ sizeof(Hle);
     if (hash) return hash; /* the types don't change while the runtime runs */
 #define SCHEMA_WALK(name, obj)                                                                                         \
-    hash_str(&h, #name);                                                                                               \
-    __builtin_dump_struct(&(obj), schema_out, &h);
+    snx_state_schema_name(&h, #name);                                                                                  \
+    __builtin_dump_struct(&(obj), snx_state_schema_out, &h);
     HLE_WALKS(SCHEMA_WALK, g_hle)
     SCHEMA_WALK(GpuChannel, z_chan)
     SCHEMA_WALK(ARState, z_ar)
@@ -187,13 +139,13 @@ static u64 state_schema(void) {
     SCHEMA_WALK(VaRange, z_va)
     SCHEMA_WALK(MemBlock, z_blk)
 #undef SCHEMA_WALK
-    gpu_state_schema(schema_out, &h);
+    gpu_state_schema(snx_state_schema_out, &h);
     return hash = h;
 }
 /* the NVN section's: g_nvn's layout and that of the types it writes raw, which a game whose NVN the runtime runs has */
 static u64 nvn_schema(void) {
     u64 h = 0xCBF29CE484222325ull ^ sizeof(Nvn);
-    nvn_state_schema(schema_out, &h);
+    nvn_state_schema(snx_state_schema_out, &h);
     return h;
 }
 
@@ -1267,6 +1219,13 @@ static void video_install(VideoStaged* v) {
     for (i = 0; i < NV_FDS; i++) g_hle.nvdrv.nvf[i].h1x = v->ch[i];
     memset(v, 0, sizeof *v);
 }
+/* the state file's counts as the profiler's plots, and its workers named for it */
+static void state_plot(const char* name, double value) { SNX_PLOT(name, value); }
+static void state_thread(const char* name) { SNX_THREAD_NAME(name); }
+void state_profiler(void) {
+    static const SnxStateFileProfiler profiler = {state_plot, state_thread};
+    snx_state_file_profiler(&profiler);
+}
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateWriter* w;
@@ -1630,19 +1589,6 @@ static int g_slot = 1;        /* the slot F7 and F8 use, 1 to state_slots */
 static int g_ask, g_ask_slot; /* a save, load or delete asked for, done at the next pass */
 static int g_menu_pause;      /* the save states' pages hold the game: 1 paused, -1 it didn't stop */
 
-static void slot_name(char* out, size_t size, int slot) {
-    if (slot)
-        snprintf(out, size, "%d", slot);
-    else
-        snprintf(out, size, "auto");
-}
-/* a slot as a sentence names it, at its start (Slot 2) or within it (slot 2) */
-static void slot_label(char* out, size_t size, int slot, int start) {
-    if (slot)
-        snprintf(out, size, "%s %d", start ? "Slot" : "slot", slot);
-    else
-        snprintf(out, size, "%s auto slot", start ? "The" : "the");
-}
 static void toast(const char* fmt, ...) {
     char text[OVERLAY_COLS_MAX + 1];
     va_list ap;
@@ -1652,19 +1598,6 @@ static void toast(const char* fmt, ...) {
     ui_lock();
     overlay_state_toast(text, plat_ns());
     ui_unlock();
-}
-/* a state's date and the play time then, as the menu lists them */
-static void slot_when(char* out, size_t size, const SnxStateHeader* h) {
-    time_t t = (time_t)h->created;
-    struct tm tm;
-    u64 s = h->guest_ns / 1000000000u;
-#ifdef _WIN32
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    snprintf(out, size, "%04d-%02d-%02d %02d:%02d  %llu:%02u:%02u", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, (unsigned long long)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
 /* the slots the menu lists, read from their files' headers and thumbnails */
 static void slots_list(void) {
@@ -1676,10 +1609,10 @@ static void slots_list(void) {
         char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
         SnxStateHeader h;
         u8* thumb = NULL;
-        slot_name(name, sizeof name, i);
+        snx_state_slot_name(name, sizeof name, i);
         state_path(path, sizeof path, name);
         if (snx_state_peek(path, &h, &thumb, why, sizeof why)) continue;
-        slot_when(list[i].when, sizeof list[i].when, &h);
+        snx_state_slot_when(list[i].when, sizeof list[i].when, &h);
         if (state_check(&h, why, sizeof why)) snprintf(list[i].why, sizeof list[i].why, "It can't load: %s.", why);
         if (thumb && h.thumb_w == SNX_UI_IMAGE_W && h.thumb_h == SNX_UI_IMAGE_H)
             list[i].thumb = thumb;
@@ -1698,12 +1631,12 @@ void state_slot_next(void) {
     char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256], when[32];
     SnxStateHeader h;
     g_slot = g_slot % g_settings.save_state_slots + 1;
-    slot_name(name, sizeof name, g_slot);
+    snx_state_slot_name(name, sizeof name, g_slot);
     state_path(path, sizeof path, name);
     if (snx_state_peek(path, &h, NULL, why, sizeof why))
         toast("Slot %d: empty", g_slot);
     else {
-        slot_when(when, sizeof when, &h);
+        snx_state_slot_when(when, sizeof when, &h);
         toast("Slot %d: %s", g_slot, when);
     }
 }
@@ -1762,9 +1695,9 @@ static void loading_over(int failed) {
 static void ask_do(int op, int slot) {
     char name[16], label[24], start[24], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
     SnxStateHeader h;
-    slot_name(name, sizeof name, slot);
-    slot_label(label, sizeof label, slot, 0);
-    slot_label(start, sizeof start, slot, 1);
+    snx_state_slot_name(name, sizeof name, slot);
+    snx_state_slot_label(label, sizeof label, slot, 0);
+    snx_state_slot_label(start, sizeof start, slot, 1);
     state_path(path, sizeof path, name);
     if (op == STATE_SAVE) {
         int over = snx_is_file(path); /* a state there, replaced: said so, F7 asking nothing */

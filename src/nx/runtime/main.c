@@ -5,7 +5,6 @@
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
 #include "common/cpu/recompiler/loader/gdb_jit.h"
-#include "common/cpu/recompiler/llvm/ir_settings.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/program_start.h"
@@ -1501,6 +1500,7 @@ int snx_main(int argc, char** argv) {
     }
     /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
     snx_error_sink(log_error_line);
+    state_profiler();
     /* the guest's address space before the game's code, which would take a share of a small one: a pack's arena with its
        write alias leaves an iOS app's 13 GiB or so no run of the 5 GiB the guest needs */
     mem_reserve();
@@ -1581,13 +1581,7 @@ int snx_main(int argc, char** argv) {
     else if (g_addon)
         LOG("game: the update of the game in %s, with its settings and saves\n", base);
     if (why[0]) LOG("game: %s\n", why);
-    snx_ir_slp_vectorizer(g_settings.slp_vectorizer); /* before the JIT's first compile too */
-    snx_ir_fpsr_flags(g_settings.fpsr_flags);
-    snx_ir_volatile_memory(g_settings.volatile_load_stores);
-    snx_ir_abi_contract(g_settings.abi_contract);
-    snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
     snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
-    snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout and the larger heap, before mem_init sizes its blocks in it */

@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The C library functions of a game module, which links no C library: rtlib.c's (64-bit modules) and armlib.c's
    (32-bit ones), and the compiler runtime's they need. Needs cpu.h's u8, u64 and RESTRICT */
-/* LLVM turns large or variable copies into these calls, and Clang does inside cpu_helpers.c. no_builtin keeps the
+/* Clang turns large or variable copies into these calls, inside cpu_helpers.c too. no_builtin keeps the
    loops from being turned back into calls to themselves */
 [[clang::no_builtin]] void* memcpy(void* RESTRICT d, const void* RESTRICT s, size_t n) {
     u8* p = (u8*)d;
@@ -31,7 +31,7 @@
     return 0;
 }
 #ifdef __APPLE__
-/* and these on Darwin, by its operating system whatever the object format (ir.c's host_triple): bzero for a large or
+/* and these on Darwin, by its operating system whatever the object format (the triple's system): bzero for a large or
    variable memset of zero, memset_pattern16 for a loop storing a repeated value (the loop idiom pass) */
 [[clang::no_builtin]] void bzero(void* d, size_t n) {
     u8* p = (u8*)d;

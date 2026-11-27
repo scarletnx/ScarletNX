@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The arm64 back end's guest functions (arm64_codegen.c): the recompiler's code without LLVM on an arm64 host, from
-   the A64 emitters sailgen generates with its arm64 back end (tools/sailgen/arm64.h, its words the A64 Sail's
-   encoders), written as an ELF AArch64 object, or on Windows a COFF one, the linker and the JIT's loader take as they
-   take LLVM's. It builds on any host (the code is arm64's: a test runs it under Unicorn); a function it can't make is
-   left to another back end */
+/* The arm64 back end's guest functions (arm64_codegen.c): the recompiler's code on an arm64 host, from the A64 emitters
+   sailgen generates with its arm64 back end (tools/sailgen/arm64.h, its words the A64 Sail's encoders), written as an
+   ELF AArch64 object, or on Windows a COFF one, which the linker and the JIT's loader take. It builds on any host (the
+   code is arm64's: a test runs it under Unicorn); a function it can't make is left to another back end */
 #ifndef SNX_RECOMPILER_ARM64_CODEGEN_H
 #define SNX_RECOMPILER_ARM64_CODEGEN_H
 #include "common/cpu/recompiler/codegen.h"
@@ -21,6 +20,9 @@ enum {
     SNX_ARM64_F_WIN = 1 << 19 /* no processor's: the code is Windows', in COFF objects with a function table */
 };
 #define SNX_ARM64_F_ALL ((1u << 19) - 1)
+/* how far past the state's address the code's X19 holds (sailgen's arm64.h, SGX_BASE_BIAS): a field at offset off of
+   the state is at [X19, #off - SNX_ARM64_STATE_BIAS] */
+#define SNX_ARM64_STATE_BIAS 8
 /* 1 where this host runs the arm64 back end's code and its objects load: AArch64 whose system's objects are ELF or
    Windows' COFF, or Apple's, whose JIT loader and module linker take the back end's ELF objects (code_loader.c,
    link_macho.c) */

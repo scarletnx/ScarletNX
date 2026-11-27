@@ -3,7 +3,8 @@
 /* sailgen --encoders of the in-tree a64.sail (a64_enc.inc): words the Arm ARM gives for instructions of every kind of
    field (registers, a shifted register's shift, an add's immediate and its shift, a scaled offset, a condition, a
    bitmask immediate's N:immr:imms, a branch's offset, a vector's size and Q), each made by its clause's encoder;
-   and every encoder's fields placed apart from each other and from the bits its pattern fixes */
+   every encoder's fields placed apart from each other and from the bits its pattern fixes; and what clauses of every
+   kind reach of FPCR and FPSR (fp) */
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +16,18 @@ static int failures;
 static void expect(const char* what, SnxU32 got, SnxU32 want) {
     if (got != want) {
         printf("%s: %08X, expected %08X\n", what, got, want);
+        ++failures;
+    }
+}
+
+static void fp_expect(const char* name, unsigned want) {
+    unsigned k;
+    for (k = 0; k < sge_a64_count && strcmp(sge_a64_table[k].name, name); ++k) {}
+    if (k == sge_a64_count) {
+        printf("%s: no such clause\n", name);
+        ++failures;
+    } else if (sge_a64_table[k].fp != want) {
+        printf("%s: fp %u, expected %u\n", name, sge_a64_table[k].fp, want);
         ++failures;
     }
 }
@@ -35,6 +48,20 @@ int main(void) {
     expect("CBNZ W3, .-4", sge_a64_cbnz(3, 0x7FFFF, 0), 0x35FFFFE3u);
     expect("UDIV X0, X1, X2", sge_a64_udiv(0, 1, 2, 1), 0x9AC20820u);
     expect("ADD V0.4S, V1.4S, V2.4S", sge_a64_add_advsimd_simd(0, 1, 2, 2, 1), 0x4EA28420u);
+    /* what each clause's code reaches of FPCR and FPSR: nothing for an integer one; nothing where a field the pattern
+       fixes folds a saturation away (SSHL's S), nor FEAT_AFP's FPCR.AH, which the profile names in no feature line
+       (FABS); QC written (SQADD); FPCR given to a lowered function (FADD), or one that reads it with none given
+       (FRECPS), 2; AES's lowered tables, nothing */
+    fp_expect("add_advsimd_simd", 0);
+    fp_expect("eor_advsimd", 0);
+    fp_expect("sshl_advsimd_simd", 0);
+    fp_expect("fabs_float", 0);
+    fp_expect("fmov_float", 0);
+    fp_expect("aese_advsimd", 0);
+    fp_expect("sqadd_advsimd_simd", 1);
+    fp_expect("sqshl_advsimd_reg_sisd", 1);
+    fp_expect("fadd_advsimd_fp", 2);
+    fp_expect("frecps_advsimd_recps_simd", 2);
     for (k = 0; k < sge_a64_count; ++k) {
         SnxU32 seen = sge_a64_table[k].mask;
         for (j = 0; j < sge_a64_table[k].nfields; ++j) {

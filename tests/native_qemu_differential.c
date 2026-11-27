@@ -1,0 +1,1562 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The host's native back end against QEMU, instruction by instruction: each word runs as the back end's step function
+   (steps.h, native_steps.c) and under qemu-aarch64 -cpu max (tests/qemu_ref), from the same state and the same seeded
+   window of guest memory, and the registers, flags, FPCR, FPSR, vector registers, the memory it changed and how it
+   ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs after a load-exclusive of its address,
+   so that it can succeed.
+     snx-test-native-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
+                                       [--jit] [--portable] [--record FILE]
+     snx-test-native-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] [--portable]
+     snx-test-native-qemu-differential DIR EXPECTED --reference-if-there FILE ...
+     snx-test-native-qemu-differential --skip REASON
+   --record writes the QEMU side of the run (the words, each case's start state, its end state, how it ended and the
+   memory it changed) to FILE. --reference runs the steps alone against such a file, so that a host where qemu-aarch64
+   can't run beside the test (the cross-built PowerPC64, RISC-V and LoongArch, Windows and macOS) compares against the
+   reference that a Linux x86-64 host recorded: with every word and state a step may need, whichever back end recorded
+   it. The record defines the run: --sweep, --states and --seed do not apply with it. A --reference that is not there
+   fails the test; with --reference-if-there it is skipped (77), saying that the file is not there.
+   The words: samples of every row of the generated decoder's table with every value of each field of 3 bits or
+   fewer, directed() and scalar_words() words, and the words the other instruction tests hand-check (kept[]). The
+   default run takes 2 samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples,
+   300 rounds and 6 states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit
+   loads them with the JIT's loader (code_loader.c) instead, and --portable makes them without the host's optional
+   features (x86's PSHUFB, PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the back end's forms
+   without them are compared.
+   A word the back end leaves UNDEF (the generated decoder for the Switch target), or decodes without code for it, while
+   QEMU runs it, has none yet: it is listed in DIR/<side>_qemu_coverage.txt, not failed. So is a word that
+   differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
+   max makes of it is beyond the Cortex-A57. The mismatches are
+   grouped by the max target's name for the word and their cause, with examples in DIR/<side>_qemu_mismatches.txt.
+   EXPECTED lists the groups known to differ, with their counts in the default run and the sweep: a group missing from
+   it fails the test, and so does a group it lists for this run that no longer differs. --update rewrites this run's
+   counts in EXPECTED instead. */
+#include "common/utilities/common.h"
+#include "common/utilities/endian.h"
+#include "common/cpu/aarch64/cpu.h"
+#include "common/runtime/interface.h"
+#include "native_qemu_words.h"
+#include "steps.h"
+#include "qemu_ref/qemu_ref.h"
+#include <fenv.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include "common/cpu/aarch64/a64_decoder.h"
+/* this side of the comparison: in the causes, the reports' names and the expected-failure list, and in prose */
+#define SIDE      "native"
+#define SIDE_NAME "native"
+#define PROGRAM   "snx-test-native-qemu-differential"
+
+#define WINDOW      0x0ull /* the window starts at guest address 0 on both sides */
+#define WINDOW_SIZE SNX_QREF_WINDOW_SIZE
+#define PC          (WINDOW + 0x100000ull)
+/* a pair's code, apart from the window: the runner makes a full diff's window writable, code pages in it too */
+#define PAIR_PC     (WINDOW + WINDOW_SIZE)
+#define CODE_SIZE   (2 * SNX_QREF_PAGE)
+#define SEED        0x5EEDull
+#define DIRECTED    51u  /* words directed() makes per round */
+#define SCALAR      16u  /* and scalar_words() */
+#define BATCH       8192 /* QEMU cases per run of the runner */
+#define EXAMPLES    3    /* kept per group */
+#define SIGBUS_A64  7u   /* QEMU's alignment fault: SIGBUS, as Linux on AArch64 numbers it */
+
+/* the runtime's callbacks' record of a step (native_qemu_differential's outcome) */
+typedef struct {
+    int undef, brk, svc;
+    u64 imm;
+} Events;
+
+static struct {
+    u64 rng;
+    Events* events;    /* the step running */
+    char running[160]; /* what runs, for on_fatal: the steps' compile, or a case's op, word and state */
+} g_test = {0x9E3779B97F4A7C15ull, NULL, "the start"};
+
+/* a fatal signal (the generated code's or the harness's) names what was running before its default action ends the
+   test, which under --quiet would otherwise print nothing */
+static void on_fatal(int signo) {
+    static const char head[] = PROGRAM ": signal ";
+    char digits[4];
+    size_t n = 0;
+    for (unsigned v = (unsigned)signo; n < sizeof digits && (v || !n); v /= 10)
+        digits[sizeof digits - 1 - n++] = (char)('0' + v % 10);
+    (void)!write(2, head, sizeof head - 1);
+    (void)!write(2, digits + sizeof digits - n, n);
+    (void)!write(2, " in ", 4);
+    (void)!write(2, g_test.running, strlen(g_test.running));
+    (void)!write(2, "\n", 1);
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
+
+static u64 next_random(void) {
+    g_test.rng ^= g_test.rng << 13;
+    g_test.rng ^= g_test.rng >> 7;
+    g_test.rng ^= g_test.rng << 17;
+    return g_test.rng;
+}
+
+/* ---- the states: random_state(), its FP edges, and the directed() and kept[] words ---- */
+static u64 special64(void) {
+    static const u64 values[] = {0,
+                                 1,
+                                 ~0ull,
+                                 0x7FFFFFFFFFFFFFFFull,
+                                 0x8000000000000000ull,
+                                 0xFFFFFFFFull,
+                                 0x80000000ull,
+                                 0x7FFFFFFFull,
+                                 0x3FF0000000000000ull, /* 1.0 */
+                                 0x7FF0000000000000ull, /* inf */
+                                 0x7FF8000000000001ull, /* qNaN */
+                                 0x7FF0000000000001ull, /* sNaN */
+                                 0x000FFFFFFFFFFFFFull, /* denormal */
+                                 0x3F8000003F800000ull, /* 1.0f, 1.0f */
+                                 0x7F8000007FC00001ull, /* inf, qNaN */
+                                 0x007FFFFF80000000ull, /* denormal, -0 */
+                                 0x7F8000017F800000ull};
+    u64 r = next_random();
+    if (r % 3 == 0) return values[(r >> 8) % (sizeof(values) / sizeof(values[0]))];
+    if (r % 3 == 1) return next_random() >> (r >> 58);
+    return next_random();
+}
+
+static u32 edge32(void) {
+    static const u32 exponents[] = {0, 1, 2, 3, 24, 25, 26, 27, 100, 127, 128, 150, 200, 252, 253, 254, 255};
+    u64 r = next_random();
+    u32 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
+    u32 m = (r >> 8) & 7 ? (u32)(r >> 20) & 0x7FFFFF : (u32)((r >> 20) & 7) << 20;
+    if (r % 6 == 0) return (u32)((r >> 40) & 1) << 31;
+    return (u32)((r >> 40) & 1) << 31 | e << 23 | m;
+}
+
+static u64 edge64(void) {
+    static const u64 exponents[] = {0, 1, 2, 3, 53, 54, 55, 56, 500, 1023, 1024, 1075, 1500, 2044, 2045, 2046, 2047};
+    u64 r = next_random(), r2 = next_random();
+    u64 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
+    u64 m = (r >> 8) & 7 ? r2 & 0xFFFFFFFFFFFFFull : (r2 & 7) << 49;
+    if (r2 % 6 == 0) return ((r >> 40) & 1) << 63;
+    return ((r >> 40) & 1) << 63 | e << 52 | m;
+}
+
+static u64 fp_value(void) {
+    u64 r = next_random();
+    if (r % 4 == 0) return (u64)edge32() << 32 | edge32();
+    if (r % 4 == 1) return edge64();
+    return special64();
+}
+
+/* integers near float and double precision limits, floats near the integer ranges' ends and halfway values */
+static u64 conversion_edge(void) {
+    static const u32 floats[] = {0x4B800000u, 0x4F000000u, 0x4F800000u, 0x5F000000u,
+                                 0x5F800000u, 0x3F000000u, 0x3FC00000u, 0x40200000u};
+    static const u64 doubles[] = {0x4340000000000000ull, 0x41E0000000000000ull, 0x41F0000000000000ull,
+                                  0x43E0000000000000ull, 0x43F0000000000000ull, 0x3FE0000000000000ull,
+                                  0x3FF8000000000000ull, 0x4004000000000000ull};
+    u64 r = next_random(), k = next_random(), lane[2];
+    unsigned i;
+    if (r % 4 == 1) {
+        u64 v = (r >> 8) & 1 ? ((u64)1 << 53) + (k % 5) - 2 : k % 4096;
+        return (r >> 9) & 1 ? 0 - v : v;
+    }
+    if (r % 4 == 3) return ((r >> 9) & 1) << 63 | (doubles[(r >> 10) % 8] + (k % 5) - 2);
+    for (i = 0; i < 2; ++i, k >>= 16) {
+        u32 v;
+        if (r % 4 == 0) {
+            v = (k >> 3) & 1 ? (1u << 24) + (u32)(k % 5) - 2 : (u32)(k >> 4) % 4096;
+            if ((k >> 15) & 1) v = 0 - v;
+        } else {
+            v = (u32)((k >> 15) & 1) << 31 | (floats[(k >> 4) % 8] + (u32)(k % 5) - 2);
+        }
+        lane[i] = v;
+    }
+    return lane[1] << 32 | lane[0];
+}
+
+/* a half (FEAT_FP16): zeros, denormals, the normal range's ends, infinities, quiet and signalling NaNs, those whose
+   reciprocal is below the normals, or any */
+static u64 half_value(void) {
+    u64 k = next_random(), sign = (k & 1) << 15, bits = k >> 8;
+    switch ((k >> 1) % 9) {
+        case 0: return sign;
+        case 1: return sign | (1 + bits % 0x3FF);
+        case 2: return sign | 0x7C00;
+        case 3: return sign | 0x7E00 | (bits & 0x1FF);
+        case 4: return sign | 0x7C01 | (bits & 0x1FE);
+        case 5: return sign | 0x0400 | (bits & 0x3FF);
+        case 6: return sign | 0x7800 | (bits & 0x3FF);
+        case 7: return sign | 0x7400 | (bits & 0x3FF); /* 2^14 to 2^15: their reciprocal is below the normals */
+        default: return bits & 0xFFFF;
+    }
+}
+/* a scalar FP instruction (data processing, compares, selects, conversions) on halves: ftype 3 */
+static int half_scalar(u32 word) {
+    return ((word & 0x5F000000u) == 0x1E000000u || (word & 0x5F000000u) == 0x1F000000u) && ((word >> 22) & 3) == 3;
+}
+/* an Advanced SIMD one, scalar or vector, on halves (FEAT_FP16's and FEAT_FHM's) */
+static int half_simd(u32 word) {
+    SnxA64Insn insn;
+    return snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &insn) != SNX_A64_OP_UNDEF &&
+           (insn.feature & (SNX_A64_FEAT_FP16 | SNX_A64_FEAT_FHM));
+}
+/* four halves, three of four of them half_value()'s */
+static u64 half_lanes(u64 old) {
+    unsigned i;
+    for (i = 0; i < 64; i += 16)
+        if (next_random() % 4) old = (old & ~(0xFFFFull << i)) | half_value() << i;
+    return old;
+}
+
+/* FCVTN/FCVTXN inputs at the narrower format's normal range ends, dropped bits near half an ulp */
+static u64 narrow_edge(unsigned doubles) {
+    static const u32 exponents64[] = {897, 898, 1149, 1150, 897, 898, 1150, 1150, 896, 1151},
+                     exponents32[] = {113, 114, 141, 142, 113, 114, 142, 142, 112, 143};
+    u64 k = next_random(), lane[2];
+    unsigned i, n = doubles ? 1 : 2, shift = doubles ? 29 : 13, mantissa = doubles ? 52 : 23;
+    for (i = 0; i < n; ++i, k >>= 16) {
+        u64 low = (u64)1 << (shift - 1), fraction;
+        switch (k % 6) {
+            case 0: fraction = 0; break;
+            case 1: fraction = low; break;
+            case 2: fraction = low + 1; break;
+            case 3: fraction = low - 1; break;
+            case 4: fraction = ((u64)1 << mantissa) - 1; break;
+            default: fraction = next_random() & (((u64)1 << mantissa) - 1); break;
+        }
+        if ((k >> 3) % 2 && k % 6 != 4) fraction ^= (next_random() << shift) & (((u64)1 << mantissa) - 1);
+        lane[i] = ((k >> 4) & 1) << (doubles ? 63 : 31) |
+                  (u64)(doubles ? exponents64[(k >> 5) % 10] : exponents32[(k >> 5) % 10]) << mantissa | fraction;
+    }
+    return doubles ? lane[0] : lane[1] << 32 | lane[0];
+}
+
+/* a V register's two doublewords, numbers, as the CPU holds them: the guest's little-endian bytes, which a big-endian
+   host's generated code reads that way */
+static void v_from_numbers(V128* v, u64 low, u64 high) {
+    snx_st_le64(v->b, low);
+    snx_st_le64(v->b + 8, high);
+}
+
+/* a starting state: with addresses, every X register and SP points into the window, 16-byte aligned, so that any
+   base, index and offset the word combines stays in it */
+static void random_state(CPU* c, u32 word, int addresses) {
+    static const u32 fpcr[] = {0, 1u << 24, 1u << 25, 3u << 22, 1u << 22, 2u << 22, 1u << 26, 0x07C00000u};
+    static const u64 negations[] = {0, 0x8000000080000000ull, 0x8000000000000000ull};
+    unsigned i, rn = (word >> 5) & 31, rm = (word >> 16) & 31, ra = (word >> 10) & 31;
+    u64 r, negate;
+    memset(c, 0, sizeof(*c));
+    for (i = 0; i < 32; ++i) {
+        c->x[i] = addresses ? WINDOW + 0x1000 + (next_random() % 0x7000 & ~(u64)15) : special64();
+        c->v[i].d[0] = fp_value();
+        c->v[i].d[1] = fp_value();
+    }
+    /* the word's own FP operands now and then: copies and negations for exact cancellation, zeros of random signs,
+       lanes needing different checks, conversion and narrowing edges */
+    r = next_random();
+    negate = negations[(r >> 8) % 3];
+    if (r % 4 == 0) {
+        c->v[rm].d[0] = c->v[rn].d[0] ^ negate;
+        c->v[rm].d[1] = c->v[rn].d[1] ^ negate;
+    }
+    if ((r >> 16) % 8 == 0) {
+        c->v[ra].d[0] = c->v[rn].d[0] ^ negate;
+        c->v[ra].d[1] = c->v[rn].d[1] ^ negate;
+    }
+    if ((r >> 24) % 12 == 0) {
+        V128* zero = &c->v[(r >> 32) % 2 ? rm : rn];
+        zero->d[0] = next_random() & 0x8000000080000000ull;
+        zero->d[1] = next_random() & 0x8000000080000000ull;
+        if ((r >> 34) % 2) {
+            zero = &c->v[(r >> 32) % 2 ? rn : rm];
+            zero->d[0] = next_random() & 0x8000000080000000ull;
+            zero->d[1] = next_random() & 0x8000000080000000ull;
+        }
+    }
+    if ((r >> 40) % 24 == 0) {
+        c->v[rn].d[0] = c->v[rn].d[1] = 0x3F8000013F800000ull;
+        c->v[rm].d[0] = c->v[rm].d[1] = 0x018000013F800000ull;
+    }
+    if ((r >> 48) % 4 == 0) {
+        c->v[rn].d[0] = conversion_edge();
+        c->v[rn].d[1] = conversion_edge();
+    }
+    if ((word & 0x8F3FFC00u) == 0x0E216800u && (r >> 52) % 4) {
+        c->v[rn].d[0] = narrow_edge((word >> 22) & 1);
+        c->v[rn].d[1] = narrow_edge((word >> 22) & 1);
+    }
+    c->n = next_random() & 1;
+    c->z = next_random() & 1;
+    c->cf = next_random() & 1;
+    c->vf = next_random() & 1;
+    c->fpcr = fpcr[next_random() % 8] | (next_random() % 2 ? (u32)(next_random() & 0x07C00000u) : 0);
+    if ((word & 0x8F3FFC00u) == 0x0E216800u && next_random() % 2) c->fpcr &= ~(3u << 22);
+    if (half_scalar(word)) { /* the operands as halves, and FPCR.FZ16 */
+        unsigned operands[3], i;
+        operands[0] = rn;
+        operands[1] = rm;
+        operands[2] = ra;
+        for (i = 0; i < 3; ++i)
+            if (next_random() % 4) c->v[operands[i]].d[0] = (c->v[operands[i]].d[0] & ~0xFFFFull) | half_value();
+        if (next_random() % 2) c->fpcr |= 1u << 19;
+    } else if (half_simd(word)) { /* every lane of them: a by-element form's Rm of halves is one of V0-V15 */
+        unsigned operands[4], i;
+        operands[0] = rn;
+        operands[1] = rm;
+        operands[2] = ra;
+        operands[3] = rm & 15;
+        for (i = 0; i < 4; ++i) {
+            c->v[operands[i]].d[0] = half_lanes(c->v[operands[i]].d[0]);
+            c->v[operands[i]].d[1] = half_lanes(c->v[operands[i]].d[1]);
+        }
+        if (next_random() % 2) c->fpcr |= 1u << 19;
+        if (next_random() % 4 == 0) { /* Vn's reciprocals below the normals, flushed: FRECPE's underflow under FZ16 */
+            c->fpcr |= 1u << 19;
+            for (i = 0; i < 2; ++i) c->v[rn].d[i] = (next_random() & 0x83FF83FF83FF83FFull) | 0x7400740074007400ull;
+        }
+    }
+    /* FPSR's cumulative flags and QC: its AArch32 NZCV bits are not A64 state */
+    c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0x0800009Fu);
+    /* the V registers, set as numbers above */
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], c->v[i].d[0], c->v[i].d[1]);
+}
+
+/* directed() words, the encodings random fields rarely produce, unfiltered */
+static size_t directed(size_t rounds, u32* out) {
+    static const u32 same_ops[] = {3, 0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F},
+                     element_ops[] = {1, 5, 9}, copy_ops[] = {0, 1, 3, 7}, fp_ops[] = {0x18, 0x1A, 0x1C, 0x1D, 0x1E};
+    static const u32 misc_fp[] = {0x1A, 0x1B, 0x1C, 0x1D, 0x3A, 0x3B, 0x3D, 0x5A,
+                                  0x5B, 0x5C, 0x5D, 0x7A, 0x7B, 0x7D, 0x7F},
+                     steps[] = {0x7A, 0x1B, 0x1F, 0x3F};
+    static const unsigned char misc[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x13, 0x14},
+                               across[] = {0x03, 0x0A, 0x1A, 0x1B, 0x0C, 0x0F}, pairwise[] = {0x1B, 0x0D, 0x0C, 0x0F},
+                               element[] = {0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13},
+                               shifts[] = {0x04, 0x06, 0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                               scalar_shifts[] = {0x00, 0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                               scalar_misc[] = {0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x14},
+                               same[] = {0x04, 0x08, 0x09, 0x0A, 0x0B, 0x16},
+                               scalar_same[] = {0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x10, 0x11, 0x16};
+    const size_t nsame = sizeof(same_ops) / sizeof(same_ops[0]);
+    size_t got = 0, i;
+    for (i = 0; i < rounds; ++i) {
+        u32 r = (u32)next_random(), n = (r >> 5) & 31, *w = out + got;
+        u32 m = misc_fp[next_random() % 15], t = steps[next_random() % 4], f = next_random() % 2 ? 0x1C : 0x1F;
+        u32 immh = 1u << (19 + (u32)(next_random() % 4));
+        w[0] = 0x2F00E400u | (r & 31) | ((r >> 9) & 1) << 30;
+        w[1] = 0x0EA01C00u | ((r >> 10) & 1) << 30 | n << 16 | n << 5 | (r & 31);
+        w[2] = ((r & ~0x9F20FC00u) | 0x0E200400u) | same_ops[next_random() % nsame] << 11;
+        w[3] = ((r & ~0x9F00F400u) | (next_random() % 2 ? 0x5F000000u : 0x0F000000u) | 0x00800000u) |
+               element_ops[next_random() % 3] << 12;
+        w[4] = ((r & ~0x9FE0FC00u) | 0x0E000400u) | copy_ops[next_random() % 4] << 11;
+        w[5] = ((r & ~0x9F20FC00u) | 0x0E200400u) | same_ops[next_random() % nsame] << 11 | 0x40000000u;
+        w[6] = (r & 0x40C0001Fu) | 0x0C000000u | (u32)(next_random() % 2) << 23 |
+               (u32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16 | (u32) "\x07\x0A\x06\x02"[next_random() % 4] << 12 |
+               ((r >> 10) & 3) << 10 | ((r >> 5) & 31) << 5;
+        w[7] = (r & 0x40E0FFFFu & ~0x00202000u) | 0x0D000000u;
+        w[8] = (r & 0x60C003FFu) | 0x0E205800u;
+        w[9] = (r & 0x401F03FFu) | 0x0EE0E000u;
+        w[10] = (r & 0x6007FBFFu) | 0x0F000400u;
+        w[11] = (r & 0x40DF73FFu) | 0x0E000800u;
+        w[12] = (r & 0x401F7BFFu) | 0x2E000000u;
+        w[13] = (r & 0x000033FFu) | 0x4E284800u;
+        w[14] = (r & 0x60DFFBFFu) | 0x0E200400u;
+        w[15] = (r & 0x607FFBFFu & ~0x0000F800u) | 0x0F000400u | (u32) "\x00\x02\x08\x0A\x14\x10"[next_random() % 6] << 11 |
+                (1u << (19 + (r >> 30) % 4));
+        w[16] = (r & 0x60C003FFu) | 0x0EA0F800u;
+        w[17] = (r & 0x40DF07FFu) | 0x0E200400u | (u32)(next_random() % 6) << 11 | (u32)(next_random() % 2) << 29;
+        w[18] = (r & 0x40DF03FFu) | 0x2E201C00u | (1u + (u32)(next_random() % 3)) << 22;
+        w[19] = (r & 0x40DF03FFu) | 0x2E605800u;
+        w[20] = (r & 0x60DF03FFu) | 0x0E200400u | fp_ops[next_random() % 5] << 11;
+        w[21] = (r & 0x604003FFu) | 0x0EA00800u | (0x0Cu + (u32)(next_random() % 3)) << 12;
+        m = (m >> 6) << 29 | ((m >> 5) & 1) << 23 | (m & 31) << 12;
+        t = (t >> 6) << 29 | ((t >> 5) & 1) << 23 | (t & 31) << 11;
+        w[22] = (r & 0x404003FFu) | 0x0E200800u | m;
+        w[23] = (r & 0x004003FFu) | 0x5E200800u | m;
+        w[24] = (r & 0x405F03FFu) | 0x0E200400u | t;
+        w[25] = (r & 0x005F03FFu) | 0x5E200400u | t;
+        w[26] = (r & 0x607F03FFu) | 0x0F200400u | f << 11;
+        w[27] = (r & 0x207F03FFu) | 0x5F200400u | f << 11;
+        w[28] = (r & 0x001F03FFu) | 0x5E000400u;
+        w[29] = (r & 0x401F03FFu) | 0x0E002C00u;
+        w[30] = (r & 0x401F73FFu) | 0x0E000000u;
+        w[31] = (r & 0x40C0001Fu) | 0x0C000000u | (u32)(next_random() % 2) << 23 |
+                (u32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16 | (u32) "\x00\x04\x08"[next_random() % 3] << 12 |
+                ((r >> 10) & 3) << 10 | ((r >> 5) & 31) << 5;
+        w[32] = (r & 0x40FFFFFFu & ~0x001F0000u) | 0x0D000000u | (u32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16;
+        w[33] = (r & 0x60DFF3FFu) | 0x0E200000u;
+        w[34] = (r & 0x60C003FFu) | 0x0E200800u | (u32)misc[next_random() % sizeof(misc)] << 12;
+        w[35] = (r & 0x60C003FFu) | 0x0E300800u | (u32)across[next_random() % sizeof(across)] << 12;
+        w[36] = (r & 0x20C003FFu) | 0x5E300800u | (u32)pairwise[next_random() % sizeof(pairwise)] << 12;
+        w[37] = (r & 0x60FF0BFFu) | 0x0F000000u | (u32)element[next_random() % sizeof(element)] << 12 |
+                (next_random() % 2 ? 0x50000000u : 0);
+        w[38] = (r & 0x6007FBFFu & ~0x0000F800u) | 0x0F000400u | (u32)shifts[next_random() % sizeof(shifts)] << 11 | immh;
+        w[39] = (r & 0x2007FBFFu & ~0x0000F800u) | 0x5F000400u |
+                (u32)scalar_shifts[next_random() % sizeof(scalar_shifts)] << 11 | (next_random() % 2 ? 1u << 22 : immh);
+        w[40] = (r & 0x60DF07FFu) | 0x0E200400u | (u32)same[next_random() % sizeof(same)] << 11;
+        w[41] = (r & 0x20DF07FFu) | 0x5E200400u | (u32)scalar_same[next_random() % sizeof(scalar_same)] << 11;
+        w[42] = (r & 0x20C003FFu) | 0x5E200800u | (u32)scalar_misc[next_random() % sizeof(scalar_misc)] << 12;
+        w[43] = (r & 0x00DF03FFu) | 0x5E200000u | (u32) "\x09\x0B\x0D"[next_random() % 3] << 12;
+        w[44] = (r & 0x401F03FFu) | (next_random() % 2 ? 0x2E209C00u : 0x0E20E000u);
+        w[45] = (r & 0x20DF03FFu) | 0x5E200400u | (0x1Cu + (u32)(next_random() % 2)) << 11;
+        w[46] = (r & 0x204003FFu) | 0x5EA00800u | (0x0Cu + (u32)(next_random() % 3)) << 12;
+        w[47] = (r & 0x604003FFu) | 0x0E216800u;
+        w[48] = (r & 0x204003FFu) | 0x5E216800u | (next_random() % 4 ? 0x20400000u : 0);
+        w[49] = (r & 0x001F03FFu) | 0x5E000000u | (u32)(next_random() % 8) << 12;
+        w[50] = (r & 0x000003FFu) | 0x5E280800u | (u32)(next_random() % 4) << 12;
+        got += DIRECTED;
+    }
+    return got;
+}
+
+/* scalar_words(): the integer words with immediates and shifts, which the rows' samples, the ends of their free bits,
+   never have in between */
+static size_t scalar_words(size_t rounds, u32* out) {
+    size_t i;
+    for (i = 0; i < rounds; ++i) {
+        u32* w = out + i * SCALAR;
+        const u32 r = (u32)next_random(), k = (u32)next_random(), imm16 = (u32)next_random() & 0xFFFF;
+        const u32 s = r & 0x80000000u, wide = s ? 63 : 31, rd = r & 31, rn = (r >> 5) & 31, rm = (r >> 10) & 31,
+                  ra = (r >> 15) & 31, immr = k & wide, imms = (k >> 6) & wide, n = s ? 1u << 22 : 0;
+        const u32 regs = rm << 16 | rn << 5 | rd, two = (k >> 12) & 3, op2 = (k >> 14) & 3, bit = (k >> 16) & 1,
+                  amount = ((k >> 17) & wide) << 10, cond = ((k >> 23) & 15) << 12;
+        const u32 below = immr ? (k >> 6) % immr : 0, opc = (k >> 28) % 3 << 29;
+        w[0] = 0x13000000u | s | opc | n | immr << 16 | imms << 10 | rn << 5 | rd;          /* SBFM, BFM, UBFM */
+        w[1] = 0x53000000u | s | n | immr << 16 | ((immr - 1) & wide) << 10 | rn << 5 | rd; /* LSL */
+        w[2] = 0x13000000u | s | (k >> 28 & 1) << 30 | n | immr << 16 | below << 10 | rn << 5 | rd; /* SBFIZ, UBFIZ */
+        w[3] = 0x13800000u | s | n | imms << 10 | regs;                                             /* EXTR */
+        w[4] = 0x12000000u | s | two << 29 | n | immr << 16 | imms << 10 | rn << 5 | rd;       /* AND (immediate)... */
+        w[5] = 0x11000000u | s | two << 29 | bit << 22 | (k & 0xFFF) << 10 | rn << 5 | rd;     /* ADD (immediate)... */
+        w[6] = 0x0B000000u | s | two << 29 | op2 << 22 | amount | regs;                        /* ADD (shifted)... */
+        w[7] = 0x0B200000u | s | two << 29 | (k >> 17 & 7) << 13 | (k >> 20) % 5 << 10 | regs; /* ADD (extended)... */
+        w[8] = 0x0A000000u | s | two << 29 | op2 << 22 | bit << 21 | amount | regs;            /* AND (shifted)... */
+        w[9] = 0x12800000u | s | two << 29 | (k >> 14 & 3) << 21 | imm16 << 5 | rd;            /* MOVN, MOVZ, MOVK */
+        w[10] =
+            0x3A400000u | s | bit << 30 | cond | (k >> 27 & 1) << 11 | rm << 16 | rn << 5 | (k & 15); /* CCMN, CCMP */
+        w[11] = 0x1A800000u | s | bit << 30 | cond | (k >> 27 & 1) << 10 | regs;                      /* CSEL... */
+        w[12] = 0x1B000000u | s | (k >> 27 & 1) << 15 | ra << 10 | regs;                              /* MADD, MSUB */
+        w[13] = 0x1AC02000u | s | op2 << 10 | regs;                   /* LSLV, LSRV, ASRV, RORV */
+        w[14] = 0x5AC00000u | s | (k >> 14) % 6 << 10 | rn << 5 | rd; /* RBIT to CLS */
+        w[15] = 0x1AC00800u | s | bit << 10 | regs;                   /* UDIV, SDIV */
+    }
+    return rounds * SCALAR;
+}
+
+/* the words the other instruction tests hand-check against expected values (native_module's program, native_codegen's
+   semantic cases and the FP witnesses' vector and reserved encodings), so that QEMU checks them from random states
+   too */
+static const u32 kept[] = {
+    /* native_module.c: its program[] and tail[] */
+    0xD2800000, 0xD2800181, 0x1E6F1001, 0x6F00E402, 0x94000016, 0x9E620003, 0x1E632800, 0x1E610800, 0x4EA28442,
+    0x4E040C24, 0x4EA48442, 0xF1000421, 0x54FFFF01, 0x10000062, 0xD61F0040, 0xD4200020, 0xF81F0FE0, 0xA8C113E3,
+    0xB4000043, 0x910FA000, 0x885FFFE7, 0x8808FFE0, 0x37180040, 0xD2401C00, 0xAA1F03FE, 0x14000047, 0x8B010000,
+    0xD37FF804, 0xCA440C00, 0x9B011005, 0x9AC108A6, 0x9A868000, 0xD65F03C0, 0xAA0003E6, 0xD40000E1, 0x9E780009,
+    /* codegen_test.c's semantic cases */
+    0x31000420, 0xBA1F03E0, 0xDA1F03E0, 0xD3485C20, 0x93401C20, 0x93C12020, 0x9E220020, 0x9E660020, 0x1E620C20,
+    0x4EA28420, 0x4E22CC20, 0x4E040C20, 0x4E183C20, 0x5FA21820, 0xF94007E0, 0xF900043F, 0x17FFFFFF, 0x1200FC00,
+    0x1E221820, 0x1F020C20, 0x1E22C020, 0x1E200020, 0x4E22D420, 0x1E63C020, 0x9E580020, 0x1E61C020, 0x1E228820,
+    0x1E23C020, 0x0E216820, 0x1F420C20, 0x1F620C20, 0x4E62CC20, 0x7EE1D820, 0x4EA1D820, 0x4EE1D820, 0x5EE1D820,
+    0x9E630020, 0x6E61D820, 0x4E218800, 0x6E20D400, 0x6E21D820,
+    /* codegen_test.c's ounce_cpu_test: UDOT, CFINV, RMIF x3 #4 #0b1010, SETF8 w3, SETF16 w3, ESB (the rows' own
+       samples name x0 or xzr alone, and RMIF's rotate by 0 or 63) */
+    0x6E849427, 0xD500401F, 0xBA02046A, 0x3A00086D, 0x3A00486D, 0xD503221F,
+    /* the FP witnesses' reserved encodings */
+    0x5E218820, 0x0E618820, 0x5E217820, 0x5EA1C820, 0x7EA1C820, 0x7EA1F820,
+    /* native_estimates.c's halves: FRECPE, FRSQRTE and FRECPX, V and scalar (an FZ16 state flushes what they
+       underflow) */
+    0x4EF9D820, 0x0EF9D820, 0x5EF9D820, 0x6EF9D820, 0x2EF9D820, 0x7EF9D820, 0x5EF9F820};
+#define KEPT (sizeof(kept) / sizeof(kept[0]))
+
+/* ---- the cases ---- */
+
+/* a word, or a store-exclusive after the load-exclusive that arms its monitor */
+typedef struct {
+    u32 words[2], nwords;
+    u32 step;  /* its steps' first index in the LLVM table */
+    int skip;  /* no emitter yet: the Switch target leaves a word UNDEF or the backend has no emitter for it */
+    char op[40], switch_op[40]; /* the max and Switch targets' names for the (last) word, "" for UNDEF */
+} Item;
+
+/* FCVTN2 (FEAT_FP8's, to Vd's upper half) of its own Vn: QEMU 11.1.2 reads Vn after it has written Vd, so the word is
+   asked of another Vn, as recompiler_backends.c's own_vn asks it */
+static u32 qemu_word(u32 word, const char* op) {
+    const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    if (strcmp(op, "FCVTN_bs") || !((word >> 30) & 1) || rd != rn) return word;
+    return (word & ~(31u << 5)) | ((rd ^ 1) == rm ? rd ^ 2 : rd ^ 1) << 5;
+}
+
+/* a store-exclusive (STXR, STLXR, STXP, STLXP): size 001000 o2=0 L=0 o1 Rs o0 Rt2 Rn Rt */
+static int store_exclusive(u32 w) { return (w & 0x3FC00000u) == 0x08000000u; }
+
+/* the load-exclusive of the same size and address into registers the store doesn't name */
+static u32 load_exclusive(u32 st) {
+    const u32 rt = st & 31, rn = (st >> 5) & 31, rt2 = (st >> 10) & 31, rs = (st >> 16) & 31, pair = (st >> 21) & 1;
+    u32 regs[2], k = 0, r;
+    for (r = 0; r < 31 && k < 2; ++r)
+        if (r != rt && r != rn && r != rt2 && r != rs) regs[k++] = r;
+    return (st & 0xC0200000u) | 0x08400000u | 31u << 16 | (pair ? regs[1] : 31u) << 10 | rn << 5 | regs[0];
+}
+
+static u64 item_pc(const Item* it) { return it->nwords > 1 ? PAIR_PC : PC; }
+
+/* The features a word runs with on this side, 0 for the Switch's. A word the Switch lacks that this side has code for
+   runs with max's features, against QEMU's -cpu max: PAuth stays out, as QEMU signs with keys where the code runs with
+   authentication off. *skip: no code for it, the Switch's decode says UNDEF */
+static SnxU64 word_features(u32 word, int* skip) {
+    SnxA64Insn max, sw;
+    const int beyond = snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
+                       (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(max.feature & SNX_A64_FEAT_PAUTH);
+    /* every feature that the back end has code for (mach_codegen.inc's past_guests): a word it has none for is not made,
+       and the loads say which */
+    if (beyond) return SNX_A64_TARGET_MAX;
+    if (snx_a64_decode_word(word, 0, &sw) == SNX_A64_OP_UNDEF) *skip = 1;
+    return 0;
+}
+
+/* a word's step, 1 when the back end's emitter has code for it (the native ones are known once they are loaded) */
+static int add_step(Steps* built, u32 word, u64 pc, SnxU64 features) {
+    steps_add(built, word, pc, features);
+    return 1;
+}
+
+/* an op that reads or writes guest memory, by its name, as the ops of the loads and stores are named */
+static int memory_op(SnxA64Op op) {
+    static const char* const starts[] = {"LD", "ST", "CAS", "SWP"};
+    const char* name = snx_a64_op_text(op);
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i)
+        if (!strncmp(name, starts[i], strlen(starts[i]))) return 1;
+    return 0;
+}
+
+/* a word whose registers should point into the window: a load or store, a system instruction (DC ZVA), or one the
+   Switch leaves UNDEF, which QEMU may still run */
+static int memory_pattern(u32 word) {
+    SnxA64Insn insn;
+    const SnxA64Op op = snx_a64_decode_word(word, 0, &insn);
+    return op == SNX_A64_OP_UNDEF || op == SNX_A64_OP_SYS || memory_op(op);
+}
+
+/* ---- the runtime's callbacks, recorded for the outcome ---- */
+static void cb_svc(CPU* c, u32 imm) {
+    (void)c;
+    g_test.events->svc = 1;
+    g_test.events->imm = imm;
+}
+static void cb_undef(CPU* c, u64 pc, u32 w) {
+    (void)c, (void)pc, (void)w;
+    g_test.events->undef = 1;
+}
+static void cb_note(u64 pc) { (void)pc; }
+static u64 cb_ticks(void) { return 123456789; }
+static void cb_brk(CPU* c, u64 pc, u32 imm) {
+    (void)c, (void)pc;
+    g_test.events->brk = 1;
+    g_test.events->imm = imm;
+}
+static void cb_fpcr(CPU* c) { (void)c; }
+static void cb_sev(void) {}
+static void cb_wfe(CPU* c) { (void)c; }
+
+/* ---- the comparison ---- */
+typedef struct {
+    char op[40], cause[48];
+    unsigned long count, expected;
+    int listed;
+    char examples[EXAMPLES][1536];
+    unsigned nexamples;
+} Group;
+
+typedef struct {
+    Group* groups;
+    size_t ngroups, cap;
+} Groups;
+
+static Group* group(Groups* g, const char* op, const char* cause) {
+    size_t i;
+    for (i = 0; i < g->ngroups; ++i)
+        if (!strcmp(g->groups[i].op, op) && !strcmp(g->groups[i].cause, cause)) return &g->groups[i];
+    if (g->ngroups == g->cap) {
+        g->cap = g->cap ? g->cap * 2 : 64;
+        g->groups = (Group*)snx_realloc(g->groups, g->cap * sizeof(*g->groups));
+    }
+    memset(&g->groups[g->ngroups], 0, sizeof(Group));
+    snprintf(g->groups[g->ngroups].op, sizeof(g->groups[0].op), "%s", op);
+    snprintf(g->groups[g->ngroups].cause, sizeof(g->groups[0].cause), "%s", cause);
+    return &g->groups[g->ngroups++];
+}
+
+static void state_of(const CPU* c, SnxQrefState* s) {
+    unsigned i;
+    memset(s, 0, sizeof(*s));
+    for (i = 0; i < 31; ++i) s->x[i] = c->x[i];
+    s->sp = c->x[31];
+    s->nzcv = c->n << 31 | c->z << 30 | c->cf << 29 | c->vf << 28;
+    s->fpcr = c->fpcr;
+    s->fpsr = c->fpsr;
+    for (i = 0; i < 32; ++i) {
+        s->v[i][0] = snx_ld_le64(c->v[i].b);
+        s->v[i][1] = snx_ld_le64(c->v[i].b + 8);
+    }
+}
+
+/* how a case ended, both sides alike: NEXT and BRANCH are one, by the pc */
+static const char* outcome_kind(u32 outcome) {
+    switch (outcome) {
+        case SNX_QREF_NEXT:
+        case SNX_QREF_BRANCH: return "runs";
+        default: return snx_qref_outcome_name(outcome);
+    }
+}
+
+typedef struct {
+    u32 outcome;
+    u64 pc, imm;
+    SnxQrefState state;
+} End;
+
+/* the register an MRS of a system register QEMU gives otherwise reads into, which the comparison leaves out (-1 for
+   none), and the value the Switch gives for it when constant */
+static int environment_register(u32 word, u64* value, int* fixed) {
+    const char* name;
+    int kind = snx_qref_switch_sysreg(word, value, &name);
+    *fixed = kind == SNX_QREF_SYSREG_FIXED;
+    if (kind != SNX_QREF_SYSREG_NONE) return (int)(word & 31);
+    if ((word & ~0x1Fu) == 0xD53BD040u) return (int)(word & 31); /* MRS TPIDR_EL0: other cases' MSR leave it set */
+    return -1;
+}
+
+/* the parts of the end states that differ, as the cause ("" when none), and the example's text */
+static void compare(const Item* it, const SnxQrefState* start, const End* l, const End* q, const u8* initial,
+                    const u8* ours, const SnxQrefBatch* b, const SnxQrefResult* r, char* cause, size_t cause_size,
+                    char* text, size_t text_size) {
+    size_t used = 0, cu = 0;
+    unsigned i;
+    int x = 0, v = 0;
+    u64 switch_value = 0;
+    int fixed, env = environment_register(it->words[it->nwords - 1], &switch_value, &fixed);
+    u32 rn = (it->words[it->nwords - 1] >> 5) & 31, rm = (it->words[it->nwords - 1] >> 16) & 31,
+        ra = (it->words[it->nwords - 1] >> 10) & 31;
+#define PART(name) cu += (size_t)snprintf(cause + cu, cu < cause_size ? cause_size - cu : 0, "%s%s", cu ? "+" : "", name)
+#define TEXT(...)                                                                                                     \
+    do {                                                                                                              \
+        if (used < text_size) used += (size_t)snprintf(text + used, text_size - used, __VA_ARGS__);                   \
+    } while (0)
+    cause[0] = 0;
+    text[0] = 0;
+    TEXT("  word %08x", it->words[it->nwords - 1]);
+    if (it->nwords > 1) TEXT(" after %08x", it->words[0]);
+    TEXT(" (the Switch target decodes it as %s)\n", it->switch_op[0] ? it->switch_op : "UNDEF");
+    TEXT("  start x%u=%016llx x%u=%016llx x%u=%016llx sp=%016llx nzcv=%x fpcr=%08x fpsr=%08x\n", rn,
+         (unsigned long long)(rn < 31 ? start->x[rn] : start->sp), rm,
+         (unsigned long long)(rm < 31 ? start->x[rm] : start->sp), ra,
+         (unsigned long long)(ra < 31 ? start->x[ra] : start->sp), (unsigned long long)start->sp, start->nzcv >> 28,
+         start->fpcr, start->fpsr);
+    TEXT("  start v%u=%016llx:%016llx v%u=%016llx:%016llx v%u=%016llx:%016llx\n", rn,
+         (unsigned long long)start->v[rn][1], (unsigned long long)start->v[rn][0], rm,
+         (unsigned long long)start->v[rm][1], (unsigned long long)start->v[rm][0], ra,
+         (unsigned long long)start->v[ra][1], (unsigned long long)start->v[ra][0]);
+    if (strcmp(outcome_kind(l->outcome), outcome_kind(q->outcome))) {
+        snprintf(cause, cause_size, SIDE "-%s/qemu-%s", outcome_kind(l->outcome), outcome_kind(q->outcome));
+        TEXT("  " SIDE " %s pc %llx, qemu %s pc %llx (signal %u, fault %llx)\n", snx_qref_outcome_name(l->outcome),
+             (unsigned long long)l->pc, snx_qref_outcome_name(q->outcome), (unsigned long long)q->pc, r->signo,
+             (unsigned long long)r->fault);
+        return;
+    }
+    /* the pc after an UNDEF is the runtime's to choose. Linux sets TCR_EL1.TBI0, so QEMU's user mode drops the top
+       byte of a branch's target: the kernel's setting, not the instruction's */
+    if (l->outcome != SNX_QREF_UNDEF && l->pc != q->pc && (l->pc & 0x00FFFFFFFFFFFFFFull) != q->pc) {
+        PART("pc");
+        TEXT("  pc " SIDE " %llx (%s) qemu %llx (%s, signal %u)\n", (unsigned long long)l->pc,
+             snx_qref_outcome_name(l->outcome), (unsigned long long)q->pc, snx_qref_outcome_name(q->outcome), r->signo);
+    }
+    if ((l->outcome == SNX_QREF_BRK || l->outcome == SNX_QREF_SVC) && l->imm != q->imm) {
+        PART("imm");
+        TEXT("  imm " SIDE " %llx qemu %llx\n", (unsigned long long)l->imm, (unsigned long long)q->imm);
+    }
+    for (i = 0; i < 31; ++i) {
+        u64 want = q->state.x[i];
+        if ((int)i == env) {
+            if (!fixed) continue;
+            want = switch_value;
+        }
+        if (l->state.x[i] != want) {
+            if (!x++) PART("x");
+            TEXT("  x%u: start %016llx " SIDE " %016llx qemu %016llx\n", i, (unsigned long long)start->x[i],
+                 (unsigned long long)l->state.x[i], (unsigned long long)want);
+        }
+    }
+    if (l->state.sp != q->state.sp) {
+        PART("sp");
+        TEXT("  sp: start %016llx " SIDE " %016llx qemu %016llx\n", (unsigned long long)start->sp,
+             (unsigned long long)l->state.sp, (unsigned long long)q->state.sp);
+    }
+    if ((l->state.nzcv ^ q->state.nzcv) & 0xF0000000u) {
+        PART("nzcv");
+        TEXT("  nzcv: start %x " SIDE " %x qemu %x\n", start->nzcv >> 28, l->state.nzcv >> 28, q->state.nzcv >> 28);
+    }
+    for (i = 0; i < 32; ++i)
+        if (l->state.v[i][0] != q->state.v[i][0] || l->state.v[i][1] != q->state.v[i][1]) {
+            if (!v++) PART("v");
+            TEXT("  v%u: start %016llx:%016llx " SIDE " %016llx:%016llx qemu %016llx:%016llx\n", i,
+                 (unsigned long long)start->v[i][1], (unsigned long long)start->v[i][0],
+                 (unsigned long long)l->state.v[i][1], (unsigned long long)l->state.v[i][0],
+                 (unsigned long long)q->state.v[i][1], (unsigned long long)q->state.v[i][0]);
+        }
+    if (l->state.fpsr != q->state.fpsr) {
+        PART("fpsr");
+        TEXT("  fpsr: start %08x " SIDE " %08x qemu %08x\n", start->fpsr, l->state.fpsr, q->state.fpsr);
+    }
+    if (l->state.fpcr != q->state.fpcr) {
+        PART("fpcr");
+        TEXT("  fpcr: start %08x " SIDE " %08x qemu %08x\n", start->fpcr, l->state.fpcr, q->state.fpcr);
+    }
+    /* memory: every byte QEMU reports must be this side's, and every byte this side changed must be in a run
+       QEMU reports */
+    {
+        u64 first = ~0ull;
+        unsigned c;
+        int differs = r->truncated;
+        for (c = 0; c < r->changes && !differs; ++c) {
+            const SnxQrefChange* ch = &b->changes[r->first_change + c];
+            u32 k;
+            if (ch->address < WINDOW || ch->address + ch->size > WINDOW + WINDOW_SIZE) {
+                differs = 1;
+                first = ch->address;
+                break;
+            }
+            for (k = 0; k < ch->size; ++k)
+                if (ours[ch->address - WINDOW + k] != b->bytes[ch->offset + k]) {
+                    differs = 1;
+                    first = ch->address + k;
+                    break;
+                }
+        }
+        for (i = 0; i < WINDOW_SIZE && !differs; i += SNX_QREF_PAGE) {
+            u32 k;
+            if (!memcmp(ours + i, initial + i, SNX_QREF_PAGE)) continue;
+            for (k = 0; k < SNX_QREF_PAGE && !differs; ++k) {
+                u64 a = WINDOW + i + k;
+                if (ours[i + k] == initial[i + k]) continue;
+                for (c = 0; c < r->changes; ++c) {
+                    const SnxQrefChange* ch = &b->changes[r->first_change + c];
+                    if (a >= ch->address && a < ch->address + ch->size) break;
+                }
+                if (c == r->changes) {
+                    differs = 1;
+                    first = a;
+                }
+            }
+        }
+        if (differs) {
+            PART("mem");
+            if (first == ~0ull)
+                TEXT("  memory: QEMU's changes truncated\n");
+            else if (first >= WINDOW && first < WINDOW + WINDOW_SIZE)
+                TEXT("  memory: first difference at %llx, start %02x " SIDE " %02x (%u QEMU runs)\n",
+                     (unsigned long long)first, initial[first - WINDOW], ours[first - WINDOW], r->changes);
+            else
+                TEXT("  memory: QEMU changed %llx, outside the window\n", (unsigned long long)first);
+        }
+    }
+#undef PART
+#undef TEXT
+}
+
+/* the QEMU case of an item from a state: a word at PC in the seeded window, one step, or a pair at PAIR_PC */
+static int add_case(SnxQrefBatch* b, const Item* it, const SnxQrefState* start) {
+    SnxQrefCase qc;
+    snx_qref_case_init(&qc);
+    qc.window = WINDOW;
+    qc.window_size = WINDOW_SIZE;
+    qc.seed_kind = SNX_QREF_SEED_RANDOM;
+    qc.seed = SEED;
+    qc.code = item_pc(it);
+    qc.code_size = CODE_SIZE;
+    qc.pc = item_pc(it);
+    /* a pair runs free (each step enters through a signal, whose return clears the monitor) with the window
+       writable, as a fault between the two would clear it too */
+    qc.steps = it->nwords > 1 ? 0 : 1;
+    qc.flags = it->nwords > 1 ? SNX_QREF_FULL_DIFF : 0;
+    qc.state = *start;
+    return snx_qref_add(b, &qc, it->words, it->nwords, NULL, 0);
+}
+
+/* ---- the expected-failure list ---- */
+typedef struct {
+    char op[40], cause[48];
+    unsigned long counts[2]; /* the default run's, the sweep's */
+    unsigned long seen;
+} Expected;
+
+static size_t read_expected(const char* path, Expected** out) {
+    size_t n = 0, cap = 0, size = 0;
+    char* text = (char*)snx_read_file(path, &size);
+    char* line;
+    *out = NULL;
+    if (!text) return 0;
+    text = (char*)snx_realloc(text, size + 1);
+    text[size] = 0;
+    for (line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
+        Expected e = {{0}, {0}, {0}, 0};
+        if (line[0] == '#' || sscanf(line, "%39s %47s %lu %lu", e.op, e.cause, &e.counts[0], &e.counts[1]) != 4)
+            continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 64;
+            *out = (Expected*)snx_realloc(*out, cap * sizeof(**out));
+        }
+        (*out)[n++] = e;
+    }
+    free(text);
+    return n;
+}
+
+static int order_expected(const void* a, const void* b) {
+    const Expected *x = a, *y = b;
+    int c = strcmp(x->op, y->op);
+    return c ? c : strcmp(x->cause, y->cause);
+}
+
+static int write_expected(const char* path, Expected* e, size_t n) {
+    FILE* f = fopen(path, "w");
+    size_t i;
+    if (!f) return -1;
+    qsort(e, n, sizeof(*e), order_expected);
+    fputs("# " SIDE "_qemu_differential's expected mismatches"
+          ":\n# the max target's name for the word, the cause (the state parts that differ, or " SIDE "-X/qemu-Y for\n"
+          "# different outcomes, or qemu-alignment-fault for an alignment fault the " SIDE_NAME
+          " side doesn't run), and the\n"
+          "# words differing in the default run and in --sweep. A group missing here fails the test, and so does a\n"
+          "# listed one that no longer differs in a run whose count isn't 0.\n"
+          "# --update rewrites the counts of the run it is given with."
+          "\n",
+          f);
+    for (i = 0; i < n; ++i)
+        if (e[i].counts[0] || e[i].counts[1])
+            fprintf(f, "%-20s %-28s %6lu %6lu\n", e[i].op, e[i].cause, e[i].counts[0], e[i].counts[1]);
+    return fclose(f);
+}
+
+/* ---- the recorded QEMU reference ----
+   A run's QEMU side, for the hosts where qemu-aarch64 can't run beside the host binary: the items, each case's start
+   state and QEMU's result (its end state, how it ended and the memory it changed). Little-endian u64s on any host.
+   Section one is every item, section two each item's cases, in the order a run adds them; the record defines the run,
+   so --reference takes the sweep, the samples, the rounds, the states and the words from it. */
+#define REF_MAGIC   0x31464944514E5853ull /* "SNXQDIF1" */
+#define REF_VERSION 1
+/* the header, 16 u64s: magic, version, the sweep flag, the samples, the rounds, the states, the words, the items, the
+   seed, WINDOW, WINDOW_SIZE, PC, SEED, SNX_QREF_PAD and two reserved. Then every item (nwords, skip, its two words,
+   op and switch op, 40 bytes each), then each item's cases: its start states, then QEMU's results. */
+
+typedef struct {
+    FILE* f;
+    int failed;
+} RefOut;
+
+typedef struct {
+    const u8* p;
+    size_t size, at;
+    int failed;
+} RefIn;
+
+typedef struct {
+    int sweep;
+    size_t samples, rounds, states, nwords, nitems;
+} RefHeader;
+
+typedef struct {
+    RefIn in;
+    size_t changes, bytes; /* the batch's so far, as ref_get_result counts or reads them */
+} Ref;
+
+static void ref_put64(RefOut* w, u64 v) {
+    unsigned char b[8];
+    unsigned i;
+    for (i = 0; i < 8; ++i) b[i] = (unsigned char)(v >> (8 * i));
+    if (fwrite(b, 1, 8, w->f) != 8) w->failed = 1;
+}
+
+static u64 ref_get64(RefIn* r) {
+    u64 v = 0;
+    unsigned i;
+    if (r->failed || r->size - r->at < 8) {
+        r->failed = 1;
+        return 0;
+    }
+    for (i = 0; i < 8; ++i) v |= (u64)r->p[r->at + i] << (8 * i);
+    r->at += 8;
+    return v;
+}
+
+/* a fixed-size string in whole u64s, the bytes in order */
+static void ref_put_text(RefOut* w, const char* s, size_t n) {
+    size_t i, k;
+    for (i = 0; i < (n + 7) / 8; ++i) {
+        u64 v = 0;
+        for (k = 0; k < 8 && i * 8 + k < n; ++k) v |= (u64)(unsigned char)s[i * 8 + k] << (8 * k);
+        ref_put64(w, v);
+    }
+}
+
+static void ref_get_text(RefIn* r, char* s, size_t n) {
+    size_t i, k;
+    for (i = 0; i < (n + 7) / 8; ++i) {
+        u64 v = ref_get64(r);
+        for (k = 0; k < 8 && i * 8 + k < n; ++k) s[i * 8 + k] = (char)(v >> (8 * k));
+    }
+    if (n) s[n - 1] = 0;
+}
+
+static void ref_put_state(RefOut* w, const SnxQrefState* s) {
+    unsigned i;
+    for (i = 0; i < 31; ++i) ref_put64(w, s->x[i]);
+    ref_put64(w, s->sp);
+    ref_put64(w, s->nzcv);
+    ref_put64(w, s->fpcr);
+    ref_put64(w, s->fpsr);
+    for (i = 0; i < 32; ++i) {
+        ref_put64(w, s->v[i][0]);
+        ref_put64(w, s->v[i][1]);
+    }
+}
+
+static void ref_get_state(RefIn* r, SnxQrefState* s) {
+    unsigned i;
+    for (i = 0; i < 31; ++i) s->x[i] = ref_get64(r);
+    s->sp = ref_get64(r);
+    s->nzcv = (u32)ref_get64(r);
+    s->fpcr = (u32)ref_get64(r);
+    s->fpsr = (u32)ref_get64(r);
+    for (i = 0; i < 32; ++i) {
+        s->v[i][0] = ref_get64(r);
+        s->v[i][1] = ref_get64(r);
+    }
+}
+
+static void ref_put_result(RefOut* w, const SnxQrefResult* r, const SnxQrefBatch* b) {
+    unsigned c, k;
+    ref_put64(w, r->outcome);
+    ref_put64(w, r->signo);
+    ref_put64(w, r->sicode);
+    ref_put64(w, r->pc);
+    ref_put64(w, r->fault);
+    ref_put64(w, r->imm);
+    ref_put64(w, r->steps);
+    ref_put64(w, r->svcs);
+    ref_put64(w, r->pstate);
+    ref_put_state(w, &r->state);
+    ref_put64(w, (u64)r->truncated);
+    ref_put64(w, r->changes);
+    for (c = 0; c < r->changes; ++c) {
+        const SnxQrefChange* ch = &b->changes[r->first_change + c];
+        ref_put64(w, ch->address);
+        ref_put64(w, ch->size);
+        for (k = 0; k < ch->size; k += 8) {
+            u64 v = 0;
+            unsigned j;
+            for (j = 0; j < 8 && k + j < ch->size; ++j) v |= (u64)b->bytes[ch->offset + k + j] << (8 * j);
+            ref_put64(w, v);
+        }
+    }
+}
+
+/* reads one case's result: with b NULL it counts the case's changes and bytes into r, else it reads them into b's
+   block (ref_get_batch) after the ones already there; -1 when the file is malformed */
+static int ref_get_result(Ref* r, SnxQrefBatch* b) {
+    SnxQrefResult counted, *out = b ? &b->results[b->cases] : &counted;
+    u64 truncated, nchanges, i;
+    memset(out, 0, sizeof(*out));
+    out->outcome = (u32)ref_get64(&r->in);
+    out->signo = (u32)ref_get64(&r->in);
+    out->sicode = (u32)ref_get64(&r->in);
+    out->pc = ref_get64(&r->in);
+    out->fault = ref_get64(&r->in);
+    out->imm = ref_get64(&r->in);
+    out->steps = ref_get64(&r->in);
+    out->svcs = ref_get64(&r->in);
+    out->pstate = ref_get64(&r->in);
+    ref_get_state(&r->in, &out->state);
+    truncated = ref_get64(&r->in);
+    nchanges = ref_get64(&r->in);
+    if (r->in.failed || nchanges > SNX_QREF_MAX_CHANGED) return -1;
+    out->truncated = truncated != 0;
+    out->first_change = (u32)r->changes;
+    for (i = 0; i < nchanges; ++i) {
+        u64 address = ref_get64(&r->in), size = ref_get64(&r->in), k;
+        if (r->in.failed || size > SNX_QREF_MAX_CHANGED || r->bytes + size > 0xFFFFFFFFu - 0x10000) return -1;
+        if (b) {
+            SnxQrefChange* ch = &b->changes[r->changes];
+            ch->address = address;
+            ch->offset = (u32)r->bytes;
+            ch->size = (u32)size;
+        }
+        for (k = 0; k < size; k += 8) {
+            u64 v = ref_get64(&r->in);
+            unsigned j;
+            if (b)
+                for (j = 0; j < 8 && k + j < size; ++j) b->bytes[r->bytes + k + j] = (u8)(v >> (8 * j));
+        }
+        r->bytes += size;
+        ++r->changes;
+    }
+    out->changes = (u32)nchanges;
+    if (b) ++b->cases;
+    return r->in.failed ? -1 : 0;
+}
+
+/* a batch of items from the record: their start states into starts, index[item * states + state] the state's case
+   or -1, and QEMU's results into b, whose results, changes and bytes are one block as snx_qref_run makes it
+   (qemu_ref.h): a first pass counts them, a second reads them in. -1 when the record ends inside them */
+static int ref_get_batch(Ref* r, SnxQrefBatch* b, size_t items, size_t states, SnxQrefState* starts, int* index) {
+    const size_t at = r->in.at;
+    size_t cases = 0, changes = 0, bytes = 0, item, s;
+    int fill;
+    for (fill = 0; fill < 2; ++fill) {
+        r->in.at = at;
+        r->changes = r->bytes = 0;
+        if (fill) {
+            const size_t results_size = cases * sizeof(SnxQrefResult);
+            b->results = (SnxQrefResult*)snx_alloc(results_size + changes * sizeof(SnxQrefChange) + bytes);
+            b->changes = (SnxQrefChange*)((u8*)b->results + results_size);
+            b->bytes = (u8*)(b->changes + changes);
+            b->cases = 0;
+        }
+        for (item = 0; item < items; ++item) {
+            const size_t n = (size_t)ref_get64(&r->in);
+            if (r->in.failed || n > states) return -1;
+            for (s = 0; s < states; ++s) {
+                if (fill) index[item * states + s] = s < n ? (int)(b->cases + s) : -1;
+                if (s < n) ref_get_state(&r->in, &starts[item * states + s]);
+            }
+            for (s = 0; s < n; ++s)
+                if (ref_get_result(r, fill ? b : NULL)) return -1;
+            if (!fill) cases += n;
+        }
+        changes = r->changes;
+        bytes = r->bytes;
+    }
+    return 0;
+}
+
+static void ref_put_item(RefOut* w, const Item* it) {
+    ref_put64(w, it->nwords);
+    ref_put64(w, it->skip);
+    ref_put64(w, it->words[0]);
+    ref_put64(w, it->words[1]);
+    ref_put_text(w, it->op, sizeof(it->op));
+    ref_put_text(w, it->switch_op, sizeof(it->switch_op));
+}
+
+static void ref_get_item(RefIn* r, Item* it) {
+    memset(it, 0, sizeof(*it));
+    it->nwords = (u32)ref_get64(r);
+    it->skip = (int)ref_get64(r);
+    it->words[0] = (u32)ref_get64(r);
+    it->words[1] = (u32)ref_get64(r);
+    ref_get_text(r, it->op, sizeof(it->op));
+    ref_get_text(r, it->switch_op, sizeof(it->switch_op));
+}
+
+/* section two: each item's start states and QEMU's results, in item order */
+static void ref_put_cases(RefOut* w, size_t nitems, const SnxQrefState* starts, const int* index, size_t states,
+                          const SnxQrefBatch* b) {
+    size_t i, s;
+    for (i = 0; i < nitems; ++i) {
+        size_t n = 0;
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ++n;
+        ref_put64(w, n);
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ref_put_state(w, &starts[i * states + s]);
+        for (s = 0; s < states; ++s)
+            if (index[i * states + s] >= 0) ref_put_result(w, &b->results[index[i * states + s]], b);
+    }
+}
+
+/* ---- the run ---- */
+typedef struct {
+    const char *qemu, *runner, *dir;
+    int quiet;
+} Qemu;
+
+/* the start state as the step functions see it */
+static void cpu_from_state(CPU* c, const SnxQrefState* s) {
+    unsigned i;
+    memset(c, 0, sizeof(*c));
+    for (i = 0; i < 31; ++i) c->x[i] = s->x[i];
+    c->x[31] = s->sp;
+    c->n = s->nzcv >> 31 & 1;
+    c->z = s->nzcv >> 30 & 1;
+    c->cf = s->nzcv >> 29 & 1;
+    c->vf = s->nzcv >> 28 & 1;
+    c->fpcr = s->fpcr;
+    c->fpsr = s->fpsr;
+    for (i = 0; i < 32; ++i) v_from_numbers(&c->v[i], s->v[i][0], s->v[i][1]);
+}
+
+int main(int argc, char** argv) {
+    Qemu q = {0};
+    const char *expected_path, *reference_path = NULL, *record_path = NULL;
+    size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
+                                                    no_emitter = 0, nexpected;
+    int sweep = 0, update = 0, jit = 0, portable = STEPS_HOST, a, failed = 0, reference = 0, required = 0,
+        no_avx512 = 0;
+    static const char* const forms[] = {"host", "portable", "generic"}; /* the code's, by STEPS_ value */
+    u32* words = NULL;
+    Item* items;
+    Groups groups = {0}, missing = {0};
+    Expected* expected;
+    char error[1024], *path;
+    Steps built;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
+    u8 *initial, *work, *reference_file = NULL;
+    SnxQrefBatch batch = {0};
+    RefHeader header = {0};
+    Ref ref = {0};
+    RefOut record = {0};
+    u64 initial_seed;
+    double started = snx_seconds();
+    FILE* f;
+    if (argc == 3 && !strcmp(argv[1], "--skip")) {
+        printf(SIDE "_qemu_differential skipped: %s\n", argv[2]);
+        return 77;
+    }
+    STEPS_REQUIRE();
+    if (argc >= 5 && (!strcmp(argv[3], "--reference") || !strcmp(argv[3], "--reference-if-there"))) {
+        reference = 1;
+        required = !strcmp(argv[3], "--reference");
+        q.dir = argv[1];
+        expected_path = argv[2];
+        reference_path = argv[4];
+        a = 5;
+    } else if (argc >= 5) {
+        q.qemu = argv[1];
+        q.runner = argv[2];
+        q.dir = argv[3];
+        expected_path = argv[4];
+        a = 5;
+    } else {
+#define FORMS "[--portable]"
+        fputs("usage: " PROGRAM " QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
+              "[--quiet] [--update] [--jit] " FORMS " [--record FILE]\n"
+              "       " PROGRAM " DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] " FORMS "\n"
+              "       " PROGRAM " DIR EXPECTED --reference-if-there FILE ...\n"
+              "       " PROGRAM " --skip REASON\n",
+              stderr);
+        return 2;
+    }
+    q.quiet = 0;
+    states = 0;
+    for (; a < argc; ++a) {
+        if (!strcmp(argv[a], "--sweep"))
+            sweep = 1;
+        else if (!strcmp(argv[a], "--quiet"))
+            q.quiet = 1;
+        else if (!strcmp(argv[a], "--update"))
+            update = 1;
+        else if (!strcmp(argv[a], "--jit"))
+            jit = 1;
+        else if (!strcmp(argv[a], "--portable"))
+            portable = STEPS_PORTABLE;
+        else if (a + 1 < argc && !strcmp(argv[a], "--states"))
+            states = strtoul(argv[++a], NULL, 10);
+        else if (a + 1 < argc && !strcmp(argv[a], "--seed"))
+            g_test.rng = strtoull(argv[++a], NULL, 0) | 1;
+        else if (a + 1 < argc && !strcmp(argv[a], "--record") && !reference)
+            record_path = argv[++a];
+        else
+            return snx_error("unknown argument %s", argv[a]);
+    }
+    initial_seed = g_test.rng;
+    if (reference) {
+        size_t size = 0;
+        u64 window, window_size, pc, seed, pad;
+        reference_file = (u8*)snx_read_file(reference_path, &size);
+        if (!reference_file && !required) {
+            printf(
+                SIDE
+                "_qemu_differential skipped: no recorded QEMU reference at %s (build.yml's qemu-reference job records "
+                "one, and this host has no qemu-aarch64 to run beside it)\n",
+                reference_path);
+            return 77;
+        }
+        if (!reference_file) return snx_error("cannot read %s", reference_path);
+        ref.in.p = reference_file;
+        ref.in.size = size;
+        if (ref_get64(&ref.in) != REF_MAGIC || ref_get64(&ref.in) != REF_VERSION)
+            return snx_error("%s is not a recorded QEMU reference", reference_path);
+        sweep = (int)ref_get64(&ref.in);
+        header.samples = (size_t)ref_get64(&ref.in);
+        header.rounds = (size_t)ref_get64(&ref.in);
+        header.states = (size_t)ref_get64(&ref.in);
+        header.nwords = (size_t)ref_get64(&ref.in);
+        header.nitems = (size_t)ref_get64(&ref.in);
+        (void)ref_get64(&ref.in); /* the seed it was recorded with */
+        window = ref_get64(&ref.in);
+        window_size = ref_get64(&ref.in);
+        pc = ref_get64(&ref.in);
+        seed = ref_get64(&ref.in);
+        pad = ref_get64(&ref.in);
+        (void)ref_get64(&ref.in);
+        (void)ref_get64(&ref.in);
+        if (ref.in.failed || window != WINDOW || window_size != WINDOW_SIZE || pc != PC || seed != SEED ||
+            pad != SNX_QREF_PAD)
+            return snx_error("%s was recorded with other constants; record it again", reference_path);
+        samples = header.samples;
+        rounds = header.rounds;
+        states = header.states;
+        nwords = header.nwords;
+        if (!states || !samples) return snx_error("%s records no states", reference_path);
+    } else {
+        if (!states) states = sweep ? 6 : 3;
+        samples = sweep ? 4 : 2;
+        rounds = sweep ? 300 : 20;
+    }
+
+    if (reference) {
+        /* the record's items, so that its cases line up with the words it ran */
+        items = (Item*)snx_alloc((header.nitems ? header.nitems : 1) * sizeof(*items));
+        for (i = 0; i < header.nitems; ++i) {
+            ref_get_item(&ref.in, &items[i]);
+            items[i].skip = 0; /* the recorder's back end's: this one's is below */
+        }
+        if (ref.in.failed) return snx_error("%s ends inside its items", reference_path);
+        nitems = header.nitems;
+    } else {
+        /* the words */
+        nwords = lqd_row_words((unsigned)samples, next_random, &words);
+        words = (u32*)snx_realloc(words, (nwords + (DIRECTED + SCALAR) * rounds + KEPT) * sizeof(*words));
+        nwords += directed(rounds, words + nwords);
+        nwords += scalar_words(rounds, words + nwords);
+        memcpy(words + nwords, kept, sizeof(kept));
+        nwords += KEPT;
+        items = (Item*)snx_alloc((2 * nwords) * sizeof(*items));
+        for (i = 0; i < nwords; ++i) {
+            int unrunnable;
+            const char* op = lqd_op_name(words[i], &unrunnable);
+            const u32 word = qemu_word(words[i], op);
+            const char* sw = lqd_switch_op_name(word);
+            unsigned pairs = store_exclusive(word) ? 2 : 1, p;
+            if (unrunnable) continue;
+            for (p = 0; p < pairs; ++p) {
+                Item* it = &items[nitems++];
+                memset(it, 0, sizeof(*it));
+                snprintf(it->op, sizeof(it->op), "%s", op);
+                snprintf(it->switch_op, sizeof(it->switch_op), "%s", sw ? sw : "");
+                it->nwords = p + 1;
+                it->words[0] = p ? load_exclusive(word) : word;
+                it->words[p] = word;
+            }
+        }
+        free(words);
+    }
+
+    /* the steps, one function a word, at the word's pc; a word without code is noted and left out */
+    {
+        static const int fatal[] = {SIGSEGV,
+#ifdef SIGBUS
+                                    SIGBUS,
+#endif
+                                    SIGILL, SIGFPE};
+#ifdef _WIN32
+        for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) signal(fatal[i], on_fatal);
+#else
+        struct sigaction on = {0};
+        on.sa_handler = on_fatal;
+        for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) sigaction(fatal[i], &on, NULL);
+#endif
+    }
+    if (steps_begin(&built, jit, portable, error, sizeof(error))) return snx_error("%s", error);
+    for (i = 0; i < nitems; ++i) {
+        Item* it = &items[i];
+        it->step = (u32)nsteps;
+        for (k = 0; k < it->nwords; ++k) {
+            int none = 0;
+            const SnxU64 features = word_features(it->words[k], &none);
+            if (none) it->skip = 1;
+            snprintf(g_test.running, sizeof(g_test.running), "the code of word %08x (%s form)", it->words[k],
+                     forms[portable]);
+            if (!add_step(&built, it->words[k], item_pc(it) + 4 * k, features)) it->skip = 1;
+            ++nsteps;
+        }
+    }
+    if (!q.quiet) printf("%zu cases of %zu words; compiling %zu %s steps\n", nitems, nwords, nsteps, steps_name());
+    snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu %s steps (%s form)", nsteps, steps_name(),
+             forms[portable]);
+    built.partial = 1; /* the words it has no code for */
+    if (steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
+    for (i = 0; i < nitems; ++i)
+        for (k = 0; k < items[i].nwords; ++k)
+            if (!native_steps_made(&built, items[i].step + k)) items[i].skip = 1;
+    rt.svc = cb_svc;
+    rt.undef = cb_undef;
+    rt.note_hint = cb_note;
+    rt.ticks = cb_ticks;
+    rt.brk = cb_brk;
+    rt.fpcr_changed = cb_fpcr;
+    rt.sev = cb_sev;
+    rt.wfe = cb_wfe;
+
+    /* the record's header and items: the cases follow once QEMU has run each batch */
+    if (record_path) {
+        record.f = fopen(record_path, "wb");
+        if (!record.f) return snx_error("cannot write %s", record_path);
+        ref_put64(&record, REF_MAGIC);
+        ref_put64(&record, REF_VERSION);
+        ref_put64(&record, (u64)sweep);
+        ref_put64(&record, samples);
+        ref_put64(&record, rounds);
+        ref_put64(&record, states);
+        ref_put64(&record, nwords);
+        ref_put64(&record, nitems);
+        ref_put64(&record, initial_seed);
+        ref_put64(&record, WINDOW);
+        ref_put64(&record, WINDOW_SIZE);
+        ref_put64(&record, PC);
+        ref_put64(&record, SEED);
+        ref_put64(&record, SNX_QREF_PAD);
+        ref_put64(&record, 0);
+        ref_put64(&record, 0);
+        for (i = 0; i < nitems; ++i) ref_put_item(&record, &items[i]);
+        if (record.failed) return snx_error("cannot write %s", record_path);
+    }
+
+    /* the window both sides start from: the seed, and pads in the code region (each case's words go over them) */
+    initial = (u8*)snx_alloc(WINDOW_SIZE);
+    work = (u8*)snx_alloc(WINDOW_SIZE);
+    for (i = 0; i < WINDOW_SIZE; i += 8) {
+        u64 v = snx_qref_seed64(SNX_QREF_SEED_RANDOM, SEED, WINDOW, i);
+        for (k = 0; k < 8; ++k) initial[i + k] = (u8)(v >> (8 * k));
+    }
+    /* guest memory is little-endian on every host, as QEMU's window is: a literal load at PC reads the word itself */
+    for (i = PC - WINDOW; i < PC - WINDOW + CODE_SIZE; i += 4) snx_st_le32(initial + i, SNX_QREF_PAD);
+    memcpy(work, initial, WINDOW_SIZE);
+
+    /* in batches: the states, QEMU's run of them (or the record's), then the LLVM side's of each and the comparison */
+    expected = NULL;
+    nexpected = read_expected(expected_path, &expected);
+    for (i = 0; i < nitems;) {
+        size_t first = i, s;
+        SnxQrefState* starts;
+        int* index;
+        size_t end = first;
+        while (end < nitems && (end - first) * states < BATCH) ++end;
+        starts = (SnxQrefState*)snx_alloc((end - first) * states * sizeof(*starts));
+        index = (int*)snx_alloc((end - first) * states * sizeof(*index));
+        if (reference) {
+            /* the record's start states and results, in the order the live run added them */
+            if (ref_get_batch(&ref, &batch, end - first, states, starts, index))
+                return snx_error("%s ends inside its cases", reference_path);
+        } else {
+            u64 batch_seed = next_random();
+            g_test.rng = batch_seed;
+            for (k = first; k < end; ++k) {
+                const Item* it = &items[k];
+                int addresses = memory_pattern(it->words[it->nwords - 1]);
+                for (s = 0; s < states; ++s) {
+                    CPU c;
+                    SnxQrefState* start = &starts[(k - first) * states + s];
+                    /* a word without code runs its first state only, under QEMU, for the coverage report; a
+                       record has every state, as another host's back end may have the code */
+                    index[(k - first) * states + s] = -1;
+                    if (it->skip && s && !record_path) continue;
+                    random_state(&c, it->words[it->nwords - 1], addresses);
+                    state_of(&c, start);
+                    index[(k - first) * states + s] = add_case(&batch, it, start);
+                    if (index[(k - first) * states + s] < 0)
+                        return snx_error("the runner refuses %08x", it->words[0]);
+                }
+            }
+            if (snx_qref_run(&batch, q.qemu, q.runner, "max", q.dir, error, sizeof(error)))
+                return snx_error("QEMU: %s (words %08x %08x)", error, items[first].words[0], items[first].words[1]);
+            if (record_path) {
+                ref_put_cases(&record, end - first, starts, index, states, &batch);
+                if (record.failed) return snx_error("cannot write %s", record_path);
+            }
+        }
+        for (k = first; k < end; ++k) {
+            const Item* it = &items[k];
+            for (s = 0; s < states; ++s) {
+                const SnxQrefState* start = &starts[(k - first) * states + s];
+                const int at = index[(k - first) * states + s];
+                const SnxQrefResult* r;
+                CPU c;
+                Events ev = {0};
+                End l = {0}, qe;
+                char cause[48], text[1536];
+                u32 w;
+                if (at < 0) continue;
+                r = &batch.results[at];
+                if (r->outcome == SNX_QREF_ERROR) return snx_error("QEMU could not run %08x", it->words[0]);
+                if (it->skip) {
+                    if (r->outcome != SNX_QREF_UNDEF) {
+                        ++group(&missing, it->op, it->switch_op[0] ? "Switch" : "")->count;
+                        ++no_emitter;
+                    }
+                    break;
+                }
+                /* an alignment fault (an ordered access across 16 bytes, LDAPUR's or STLUR's): the backend
+                   raises none, and on an AArch64 host the access faults the host and ends this test, so this
+                   side doesn't run it. It differs alike on every host */
+                if (r->outcome == SNX_QREF_FAULT && r->signo == SIGBUS_A64) {
+                    Group* g = group(&groups, it->op, "qemu-alignment-fault");
+                    const u32 word = it->words[it->nwords - 1], rn = (word >> 5) & 31;
+                    if (g->nexamples < EXAMPLES)
+                        snprintf(g->examples[g->nexamples++], sizeof(text),
+                                 "  word %08x (the Switch target decodes it as %s)\n  start x%u=%016llx\n"
+                                 "  qemu fault pc %llx (signal %u, fault %llx), not run on the " SIDE " side\n",
+                                 word, it->switch_op[0] ? it->switch_op : "UNDEF", rn,
+                                 (unsigned long long)(rn < 31 ? start->x[rn] : start->sp), (unsigned long long)r->pc,
+                                 r->signo, (unsigned long long)r->fault);
+                    ++g->count;
+                    ++mismatched;
+                    break;
+                }
+                /* this side */
+                snprintf(g_test.running, sizeof(g_test.running),
+                         "the " SIDE " side of %s, word %08x, state %zu of %zu (%s form)", it->op,
+                         it->words[it->nwords - 1], s, states, forms[portable]);
+                cpu_from_state(&c, start);
+                c.rt = &rt;
+                c.mem = work - WINDOW;
+                if (it->nwords == 1) snx_st_le32(work + PC - WINDOW, it->words[0]);
+                g_test.events = &ev;
+                /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
+                   function's entry puts back what its fast paths assume, on every host that has them */
+                fesetround(FE_UPWARD);
+                for (w = 0; w < it->nwords; ++w) {
+                    l.pc = step_run(steps_at(&built, it->step + w), &c);
+                    if (ev.undef || ev.brk || l.pc != item_pc(it) + 4 * (w + 1)) break;
+                }
+                fesetround(FE_TONEAREST);
+                l.outcome = ev.undef ? SNX_QREF_UNDEF
+                            : ev.brk ? SNX_QREF_BRK
+                            : ev.svc ? SNX_QREF_SVC
+                                     : SNX_QREF_BRANCH;
+                l.imm = ev.imm;
+                state_of(&c, &l.state);
+                qe.outcome = r->outcome;
+                if (snx_qref_switch_sysreg(it->words[it->nwords - 1], NULL, NULL) == SNX_QREF_SYSREG_UNDEF &&
+                    r->outcome == SNX_QREF_NEXT)
+                    qe.outcome = SNX_QREF_UNDEF; /* QEMU's user mode reads the ID registers EL0 can't */
+                qe.pc = r->pc;
+                qe.imm = r->imm;
+                qe.state = r->state;
+                /* the window as the case found it: the words over the pads */
+                if (it->nwords == 1) snx_st_le32(initial + PC - WINDOW, it->words[0]);
+                compare(it, start, &l, &qe, initial, work, &batch, r, cause, sizeof(cause), text, sizeof(text));
+                snx_st_le32(initial + PC - WINDOW, SNX_QREF_PAD);
+                for (w = 0; w < WINDOW_SIZE; w += SNX_QREF_PAGE)
+                    if (memcmp(work + w, initial + w, SNX_QREF_PAGE)) memcpy(work + w, initial + w, SNX_QREF_PAGE);
+                ++compared;
+                /* beyond the Switch: a word the Cortex-A57 decodes as another name (a hint's NOP), or leaves UNDEF as
+                   the backend does, has no emitter for what max makes of it yet */
+                if (cause[0] && ((it->switch_op[0] && strcmp(it->switch_op, it->op)) ||
+                                 (!it->switch_op[0] && l.outcome == SNX_QREF_UNDEF))) {
+                    ++group(&missing, it->op, "")->count;
+                    ++no_emitter;
+                    break;
+                }
+                if (cause[0]) {
+                    Group* g = group(&groups, it->op, cause);
+                    if (g->nexamples < EXAMPLES) snprintf(g->examples[g->nexamples++], sizeof(text), "%s", text);
+                    ++g->count;
+                    ++mismatched;
+                    break; /* a word counts once, by its first differing state */
+                }
+            }
+        }
+        snx_qref_clear(&batch);
+        free(starts);
+        free(index);
+        i = end;
+    }
+    snx_qref_free(&batch);
+    if (record.f && fclose(record.f)) record.failed = 1;
+    record.f = NULL;
+    if (record.failed) return snx_error("cannot write %s", record_path);
+    if (reference && ref.in.at != ref.in.size)
+        return snx_error("%s has %zu bytes after its cases", reference_path, ref.in.size - ref.in.at);
+    free(reference_file);
+    reference_file = NULL;
+
+    /* the expected-failure list against what differed */
+    for (i = 0; i < groups.ngroups; ++i) {
+        Group* g = &groups.groups[i];
+        for (k = 0; k < nexpected; ++k)
+            if (!strcmp(expected[k].op, g->op) && !strcmp(expected[k].cause, g->cause)) break;
+        if (k < nexpected) {
+            g->listed = 1;
+            g->expected = expected[k].counts[sweep];
+            expected[k].seen = g->count;
+        } else if (update) {
+            Expected e = {{0}, {0}, {0}, 0};
+            snprintf(e.op, sizeof(e.op), "%s", g->op);
+            snprintf(e.cause, sizeof(e.cause), "%s", g->cause);
+            e.seen = g->count;
+            expected = (Expected*)snx_realloc(expected, (nexpected + 1) * sizeof(*expected));
+            expected[nexpected++] = e;
+            g->listed = 1;
+        }
+    }
+    printf("%s against %sQEMU%s, %s form%s: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
+           "without code yet, %zu differing in %zu groups\n",
+           steps_name(), reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable],
+           no_avx512 ? " without AVX-512" : "", nitems, lqd_rows(), compared, no_emitter, mismatched, groups.ngroups);
+    for (i = 0; i < groups.ngroups; ++i) {
+        const Group* g = &groups.groups[i];
+        if (!g->listed) failed = 1;
+        if (!q.quiet || !g->listed)
+            printf("  %-20s %-28s %5lu %s\n", g->op, g->cause, g->count,
+                   g->listed ? (g->count == g->expected ? "expected" : "expected, count changed") : "NEW");
+        /* the word and what it made of the state, in the log of a machine the test can't be rerun on */
+        if (!g->listed && g->nexamples) fputs(g->examples[0], stdout);
+    }
+    for (k = 0; k < nexpected; ++k)
+        if (expected[k].counts[sweep] && !expected[k].seen) {
+            printf("  %-20s %-28s no longer differs: remove it from %s\n", expected[k].op, expected[k].cause,
+                   expected_path);
+            if (!update) failed = 1;
+        }
+    if (update) {
+        for (k = 0; k < nexpected; ++k) expected[k].counts[sweep] = expected[k].seen;
+        if (write_expected(expected_path, expected, nexpected)) return snx_error("cannot write %s", expected_path);
+        printf("updated %s\n", expected_path);
+        failed = 0;
+    }
+
+    /* the reports */
+    snx_mkdirs(q.dir);
+    path = snx_path_join(q.dir, SIDE "_qemu_coverage.txt");
+    f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "# the names (max target) of words QEMU runs and the backend has no emitter for yet, with the words;\n"
+                   "# Switch: the Switch target decodes the word, as the same name, and no emitter takes it\n");
+        for (i = 0; i < missing.ngroups; ++i)
+            fprintf(f, "%s\t%lu\t%s\n", missing.groups[i].op, missing.groups[i].count, missing.groups[i].cause);
+        fclose(f);
+    }
+    free(path);
+    path = snx_path_join(q.dir, SIDE "_qemu_mismatches.txt");
+    f = fopen(path, "w");
+    if (f) {
+        for (i = 0; i < groups.ngroups; ++i) {
+            const Group* g = &groups.groups[i];
+            unsigned e;
+            fprintf(f, "%s %s: %lu words\n", g->op, g->cause, g->count);
+            for (e = 0; e < g->nexamples; ++e) fputs(g->examples[e], f);
+        }
+        fclose(f);
+    }
+    printf("%zu names without code in %s/" SIDE "_qemu_coverage.txt, examples in " SIDE "_qemu_mismatches.txt; "
+           "%.1f s: %s\n",
+           missing.ngroups, q.dir, snx_seconds() - started, failed ? "FAILED" : "passed");
+    free(path);
+    steps_end(&built);
+    free(initial);
+    free(work);
+    free(items);
+    free(groups.groups);
+    free(missing.groups);
+    free(expected);
+    return failed;
+}

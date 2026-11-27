@@ -51,7 +51,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
 /* ---- what mach_codegen.inc asks of the machine ---- */
 #define MG_EM EM_MIPS
-#define MG_ELF_FLAGS 0x80000007u /* MIPS64 release 2, PIC, CPIC, NOREORDER: LLVM's mips64el objects' */
+#define MG_ELF_FLAGS         0x80000007u /* MIPS64 release 2, PIC, CPIC, NOREORDER */
 #define MG_R_INFO(sym, type) snx_elf_info(EM_MIPS, (sym), (type))
 #define MG_R_ABS64 SNX_MIPS_64
 #define MG_R_LITERAL SNX_MIPS_PC32

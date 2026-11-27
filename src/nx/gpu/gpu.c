@@ -24,7 +24,7 @@
    (Eden's Puller: semaphores, syncpoints, binding a class to a subchannel), the others to the engine of the class
    bound to the call's subchannel (engines.c, compute.c, fermi2d.c, dma.c). */
 #include "nx/runtime/state_fns.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -320,7 +320,7 @@ u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size) {
     memset((u8*)dst + at, 0, (size_t)(size - at));
     return at;
 }
-int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && cpu < len + 16; }
+int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && (!len || cpu < len + 16); }
 
 /* ------------------------------------------------------------ block linear layout (Eden's decoders.cpp) */
 /* A byte's offset in the layout (texture/blocklinear.h, docs/layers/gpu/blocklinear.md) is the sum of an x part and a (y, z)

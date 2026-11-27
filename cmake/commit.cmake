@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 # The branch and commit of SRC's tree, for the window titles: the branch checked out (CI checks a pull request out
 # detached, so GITHUB_HEAD_REF, then GITHUB_REF_NAME; else "detached"), and the short hash with "-dirty" when the work
-# tree differs; both "unknown" outside a git checkout. And the day that commit was made, for the logs: its committer
+# tree differs; both "unknown" outside a git checkout. A nightly's build names its day in place of the branch. And the day that commit was made, for the logs: its committer
 # date in UTC, YYYY-MM-DD, "unknown" outside a git checkout too. Writes OUT only when that changed, so a commit relinks
 # the two programs that show it and nothing else. With CHECK set, compares OUT with git instead, as the
 # build_info_commit test
@@ -21,6 +21,14 @@ elseif(NOT branch AND DEFINED ENV{GITHUB_REF_NAME} AND NOT "$ENV{GITHUB_REF_NAME
     set(branch "$ENV{GITHUB_REF_NAME}")
 elseif(NOT branch)
     set(branch "detached")
+endif()
+# A nightly's build stands for its day, not its branch: build.yml sets SNX_BUILD_NAME, nightly-YYYY-MM-DD, the tag's
+# day, for the scheduled runs of main and the runs of it by hand. Any other value is refused, named
+if(DEFINED ENV{SNX_BUILD_NAME} AND NOT "$ENV{SNX_BUILD_NAME}" STREQUAL "")
+    if(NOT "$ENV{SNX_BUILD_NAME}" MATCHES "^nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$")
+        message(FATAL_ERROR "SNX_BUILD_NAME=$ENV{SNX_BUILD_NAME} is no nightly-YYYY-MM-DD: the build line keeps ${branch}")
+    endif()
+    set(branch "$ENV{SNX_BUILD_NAME}")
 endif()
 # a C string: a branch name may hold a quote, never a backslash (git refuses those)
 string(REPLACE "\"" "\\\"" branch "${branch}")

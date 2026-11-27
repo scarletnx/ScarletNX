@@ -152,7 +152,7 @@ static int module_name(const char* name, const char* suffix) {
 }
 
 int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCodegenOptions* gen,
-                   const SnxLlvmBuild* build, const char* folder, int windows) {
+                   const SnxModuleBuild* build, const char* folder, int windows) {
     const char* suffix = windows ? ".dll" : ".so";
     char **names = NULL, text[65], error[1024];
     size_t count = 0, i, k, found, made = 0, code = 0, export_count = 0, stubs = 0, stubs_own = 0, sites = 0;
@@ -172,7 +172,7 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         const SnxNroFile* file = file_of(set, place);
         SnxProgram nro;
         SnxCodegenOptions options = *gen;
-        SnxLlvmBuild llvm = *build;
+        SnxModuleBuild job = *build;
         SnxBoundBranch* bound;
         size_t bound_count, own, called;
         char *name, *output;
@@ -201,15 +201,14 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         options.nro_count = 0;
         options.quiet = 1;
         found = 0;
-        llvm.output = output;
-        llvm.quiet = 1;
-        llvm.keep_ir = NULL;
-        llvm.wrappers = NULL;
-        llvm.found = &found;
-        llvm.layout = NULL;
-        llvm.layout_count = 0;
+        job.output = output;
+        job.quiet = 1;
+        job.wrappers = NULL;
+        job.found = &found;
+        job.layout = NULL;
+        job.layout_count = 0;
         start = snx_seconds();
-        rc = snx_build_module_llvm(&nro, &options, &llvm);
+        rc = snx_build_module_a64(&nro, &options, &job);
         if (rc)
             snx_error("the code of the NRO %s (%s) was not made", file->name, name);
         else if (!build->quiet)

@@ -570,13 +570,13 @@ static int gens_draw(GpuChannel* channel, u8 want, const char* what, VkDrawCount
     vk_draw_counts(&after);
     for (int i = 0; i < VK_GENS_N; i++) d->gens[i] = after.gens[i] - before.gens[i];
     for (int i = 0; i < VK_TEX_N; i++) d->tex[i] = after.tex[i] - before.tex[i];
-    const int near = px[0] + 2 >= want && px[0] <= want + 2;
-    if (!near)
+    const int within = px[0] + 2 >= want && px[0] <= want + 2;
+    if (!within)
         fprintf(stderr, "memo generations, %s: red %u, expected %u (%llu resolved, gens %llu %llu %llu %llu)\n", what,
                 px[0], want, (unsigned long long)d->tex[VK_TEX_RESOLVED],
                 (unsigned long long)d->gens[VK_GENS_HEADERS_KEPT], (unsigned long long)d->gens[VK_GENS_HEADERS_CHECKED],
                 (unsigned long long)d->gens[VK_GENS_RESULTS_KEPT], (unsigned long long)d->gens[VK_GENS_RESULTS_CHECKED]);
-    CHECK(near);
+    CHECK(within);
     return 0;
 }
 /* the CPU writes word at cpu and a submission starts an epoch, as the guest's queue submission does */

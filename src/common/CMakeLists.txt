@@ -28,10 +28,11 @@ if(WIN32)
 endif()
 
 add_library(scarletnx-common STATIC
-    utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/config_file.c utilities/game_ini.c utilities/program_start.c utilities/pad_map.c
+    utilities/common.c utilities/process.c utilities/font.c utilities/ui_quads.c utilities/ini_lines.c utilities/config_file.c utilities/game_ini.c utilities/program_start.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_gltf.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/gpu_driver.c utilities/gpu_driver_stage.c utilities/elf_dynamic.c utilities/run_mark.c utilities/cli.c
-    utilities/spirv_emit.c utilities/spirv_opt.c utilities/script.c memory/host.c memory/jemalloc.c
+    utilities/old_llvm_caches.c utilities/spirv_emit.c utilities/spirv_opt.c utilities/script.c utilities/pace.c
+    memory/host.c memory/jemalloc.c
     cpu/recompiler/variants.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
     SNX_HOST_COMPILER="${CMAKE_C_COMPILER}"
@@ -180,6 +181,13 @@ if(TARGET snx_libdeflate)
     target_link_libraries(snx_zip PUBLIC scarletnx-common PRIVATE snx_libdeflate)
     target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
+# A save state's file (state_file.h), every console's: the Switch's runtime plots its counts in its profiler
+if(TARGET snx_zstd)
+    add_library(snx_state_file STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/state_file.c")
+    target_link_libraries(snx_state_file PUBLIC scarletnx-common PRIVATE snx_zstd)
+    target_compile_options(snx_state_file PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+endif()
+include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the one way a renderer makes its device (gpu/vk/device.c), the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
 # the commands each extension requires (generated from the registry, cmake/vk_extension_commands.cmake), the submission
@@ -195,7 +203,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                                      gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
                                      gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c
-                                     gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/gpu_pstate.c)
+                                     gpu/vk/rects.c gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/gpu_pstate.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     # the GPU's clocks held while a game runs (gpu/vk/gpu_pstate.h): the kernel's interface, which the strict standard
     # of the files above hides, as it does POSIX's open and ioctl
@@ -235,6 +243,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     target_sources(snx_vk_common PRIVATE "${snx_areatex_h}" "${snx_searchtex_h}")
     # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
+    # the on-screen controls' rectangles over a window's picture (gpu/vk/rects.c)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/rects.vert NAME rects_vert_spv HEADER common/gpu/vk/rects_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/rects.frag NAME rects_frag_spv HEADER common/gpu/vk/rects_spv.h)
     # The GPU driver a run asks for (gpu/vk/gpu_driver_load.h), which the window's instance and surface are made through:
     # the Switch runtime's and the Vita's share this one loader. It reads the environment and the process's maps, which
     # the strict standard of the files above hides, so its files are compiled as the runtimes' are

@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What a 32-bit game's recompile says of the blocks the native back end leaves to LLVM (nx/loader/module_arm.c,
-   itself): how many of how many it made, and for each reason the count of its blocks and the state and the address of
-   the first, whatever thread made them. The test has the back end refuse every third A32 block for one reason and
-   every Thumb one for another */
+/* A 32-bit game's recompile where the native back end refuses a block (nx/loader/module_arm.c, itself): the module is
+   not made, and the error names the block and the reason. The test has the back end refuse every third A32 block for
+   one reason and every Thumb one for another; one thread finds them, the module's start first */
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -53,7 +52,7 @@ static struct {
 } g_arm_module_refused;
 
 static void fail(const char* what, const char* text) {
-    fprintf(stderr, "FAIL: %s:\n%s\n", what, text);
+    printf("FAIL: %s:\n%s\n", what, text);
     ++g_arm_module_refused.failures;
 }
 
@@ -88,7 +87,7 @@ int main(void) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild build = {0};
+    SnxModuleBuild build = {0};
     program(&image);
     loaded.modules = &image;
     loaded.module_count = 1;
@@ -101,12 +100,12 @@ int main(void) {
     options.hint_count = ARM_BLOCKS + THUMB_BLOCKS;
     char *folder = snx_temp_dir(NULL), *lines = folder ? snx_path_join(folder, "lines") : NULL;
     char* module = folder ? snx_path_join(folder, "module") : NULL;
-    if (!module || !lines || !freopen(lines, "w", stdout)) return 1;
+    if (!module || !lines || !freopen(lines, "w", stderr)) return 1;
     build.output = module;
     build.opt = '2';
-    build.jobs = 4;
+    build.jobs = 1;
     int rc = snx_build_module_arm(&loaded, &options, &build);
-    fflush(stdout);
+    fflush(stderr);
     size_t size = 0;
     char* text = (char*)snx_read_file(lines, &size);
     char* said = (char*)snx_alloc(size + 1);
@@ -114,25 +113,19 @@ int main(void) {
     said[text ? size : 0] = 0;
     free(text);
     snx_test_text_lines(said);
-    if (rc) fail("the module does not build", said);
-    unsigned refused = 0, first = 0;
-    for (unsigned i = ARM_BLOCKS; i--;)
-        if (test_refuses(START + 8 * i)) ++refused, first = START + 8 * i;
-    char wanted[512];
-    snprintf(wanted, sizeof wanted,
-             "%s back end: %u of %u AArch32 blocks, LLVM the rest\n"
-             "  %u blocks, the first the ARM one at 0x%08x: an ARM block the test refuses\n"
-             "  %u blocks, the first the Thumb one at 0x%08x: a Thumb block the test refuses\n",
-             snx_native_name(), ARM_BLOCKS - refused, ARM_BLOCKS + THUMB_BLOCKS, refused, first, THUMB_BLOCKS,
-             THUMB_START);
+    if (!rc) fail("the module is made", said);
+    if (snx_is_file(module)) fail("the module's file is written", module);
+    char wanted[256];
+    snprintf(wanted, sizeof wanted, "AArch32: the %s back end made no ARM block at 0x%08x: %s\n", snx_native_name(),
+             START, refused_arm);
     if (!strstr(said, wanted)) {
-        fprintf(stderr, "wanted:\n%s", wanted);
-        fail("the recompile does not say who made its blocks", said);
+        printf("wanted:\n%s", wanted);
+        fail("the recompile does not say which block was refused and why", said);
     }
 #ifdef _WIN32
-    if (!freopen("NUL", "w", stdout)) return 1; /* the folder's file closed */
+    if (!freopen("NUL", "w", stderr)) return 1; /* the folder's file closed */
 #else
-    if (!freopen("/dev/null", "w", stdout)) return 1;
+    if (!freopen("/dev/null", "w", stderr)) return 1;
 #endif
     if (snx_remove_tree(folder)) fail("the folder is not removed", folder);
     free(said), free(module), free(lines), free(folder);

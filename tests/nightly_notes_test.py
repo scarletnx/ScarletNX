@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/nightly-notes.py on a history of its own: merged pull requests, direct commits, a branch never merged; the
+"""scripts/nightly-notes.py on a history of its own, merged by rebase as main is: a pull request's commits under one
+line, a commit no pull request merged, a branch never merged, the lines grouped by area and cut past the most; the
 downloads by system with their sizes, a file not built, text that would be markdown shown as it is"""
 
 DOWNLOAD = 'https://github.com/owner/nightly/releases/download/t'
@@ -15,9 +16,8 @@ import subprocess
 import sys
 import tempfile
 
-spec = importlib.util.spec_from_file_location(
-    'nightly_notes', Path(__file__).resolve().parent.parent / 'scripts' / 'nightly-notes.py'
-)
+ROOT = Path(__file__).resolve().parent.parent
+spec = importlib.util.spec_from_file_location('nightly_notes', ROOT / 'scripts' / 'nightly-notes.py')
 nightly = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nightly)
 failures = []
@@ -57,21 +57,32 @@ with tempfile.TemporaryDirectory() as repo:
     git('init', '-q', '-b', 'main')
     git('commit', '-q', '--allow-empty', '-m', 'the previous nightly')
     previous = git('rev-parse', 'HEAD')
-    git('switch', '-q', '-c', 'feature')
+    # pull request #5's two commits, rebased onto main, then a commit pushed to main
     git('commit', '-q', '--allow-empty', '-m', '[cpu] a commit of the pull request')
-    git('switch', '-q', 'main')
-    git('merge', '-q', '--no-ff', 'feature', '-m', 'Merge pull request #5 from someone/feature\n\n[ci] its title')
+    first = git('rev-parse', 'HEAD')
+    git('commit', '-q', '--allow-empty', '-m', '[cpu] its second commit')
+    merge = git('rev-parse', 'HEAD')
     git('commit', '-q', '--allow-empty', '-m', '[docs] a commit pushed to main')
     sha = git('rev-parse', 'HEAD')
-    merge = git('rev-parse', 'HEAD~1')
     git('switch', '-q', '-c', 'elsewhere', previous)
     git('commit', '-q', '--allow-empty', '-m', 'never merged')
     unmerged = git('rev-parse', 'HEAD')
+    git('switch', '-q', 'main')
+    pull = nightly.Pull(5, '[ci] its title', 'someone')
+    pulls = {first: pull, merge: pull}
 
     check(
-        'changes, newest first, a pull request by its title and number, each with its commit',
-        nightly.changes(repo, previous, sha)
-        == [('[docs] a commit pushed to main', None, sha), ('[ci] its title', 5, merge)],
+        'changes, newest first, each commit with the pull request that merged it',
+        nightly.changes(repo, previous, sha, pulls)
+        == [
+            ('[docs] a commit pushed to main', None, sha),
+            ('[cpu] its second commit', 5, merge),
+            ('[cpu] a commit of the pull request', 5, first),
+        ],
+    )
+    check(
+        'without the pull requests, each commit stands alone',
+        [item.pr for item in nightly.changes(repo, previous, sha, {})] == [None, None, None],
     )
     url = 'https://github.com/owner/repo'
     check(
@@ -82,18 +93,87 @@ with tempfile.TemporaryDirectory() as repo:
         and nightly.change_line(nightly.Change('a fix', None, sha), url)
         == f'a fix ([`{sha[:7]}`]({url}/commit/{sha}))',
     )
+    items = nightly.changes(repo, previous, sha, pulls)
+    check(
+        'a pull request once, with its commits counted and its author, and the commit no pull request merged',
+        nightly.entry_lines(items, pulls, url)
+        == [
+            f'\\[docs\\] a commit pushed to main ([`{sha[:7]}`]({url}/commit/{sha}))',
+            f'\\[ci\\] its title ([#5]({url}/pull/5), 2 commits, by someone)',
+        ],
+    )
+    check(
+        'an area taken from the title, none without one',
+        nightly.area('[driver, fs] Say why') == ('driver, fs', 'Say why') and nightly.area('a fix') == ('', 'a fix'),
+    )
+    odd = [
+        nightly.Change('{x} and {url}', None, sha),
+        nightly.Change('[vk] b', 7, merge),
+        nightly.Change('[gpu] a', 8, first),
+    ]
+    odd_pulls = {merge: nightly.Pull(7, '[vk] b', 'v'), first: nightly.Pull(8, '[gpu] a', 'g')}
+    shown = nightly.grouped(odd, odd_pulls, url, 'https://compare')
+    check(
+        'the areas in order, those of none last as Other, braces in a title shown as they are',
+        shown
+        == [
+            '',
+            '**gpu**',
+            '',
+            f'- a ([#8]({url}/pull/8), 1 commit, by g)',
+            '',
+            '**vk**',
+            '',
+            f'- b ([#7]({url}/pull/7), 1 commit, by v)',
+            '',
+            '**Other**',
+            '',
+            f'- {{x}} and {{url}} ([`{sha[:7]}`]({url}/commit/{sha}))',
+        ],
+    )
+    most = nightly.MOST_LINES
+    nightly.MOST_LINES = 2
+    cut = nightly.grouped(odd, odd_pulls, url, 'https://compare')
+    nightly.MOST_LINES = most
+    check(
+        'past the most lines, the rest counted and linked',
+        cut[-1] == 'And [1 more](https://compare).' and not any('#8' in line for line in cut),
+    )
     check(
         'text that would be a link, a tag or a table cell is shown as it is',
         nightly.escape('[x](http://e) <b> a|b `c` *d* _e_ ~f~ \\')
         == '\\[x\\](http://e) \\<b\\> a\\|b \\`c\\` \\*d\\* \\_e\\_ \\~f\\~ \\\\',
     )
-    check('no changes without a previous nightly', nightly.changes(repo, '', sha) is None)
-    check('no changes from a commit that is not an ancestor', nightly.changes(repo, unmerged, sha) is None)
-    check('the title', nightly.title(repo, sha) == f'Nightly 2026-10-15 ({sha[:7]})')
+    check('no changes without a previous nightly', nightly.changes(repo, '', sha, pulls) is None)
+    check('no changes from a commit that is not an ancestor', nightly.changes(repo, unmerged, sha, pulls) is None)
+    check(
+        'the title: the day its run began, and its commit',
+        nightly.title('2026-10-16', sha) == f'Nightly 2026-10-16 ({sha[:7]})',
+    )
+    readme = nightly.readme('owner/repo', 'owner/nightly', {'ScarletNX-windows-aarch64.zip'})
+    rows = [line for line in readme.splitlines() if line.startswith('| ') and '`ScarletNX-' in line]
+    check(
+        "the README's table: a row for every file of SYSTEMS, in its order, the optional ones said to be so",
+        [re.search(r'`([^`]+)`', row).group(1) for row in rows] == list(nightly.SYSTEMS)
+        and '| Windows, ARM64 | `ScarletNX-windows-aarch64.zip` | Unzip it and run `bin\\scarletnx.exe`. Present only when its job built |'
+        in rows
+        and not any('Present only' in row for row in rows if 'x86_64.zip' in row),
+    )
+    check(
+        "the README says every nightly stays, how a pull request's builds go, and links the docs main has",
+        'Every nightly stays here' in readme
+        and 'once merged, when a nightly has its change' in readme
+        and 'https://github.com/owner/repo/blob/main/docs/user/testing.md' in readme
+        and 'https://github.com/owner/nightly/releases/latest' in readme
+        and readme.startswith('<!-- publish.yml writes this file')
+        and "[owner/repo](https://github.com/owner/repo/releases)'s one prerelease, `main-<commit>`" in readme,
+    )
+    for linked in re.findall(r'/blob/main/([^)#]+)', readme):
+        check(f'the README links {linked}, which the checkout has', (ROOT / linked).exists())
 
     files = ['ScarletNX-android-universal.apk', 'ScarletNX-linux-aarch64.AppImage', 'ScarletNX-linux-x86_64.AppImage']
     sizes = {name: 94_563_085 for name in files}
-    text = nightly.notes(repo, sha, previous, 'owner/repo', files, DOWNLOAD, 'Kept.', sizes=sizes)
+    text = nightly.notes(repo, sha, previous, 'owner/repo', files, DOWNLOAD, 'Kept.', sizes=sizes, pulls=pulls)
     check(
         'the built commit is the first one the notes name, where the next nightly looks',
         re.search(r'[0-9a-f]{40}', text).group(0) == sha,
@@ -133,11 +213,21 @@ with tempfile.TemporaryDirectory() as repo:
             'a file with no system stops the notes, saying where to add it',
             'ScarletNX-windows-arm64.zip' in str(stop) and 'SYSTEMS in scripts/nightly-notes.py' in str(stop),
         )
-    check('a merged pull request listed, linked', f'- \\[ci\\] its title ([#5]({url}/pull/5))' in text)
+    check(
+        'a merged pull request listed once under its area, linked, and the commit pushed to main under its own',
+        f'**ci**\n\n- its title ([#5]({url}/pull/5), 2 commits, by someone)' in text
+        and f'**docs**\n\n- a commit pushed to main ([`{sha[:7]}`]({url}/commit/{sha}))' in text,
+    )
     check(
         'the changes counted, from the compare of the two commits',
-        f'[`{previous[:7]}...{sha[:7]}`]({url}/compare/{previous}...{sha}): 2 changes, the newest first.' in text,
+        f'[`{previous[:7]}...{sha[:7]}`]({url}/compare/{previous}...{sha}): 1 pull request and 1 commit no pull '
+        'request merged, 3 commits in all, by area.' in text,
     )
+    try:
+        nightly.notes(repo, sha, previous, 'owner/repo', files, DOWNLOAD, 'Kept.')
+        check('notes with changes and no pull requests stop', False)
+    except ValueError as stop:
+        check('notes with changes and no pull requests stop, saying what they need', 'pass pulls' in str(stop))
     check(
         'the source named, folded away at the end',
         f'https://github.com/owner/repo/tree/{sha}' in text
@@ -156,22 +246,13 @@ with tempfile.TemporaryDirectory() as repo:
     )
     check(
         'the same commit built again',
-        'None: the same commit' in nightly.notes(repo, sha, sha, 'owner/repo', files, DOWNLOAD, 'Kept.'),
+        'None: the same commit' in nightly.notes(repo, sha, sha, 'owner/repo', files, DOWNLOAD, 'Kept.', pulls={}),
     )
     check(
         'the files linked from the release they are in, and what becomes of it',
         f'[APK]({DOWNLOAD}/ScarletNX-android-universal.apk)' in text and 'committed 2026-10-15. Kept.' in text,
     )
 
-    # two more than the list holds, on top of the two above
-    git('switch', '-q', 'main')
-    for n in range(nightly.MOST_CHANGES + 2):
-        git('commit', '-q', '--allow-empty', '-m', f'commit {n}')
-    many = nightly.notes(repo, git('rev-parse', 'HEAD'), previous, 'owner/repo', files, DOWNLOAD, 'Kept.')
-    listed = many.split('## Changes')[1].split('<details>')[0].count('\n- ')
-    check(
-        'a long list cut, the rest counted and linked', listed == nightly.MOST_CHANGES + 1 and '- and [4 more](' in many
-    )
 
 for failure in failures:
     print('FAIL:', failure)

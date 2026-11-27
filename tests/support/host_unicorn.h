@@ -24,7 +24,11 @@
    (code_loader_coff.c), its arena mapped into Unicorn. A native function leaves every register a callee may change
    changed. The objects' function table is held to what Windows does with it
    (arm64_unwinder.h): where a native function is called, and with hostuc_step at every instruction, the frames are
-   unwound by it back to the entry, every register to its mark */
+   unwound by it back to the entry, every register to its mark.
+
+   HOSTUC_X64 is x86-64's System V code under Unicorn's x86-64, of the processor hostuc_new_cpu names (QEMU's models:
+   a Nehalem's, a qemu64's...), whose CPUID the code's features are read from (hostuc_cpuid): an instruction the
+   processor lacks stops it. A call's return address is pushed, and a trap's RET goes back to it */
 #ifndef SNX_TEST_HOST_UNICORN_H
 #define SNX_TEST_HOST_UNICORN_H
 #include <stddef.h>
@@ -36,15 +40,21 @@ typedef enum {
     HOSTUC_PPC64LE,
     HOSTUC_MIPS64EL,
     HOSTUC_LA64,
-    HOSTUC_PPC64, /* big-endian, ELFv2 */
+    HOSTUC_PPC64,  /* big-endian, ELFv2 */
     HOSTUC_MIPS64, /* big-endian */
     HOSTUC_S390X,
     HOSTUC_ARM64_WIN, /* arm64's code for Windows, in COFF objects */
-    HOSTUC_WIN64 /* x86-64's code for Windows, run by this x86-64 host itself (host_win64.c, with no Unicorn) */
+    HOSTUC_WIN64,     /* x86-64's code for Windows, run by this x86-64 host itself (host_win64.c, with no Unicorn) */
+    HOSTUC_X64        /* x86-64's System V code, on an older processor's model */
 } HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */
 HostUc* hostuc_new(HostUcArch arch, size_t code_cap);
+/* the same with the processor named cpu (HOSTUC_X64's: qemu64, kvm64, phenom, Opteron_G1 to G3, Conroe, Penryn,
+   Nehalem, Westmere), NULL for the architecture's own; NULL, said with the names, for a name Unicorn has none of */
+HostUc* hostuc_new_cpu(HostUcArch arch, size_t code_cap, const char* cpu);
+/* HOSTUC_X64's: CPUID's leaf (subleaf 0) on the processor, EAX, EBX, ECX and EDX into r: 0, -1 */
+int hostuc_cpuid(HostUc* u, unsigned leaf, unsigned r[4]);
 void hostuc_free(HostUc* u);
 const char* hostuc_name(HostUcArch arch);
 /* the test's own memory of size bytes at p (page-aligned) mapped at its address: 0, -1 */

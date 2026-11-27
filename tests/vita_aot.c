@@ -1,14 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The Vita's offline compiler (vita/aot/compiler.c, itself): one image compiled by the host's native back end (all of
-   it LLVM's where there is none), by LLVM alone, its IR kept, and by both, the test having the native back end refuse
-   some blocks; each module loaded and run by the run loop's rules, with the block table and the imports called directly
-   and without either. Every run ends in the state the code says and goes back to the loop as often as LLVM's does,
-   every block is the native back end's where the host has one and it refuses none, and the module's descriptor is read
-   back from its file. A module is the same bytes however many threads made it */
+/* The Vita's offline compiler (vita/aot/compiler.c, itself): one image compiled by the host's native back end, and with
+   the test having the native back end refuse some blocks (no module,
+   the block and the reason said); each module loaded and run by the run loop's rules, with the block table and the
+   imports called directly and without either. Every run ends in the state the code says and goes back to the loop as
+   often as it should, and the module's descriptor is read back from its file. A module is the same bytes however many
+   threads made it */
 #include "vita/aot/module.h"
 #include "vita/runtime/process.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/file.h"
 #include "common/platform/vm.h"
@@ -251,9 +250,8 @@ static void test_threads(const char* folder) {
 
 int main(void) {
     char *root = snx_temp_dir(NULL), *said = NULL, line[128];
-    char *native = root ? snx_path_join(root, "native") : NULL, *llvm = root ? snx_path_join(root, "llvm") : NULL;
-    char *none = root ? snx_path_join(root, "none") : NULL, *both = root ? snx_path_join(root, "both") : NULL,
-         *kept = NULL;
+    char* native = root ? snx_path_join(root, "native") : NULL;
+    char *none = root ? snx_path_join(root, "none") : NULL, *both = root ? snx_path_join(root, "both") : NULL;
     g_test.mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
     char* many = root ? snx_path_join(root, "many") : NULL;
     if (!none || !both || !many || !g_test.mem || plat_mem_commit(g_test.mem + CODE, PAGE) ||
@@ -272,54 +270,42 @@ int main(void) {
     g_test.image.import_count = 2;
     g_test.imports[0].stub = STUB_ARM, g_test.imports[0].svc = 3;
     g_test.imports[1].stub = STUB_THUMB | 1, g_test.imports[1].svc = 1;
-    snprintf(g_settings.optimization_level, sizeof g_settings.optimization_level, "1");
 
-    const SnxCliRecompile keep = {.keep_ir = 1}, jit = {.jit_only = 1};
+    const SnxCliRecompile jit = {.jit_only = 1};
     const Runs by_native = compile(native, NULL, &said);
-    if (snx_native_arm_available()) {
-        snprintf(line, sizeof line, "%s back end: %u of %u blocks\n", snx_native_name(), by_native.blocks,
-                 by_native.blocks);
-        CHECK(said && strstr(said, line));
-        CHECK(!snx_ir_started()); /* no LLVM was started for them */
-        if (g_test.failures) fprintf(stderr, "the lines on stdout:\n%s", said ? said : "(none)\n");
-    } else
-        CHECK(said && strstr(said, "blocks (no native back end on this host)"));
+    snprintf(line, sizeof line, "%s back end: %u of %u blocks\n", snx_native_name(), by_native.blocks,
+             by_native.blocks);
+    CHECK(said && strstr(said, line));
     CHECK(said && strstr(said, "Compiled 1/")); /* a line of progress, which the launcher reads */
+    if (g_test.failures) fprintf(stderr, "the lines on stdout:\n%s", said ? said : "(none)\n");
     free(said);
-    if (snx_native_arm_available()) {
-        /* some blocks LLVM's, some the native back end's: each goes on to the other's */
+    /* some blocks the native back end refuses: no module, the first of them and why said */
+    {
+        char error[512] = "";
         g_test.refuse = 1;
-        const Runs mixed = compile(both, NULL, &said);
+        CHECK(!snx_mkdirs(both));
+        CHECK(vita_aot_compile(both, &g_test.image, NULL, error, sizeof error) != 0);
         g_test.refuse = 0;
-        unsigned made = 0, of = 0;
-        const char* at = said ? strstr(said, "back end: ") : NULL;
-        CHECK(at && sscanf(at, "back end: %u of %u blocks, LLVM the rest", &made, &of) == 2 && made && made < of);
-        CHECK(of == by_native.blocks && mixed.blocks == by_native.blocks);
-        CHECK(mixed.fast == ENTERED_FAST && mixed.slow == ENTERED_SLOW);
-        fprintf(stderr, "vita_aot: %u of %u blocks native, entered %u and %u times\n", made, of, mixed.fast,
-                mixed.slow);
-        free(said);
+        CHECK(strstr(error, " back end made no ") && strstr(error, refused));
+        char* module = vita_game_file(both, VITA_MODULE_SUFFIX);
+        CHECK(module && !snx_is_file(module));
+        if (g_test.failures) fprintf(stderr, "the refusal: %s\n", error);
+        free(module);
     }
-    const Runs by_llvm = compile(llvm, &keep, &said);
-    CHECK(said && strstr(said, "LLVM: ") && strstr(said, "(--keep-ir keeps LLVM's IR of every block)"));
-    free(said);
-    kept = vita_game_file(llvm, "_build");
-    CHECK(kept && snx_is_dir(kept));
-    fprintf(stderr, "vita_aot: %u blocks, entered %u times with the table and %u without (%s), %u and %u (LLVM)\n",
-            by_native.blocks, by_native.fast, by_native.slow, snx_native_name(), by_llvm.fast, by_llvm.slow);
-    CHECK(by_native.blocks && by_native.blocks == by_llvm.blocks);
+    fprintf(stderr, "vita_aot: %u blocks, entered %u times with the table and %u without (%s)\n", by_native.blocks,
+            by_native.fast, by_native.slow, snx_native_name());
+    CHECK(by_native.blocks);
     CHECK(by_native.fast == ENTERED_FAST && by_native.slow == ENTERED_SLOW);
-    CHECK(by_llvm.fast == ENTERED_FAST && by_llvm.slow == ENTERED_SLOW);
     CHECK(compile(none, &jit, &said).blocks == 0 && said && strstr(said, "No code ahead of time (--jit-only)"));
     free(said);
-    if (snx_native_arm_available()) test_threads(many);
+    test_threads(many);
 #ifdef _WIN32
     CHECK(freopen("NUL", "w", stdout)); /* the folder's file closed */
 #else
     CHECK(freopen("/dev/null", "w", stdout));
 #endif
     (void)snx_remove_tree(root);
-    free(kept), free(native), free(llvm), free(none), free(both), free(many), free(root);
+    free(native), free(none), free(both), free(many), free(root);
     plat_mem_release(g_test.mem, VITA_SPACE + 0x10000);
     if (g_test.failures) {
         fprintf(stderr, "vita_aot: %d failures\n", g_test.failures);

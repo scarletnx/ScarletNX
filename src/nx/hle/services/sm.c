@@ -103,7 +103,7 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
             fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
                   "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
                   "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
-                  "not supported: it has to call the SDK's functions, as edenprobe does with the word hooks in its "
+                  "not supported: it has to call the SDK's functions, as Amberlith does with the word hooks in its "
                   "mode file%s%s",
                   s, g_native_only[i][1], s, *missed ? ". " : "", missed);
         }

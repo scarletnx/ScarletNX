@@ -11,6 +11,7 @@
 * [The HLE BIOS](#the-hle-bios)
 * [The recompiled ROM](#the-recompiled-rom)
 * [The ROM header](#the-rom-header)
+* [Save states](#save-states)
 * [Tests](#tests)
 
 `scarletnx-agb` is the Game Boy Advance system type. It loads a GBA ROM image
@@ -18,7 +19,8 @@
 runs it with the same static recompiler the other system types use. The board
 library under `src/agb/` is CPU-only: it links `scarletnx-common` and nothing of
 `src/nx/` or `src/gnuabi/`, so the board builds without the Switch runtime's
-graphics and media packages. Its files whose header names the mGBA contributors
+graphics and media packages. Its runner's save states take the Switch's state
+file (`src/nx/runtime/state_file.c`, the `snx_state_file` library). Its files whose header names the mGBA contributors
 are MPL-2.0 ([Licenses and credits](../../CREDITS.md)).
 
 ```sh
@@ -39,7 +41,7 @@ to the Switch, Linux and 3DS loaders.
 | Kernel and HLE | the BIOS calls as board routines (`src/agb/bios/`), the board's memory, DMA, timers and saves (`src/agb/board/`) | [The HLE BIOS](#the-hle-bios), [The memory map](#the-memory-map) |
 | GPU | the display device, drawn on the CPU (`src/agb/ppu/`) | [The display device](#the-display-device) |
 | Audio | the sound hardware and its mixer (`src/agb/apu/`) | [The sound hardware](#the-sound-hardware) |
-| Input | the keypad from the keyboard and gamepads (`src/agb/runtime/host.c`) | [Playing](#playing) |
+| Input | the keypad from the keyboard, the gamepads and the on-screen controls (`src/agb/runtime/host.c`) | [Playing](#playing) |
 | Platform | the SDL window and the run (`src/agb/runtime/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Playing
@@ -58,14 +60,18 @@ memory.
 
 `scarletnx-agb Game.gba` plays the ROM in a window four times the console's
 screen, scaled by whole steps when it is resized, with the console's sound and
-its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
-switches. Esc twice within 3 seconds closes it, a first press warning on the
+its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11 or Alt+Return
+switches. Esc twice within 3 seconds closes it (the runtime's keys, as a Switch game takes them:
+[On-screen controls](../../user/usage.md#on-screen-controls)), a first press warning on the
 terminal and in a line over the game, as a Switch game's notices show. The screen goes through Vulkan, as the
 other consoles' windows, where the host has a Vulkan 1.3 device that presents to the window; without one, through
 SDL's renderer, which the start says, the same pixels either way. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
-R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the
+R, its left stick the D-pad. The ten keys are on the screen too, over the picture, for fingers and
+the mouse's left button ([On-screen controls](../../user/usage.md#on-screen-controls)): shown on a touch
+screen while no gamepad is connected, or as `--controls=` says, their layout edited with F2.
+`--script ms:hex,...` presses keys unattended, as the
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
@@ -101,7 +107,7 @@ The board is under construction, piece by piece:
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
 | PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending |
 | APU (audio) | done: the four PSG channels, the two FIFOs at their timer's rate and the stereo mixer |
-| Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard and gamepads |
+| Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard, the gamepads and the on-screen controls |
 | Save memory | SRAM and flash, kept in the game's folder; EEPROM not yet |
 | CPU, DMA, timers, interrupts | done, and the BIOS's IntrWait waits for the game's handler to flag the interrupt |
 | Serial (link) | no cable: answers as a console with none plugged, where a transfer that waits for a partner never ends |
@@ -175,10 +181,8 @@ own table has them, and BgAffineSet's start point comes from that matrix.
 ## The recompiled ROM
 
 `cpu/recomp.c` takes the ROM's ARM and Thumb code through the host's native back
-end, block by block, and LLVM for the blocks it refuses, or all of them on a host
-without one or with `--keep-ir` (`src/common/cpu/arm/aot.h`; the recompile says how
-many each made, and why). It links the objects with the helpers they call
-(`armlib.c`) into a native module with the LLVM backend's own linker
+end, block by block (`src/common/cpu/arm/aot.h`; the recompile says how many it made, and why it refused one). It
+links the objects with the helpers they call (`armlib.c`) into a native module with the recompiler's own linker
 (`src/common/cpu/recompiler/object/link.c`), as the Switch's 32-bit modules are: no C
 compiler is needed. Loading a ROM does this
 automatically and caches the module in the game's folder as `<name>_code.so`,
@@ -228,9 +232,41 @@ check at 0xBD over the title block. `cartridge/cartridge.c` validates the branch
 the fixed byte and the complement check, and keeps the parsed fields beside the
 image. A ROM the console would reject is refused with the failing byte named.
 
+## Save states
+
+A state is the whole console at one moment, in the Switch's state file
+(`src/nx/runtime/state_file.h`): the header and the 320 by 180 thumbnail the
+launcher and the game's menu read, then three sections, each with a hash of the
+names and types of what it holds (`src/agb/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| BOARD | the `AgbBoard`: the devices' registers, the display's frame, the timers, DMA, the sound's channels and FIFOs, the cartridge's clock and save chip's protocol |
+| CPU | the `AgbCpu`: the registers and their banks, the bus and the prefetch unit, the BIOS's time owed |
+| MEMORY | EWRAM, IWRAM, the palette, VRAM and OAM |
+
+The runner keeps what is its own: the cartridge image (the header names the ROM
+by its FNV-1a, as the recompiled module's map does), the flat window, the
+`gba_color` setting. The cartridge's save memory is the game's save file,
+`<name>.sav`, as a Switch game's save files are: a state does not hold it, and a
+load leaves it as it is. The recompiled blocks are no part of a state: a block
+built from RAM a load changed is built again at its next dispatch.
+
+`snx_agb_state_save` and `snx_agb_state_load` (`src/agb/runtime/state.h`) take
+the board and the CPU between two frames. A load reads and checks every section
+before it changes anything, and refuses another ROM's state (both hashes named),
+another `SNX_AGB_STATE_VERSION` (both versions named), a section of another
+layout (both hashes named), and a file that is damaged or cut short. The test's
+ROM, which keeps every device busy, makes a state of 306 KiB, 225 KiB of it the
+thumbnail, saved and loaded in a few milliseconds (`agb_state`).
+
 ## Tests
 
-The board's unit tests are `tests/agb_*.c`. A test build also downloads
+The board's unit tests are `tests/agb_*.c`. `agb_state` (`tests/agb_state.c`)
+runs a ROM it makes, saves a state, and checks that the 30 frames after a load,
+in the same machine and in a fresh one, give the same pictures, sound and state
+word for word as the run that went on, and that a state of another ROM, version
+or layout, damaged or cut short, is refused with the machine left as it was. A test build also downloads
 [jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (pinned in `cpmfile.json`)
 and runs each ROM as a test of its own, `agb_gba_<rom>` (`tests/agb_gba_tests.py`).
 The ROMs check the ARM and Thumb instruction sets, the BIOS's open bus, the

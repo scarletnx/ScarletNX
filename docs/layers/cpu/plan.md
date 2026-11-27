@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # CPU implementation plan
 
+**The items' "Now", "Where" and "How" were written before LLVM left the recompiler (#3017), and describe its
+emitters, which are deleted: #3027 re-plans them for the native back ends.**
+
 **Start here:** [First CPU milestone: one measured SIMD improvement](guide.md#first-milestone-one-measured-simd-improvement). Profile lane-helper cost,
 replace one hot instruction group with exact vector code, and compare the same game scene before and after. That is
 the active implementation scope. The sections below are the supporting backlog, and their phase labels do not require
@@ -15,8 +18,8 @@ This plan takes each part of Rosetta 2's design, finds the code in ScarletNX tha
 how to adapt the technique to each host and to the Horizon behavior that ScarletNX must provide.
 Whoever implements it should start with the [guide](guide.md): setup, rules and how work is handed back.
 
-Much of Rosetta's shape is already here. `scarletnx -r` compiles a game ahead of time into a native module through
-LLVM, a runtime JIT compiles what the recompile missed, and both results are kept between runs. The parts that still
+Much of Rosetta's shape is already here. `scarletnx -r` compiles a game ahead of time into a native module with the
+host's native back end, a runtime JIT compiles what the recompile missed, and both results are kept between runs. The parts that still
 fall short are the cost of guest state at guest calls, calls that go through the dispatch table, the wait on the first
 run of missed code, and the lack of measurements that would rank these. Rosetta also leans on Apple hardware made to
 behave like x86. ScarletNX's hosts offer no such features, except the AArch64 host, which shares the guest's own
@@ -87,11 +90,11 @@ once those numbers exist. Each metric is measured on every host that can run the
 | Metric | How it is measured | Proposed target |
 | --- | --- | --- |
 | Speed ratio | The same C kernels built natively for the host and as AArch64 Linux programs, the latter run through `scarletnx-gnuabi` with a warm cache (T1). The ratio is native time over translated time, as a geometric mean. On an AArch64 host the native build is the guest program itself. | Reported in CI first. Then 0.7 or better for integer kernels on x86-64, and 0.9 or better on AArch64. |
-| Call cost | Memory operations and host instructions for each guest `BL` and `RET` pair, from the recompile's statistics (T3) and the calls kernel of `tests/llvm_bench.c`. | Half of the memory operations measured at the start. |
+| Call cost | Memory operations and host instructions for each guest `BL` and `RET` pair, from the recompile's statistics (T3) and the calls kernel of `tests/native_bench.c`. | Half of the memory operations measured at the start. |
 | AOT coverage | The share of executed guest functions that came from the AOT module rather than the JIT, from the runtime counters (T2). | 99.9 percent after one recompile with hints, and no new hints after two sessions in the same scenes. On hosts with no JIT, no miss at all. |
-| Miss latency | Time from `rt_miss` to the guest thread running again (T2). | Record the baseline and tail latency. No tiered-compilation target gates current work. J1 is deferred. |
+| Miss latency | Time from `rt_miss` to the guest thread running again (T2). | Record the baseline and tail latency. No tiered-compilation target gates current work. |
 | Recompile time | Wall time of `scarletnx -r` with an empty unit cache, and after new hints. `docs/dev/architecture.md` gives 740 s cold and 24 to 28 s warm for a game of 255 units. | Half the cold time. Under 60 s for a recompile that only adds hints. |
-| Exactness | `ctest -R llvm_qemu_differential`, the block-level fuzzer (T5), memory-order litmus tests (M1). | No new groups in `tests/llvm_qemu_expected.txt`. Every mode that changes results is a setting, and the exact behavior is the default. |
+| Exactness | `ctest -R native_qemu_differential`, the block-level fuzzer (T5), memory-order litmus tests (M1). | No new groups in `tests/native_qemu_expected.txt`. Every mode that changes results is a setting, and the exact behavior is the default. |
 | Precise faults | A crash report names the guest pc of the faulting instruction. | Every fault in AOT and JIT code. |
 
 ### SIMD performance scenarios
@@ -185,7 +188,7 @@ records each executable's build ID and segment layout, and the runtime refuses a
 (`src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`) starts from the dynamic symbols, the addends of
 relative relocations, the `.eh_frame` ranges (swept word by word), hints from earlier runs and `ADR` or `ADRP`+`ADD`
 address loads, then follows branches. Jump table cases are not followed. Units group sorted functions up to the
-`unit_instructions` setting, 90000 instructions by default and 20000 on phones (`module_llvm.c`). A cold recompile of a
+`unit_instructions` setting, 90000 instructions by default and 20000 on phones (`module_a64.c`). A cold recompile of a
 game of 255 units takes about 740 s.
 
 Rosetta translates only what it can find too, but its JIT catches the rest on every host. ScarletNX has no JIT on
@@ -246,7 +249,7 @@ devirtualization or permission to bypass hooks. Extracted RTTI records stay loca
 
 - **Now.** A new function shifts the boundaries of later units, so a recompile that only adds hints makes many
   units again. Each unit is optimized independently, emitted as a machine-code object by
-  `snx_ir_object` (`src/common/cpu/recompiler/llvm/ir.c`), and linked with the other objects in `module_llvm.c`.
+  `snx_ir_object` (`src/common/cpu/recompiler/llvm/ir.c`), and linked with the other objects in `module_a64.c`.
   The current final link does not perform LLVM LTO.
 - **Change.** Partition units by fixed address ranges within each executable, so a new function changes only its own
   source unit. Measure the effect of the new boundaries on inlining and constant propagation, since moving callers
@@ -257,30 +260,12 @@ devirtualization or permission to bypass hooks. Extracted RTTI records stay loca
   flag to the existing object linker cannot recover discarded IR. ThinLTO needs a summary/import stage and backend
   cache keys that include imported definitions and optimization settings. A changed callee can legitimately rebuild
   other optimization units. See [LLVM's ThinLTO design](https://llvm.org/docs/ThinLTO.html).
-- **Where.** `module_llvm.c`, `x64_cache.c`, `ir.c`, and a new IR link/import stage if justified.
+- **Where.** `module_a64.c`, `x64_cache.c`, `ir.c`, and a new IR link/import stage if justified.
 - **ABI.** None if the generated-code contract stays the same. Version the cache format and invalidate affected keys.
 - **Proof.** Measure rebuild scope, time, peak memory and execution speed. Include callers and callees across a unit
   boundary, and change a callee to confirm that imported copies are invalidated. Claim local rebuilds only for
   independent units without imported dependencies.
 - **Size and priority.** M, P2 for stable units. LTO integration is a separate L-sized experiment within A3.
-
-#### A4 Temporary compile-time tuning before the linked SDK layer
-
-- **Direction.** The maintainer plans to link an SDK translation layer instead of recompiling the SDK for every game.
-  Treat a translated-SDK object cache as temporary. Do not build a permanent cross-game SDK recompilation system for
-  a path scheduled for replacement.
-- **Change.** Use pass timing to identify cheap improvements in the current compiler. Keep only work that also helps
-  application code or demonstrably pays for itself before the SDK layer arrives. When that layer is available, bind
-  supported SDK entry points through its versioned interface, with the Horizon boundary contracts above. Retain a
-  translated path for unsupported SDK versions, patched implementations and unknown entry points.
-- **Where.** `src/common/cpu/recompiler/llvm/ir.c`, `module_llvm.c`, and the future SDK layer's interface. Its location
-  and implementation are not specified by this plan.
-- **ABI.** Timing and pass tuning need none. SDK integration needs an explicit ABI review, including callbacks and
-  guest state, before its compatibility and invalidation rules can be decided.
-- **Proof.** Report the short-term cost and benefit of tuning separately from SDK integration. Test SDK calls and
-  callbacks against the existing path, including unsupported-version fallback, IPC and thread behavior.
-- **Size and priority.** S, P3 for temporary tuning. Scope SDK integration with the layer's owner when its interface is
-  available. The standalone shared translated-SDK cache proposal is retired.
 
 #### A5 Optional profile-guided translation
 
@@ -293,7 +278,7 @@ Rosetta translates each instruction once with almost no optimization. ScarletNX 
   and write the profile beside the game at exit. An explicitly enabled profile build can set branch weights, order
   functions by heat and split cold code. L2 may use the `BLR` targets when that option is enabled. Reject stale
   profiles using executable identity, instruction bytes and the profile schema. Missing profiles use the normal build.
-- **Where.** `ir_profile.c`, `ir_codegen.c`, `module_llvm.c`, `src/nx/runtime/settings.txt`.
+- **Where.** `ir_profile.c`, `ir_codegen.c`, `module_a64.c`, `src/nx/runtime/settings.txt`.
 - **ABI.** None.
 - **Proof.** Compare the normal build, the instrumented build and the optimized profile build. Measure execution time,
   collection overhead, recompile cost and code size across different scenes, including scenes absent from training.
@@ -332,7 +317,7 @@ veneers that AArch64 Mach-O modules get past 128 MiB and the stubs that PowerPC6
   identification, version checks and invalidation rather than adding a parallel PLT binder. Rosetta's useful idea is
   guarded target resolution with a correct fallback. Apply it inside the hook architecture where appropriate.
 - **Current integration point.** `call` in `ir_codegen.c` already respects `hook_direct_calls` before emitting direct
-  calls, and `module_llvm.c` propagates the option. Any future direct-call shortcut must preserve hook precedence for
+  calls, and `module_a64.c` propagates the option. Any future direct-call shortcut must preserve hook precedence for
   both AOT and JIT code. Do not bypass an active hook because an original guest target is known.
 - **Fallback and proof.** Preserve normal dispatch for unhooked imports and unsupported SDK versions. Hook integration
   must test direct and indirect entries, callbacks, and target replacement or removal under its supported lifecycle.
@@ -362,7 +347,7 @@ veneers that AArch64 Mach-O modules get past 128 MiB and the stubs that PowerPC6
   units and NRO images keep the lookup through `CPU`.
 - **Where.** `cpu.h`, `ir_helpers.c`, `src/nx/loader/module_abi.h`, `guest_jit.c`.
 - **ABI.** Bump.
-- **Proof.** Differential tests and the indirect part of `llvm_bench`.
+- **Proof.** Differential tests and the indirect part of `native_bench`.
 - **Size and priority.** S, P2.
 
 #### L4 Dispatch for NRO code
@@ -391,20 +376,6 @@ function then checks a stale byte on entry and after each call returns (`stale_c
 **On each host.** x86-64 and AArch64 hosts have the JIT, and so does PowerPC64. iOS has it only with a debugger
 attached (`docs/hosts/apple.md`), and RISC-V, LoongArch and Intel Macs have none (`HOST_MACHINE` in `code_loader.c`). Phones
 compile at O0 because other levels break there (`guest_jit.c`).
-
-#### J1 A fast first tier (deferred)
-
-- **Change.** Compile the missed function alone at O0 first, publish it in the dispatch table, and resume the thread.
-  Queue the O2 batch behind it and swap the slot when it is ready. Retain O0 code while any thread or direct reference
-  can still reach it, then reclaim it only with a proven lifetime scheme. Phones already compile everything at O0, so
-  for them this item only shrinks the batch a thread waits on. Publication must respect hook-owned slots.
-- **Where.** `jit_service.c`, `guest_jit.c`.
-- **ABI.** None.
-- **Proof.** T2 shows the wait per miss. The JIT forms of the differential tests still pass. Game runs that reach new
-  code show shorter stalls.
-- **Size and priority.** M, P3, deferred. Tiered compilation is not a current priority and is not a prerequisite for
-  SIMD, register or hook work. Revisit only if T2 still shows significant compilation stalls after coverage and
-  execution improvements. The existing single-tier JIT remains the baseline.
 
 #### J2 Priority for batches a thread waits on
 
@@ -499,7 +470,7 @@ close to Rosetta's is possible on every host but x86-64.
 - **Where.** `ir_promote.c`, `ir_codegen.c`, `settings.txt`, the JIT cache key in `jit_cache.c`.
 - **ABI.** None. It is a recompile setting that changes the output for the same contract.
 - **Proof.** The checking mode runs clean over the test programs and through the scenes of the games used for testing.
-  T3 shows fewer stores and reloads per call, and `llvm_bench` shows the time.
+  T3 shows fewer stores and reloads per call, and `native_bench` shows the time.
 - **Size and priority.** M, P1. The setting stays off by default until the checker has run clean on those games.
 
 ##### I3 Pass guest registers in host registers
@@ -536,8 +507,8 @@ waiting thread of higher priority.
   reading `c->pc`.
 - **Where.** `cpu.h`, `ir_codegen.c`, `thread.c`, `jit_service.c`, the AOT pack and variant paths.
 - **ABI.** Bump. The function type changes, so every module is recompiled from new IR. Group it with I3.
-- **Proof.** `tests/llvm_module.c`, the differential test in AOT and JIT forms, the calls kernel of `llvm_bench`, and
-  game runs that exercise exceptions and `longjmp`, which return to a different pc.
+- **Proof.** `tests/native_module.c`, the differential test in AOT and JIT forms, the calls kernel of `native_bench`,
+  and game runs that exercise exceptions and `longjmp`, which return to a different pc.
 - **Size and priority.** M, P1.
 
 ##### I5 Cheaper polls, if they cost
@@ -592,17 +563,6 @@ The scalar forms of `FRECPE`, `FRSQRTE` and `FRECPX`, and the vector forms of th
 LASX. A RISC-V host without the V extension gets scalar code. Big-endian PowerPC64 needs care with lane order wherever
 the emitters move a vector through memory.
 
-##### I7 Vector FP helpers as FP-only sites
-
-- **Change.** Mark the lane helpers with `ir_noregs` in `ir_vec_call`, after checking that each one touches only its
-  arguments, FPCR and FPSR, so the result no longer depends on the order of declarations.
-- **Where.** `ir_vec.c`, `ir_vec_fp.c`.
-- **ABI.** None.
-- **Proof.** The differential test, and the store and reload counts of T3.
-- **Size and priority.** S, P0.
-
-I7 reduces state synchronization but leaves one call per lane. It is a prerequisite, not the end of the vector work.
-
 ##### I15 Whole-vector operations instead of serial lane helpers
 
 - **Now.** `map` in `ir_vec_fp.c` extracts lanes, calls `lane` through `ir_vec_call`, and inserts each result. Several
@@ -643,7 +603,7 @@ I7 reduces state synchronization but leaves one call per lane. It is a prerequis
   one exceptional lane and all exceptional lanes separately. Assembly proves vector lowering, differential tests prove
   semantics, and repeated timing proves a gain. Generic fast-math flags cannot replace these proofs. Preserve compiler
   reproductions in `tests/` when implementation starts, including both the opaque helper and pure scalar controls.
-- **Size and priority.** L, P1 after I7 and the measurement tools. Land one proven instruction group at a time.
+- **Size and priority.** L, P1 after the measurement tools. Land one proven instruction group at a time.
 
 The [first SIMD milestone](guide.md#first-milestone-one-measured-simd-improvement) turns these ideas into a bounded experiment. Use the
 [conditional performance model](#simd-performance-scenarios), then compare its assumptions with the actual scene.
@@ -673,10 +633,7 @@ establish which transformations LLVM performs, without measuring a complete emit
 | Four scalar `llvm.fma.f32` operations | Four scalar intrinsics | One `llvm.fma.v4f32` | Emit the vector intrinsic directly where exact FMA is justified and the host supports it. |
 
 The unknown helpers can update memory reachable through `CPU*`. Successive calls can therefore depend on earlier
-state changes, including sticky FPSR updates. The extract/insert syntax alone is not the obstacle. I7's private
-`snx-noregs` attribute helps ScarletNX's register promotion. It does not supply LLVM with a vector implementation of
-the helper or make its memory effects disappear. LTO may expose helper bodies, but does not itself prove that the
-resulting stateful operations can be combined. The optimized IR and assembly still have to demonstrate that.
+state changes, including sticky FPSR updates. The extract/insert syntax alone is not the obstacle.
 
 Representative `llc -O2` checks of four-float vector intrinsics show why each target needs inspection:
 
@@ -696,8 +653,7 @@ Implement I15 in this order:
 1. **Expose the cost.** T2/T3 count helper calls and fast/slow path entries by instruction group. Benchmark all-normal
    vectors and vectors with exactly one exceptional lane. Verify which guard rejects that lane rather than assuming
    all scalar paths have the same cause.
-2. **Reduce call overhead first.** Apply the audited I7 state classification and batch remaining scalar fallback work
-   behind one vector-instruction helper entry. Measure spills and state synchronization as well as call counts.
+2. **Reduce call overhead first.** Batch remaining scalar fallback work behind one vector-instruction helper entry. Measure spills and state synchronization as well as call counts.
    A scalar loop inside that helper is an intermediate step, not completion of SIMD translation.
 3. **Remove always-scalar cases.** Begin with guarded `FABD`, then audit rounding and conversions against the target
    lowering table. Reuse existing vector arithmetic and add only the missing operations and exact fixups.
@@ -736,15 +692,6 @@ not claims about Rosetta's undocumented implementation. They do not depend on a 
 - **Proof.** The differential test.
 - **Size and priority.** M, P2.
 
-##### I10 Inline the small helpers of the runtime library
-
-- **Change.** Link the bitcode of small `rtlib.c` helpers into each unit before optimization, and keep slow paths as
-  cold calls. The inline helpers of `cpu.h`, such as `ldx` and `stx`, are already IR in each module (`ir_helpers.c`).
-- **Where.** `ir.c`, `rtlib.c`.
-- **ABI.** None.
-- **Proof.** Recompile time and module size stay acceptable, and `llvm_bench` improves.
-- **Size and priority.** M, P2.
-
 #### Floating point
 
 **Rosetta 2.** x86 and Arm both follow IEEE 754 but differ in NaN propagation and in when tininess is detected. Dougall
@@ -755,7 +702,7 @@ in hardware. x87 is a full but slow software emulation.
 equal the soft-float helper's, and the helper runs otherwise (`sg_fp_fast_binary`, `sg_fp_fast_sqrt` and `sg_fp_fast_fma` in
 `tools/sailgen/llvm.h`). The helpers follow the Arm ARM for NaN propagation, the default NaN, flush
 to zero and every rounding mode (`src/common/cpu/aarch64/helpers/fp.c`), and no FP group differs from QEMU
-(`tests/llvm_qemu_expected.txt`). A directed rounding mode sends every operation to a helper. The FMA fast path waits
+(`tests/native_qemu_expected.txt`). A directed rounding mode sends every operation to a helper. The FMA fast path waits
 until FPSR.IXC is set and needs a host FMA. Halves, scalar `FRINT*` and `FJCVTZS` always call helpers. The
 `fpsr_flags` setting (default 1) keeps FPSR exact.
 
@@ -819,7 +766,7 @@ run inside an x64 process, and Box64 runs whole native host libraries in place o
 - **Change.** If T4 shows them hot, recognize `memcpy`, `memset`, `memmove`, `memcmp` and `strlen` in the game's SDK
   by dynamic symbol name together with a hash of their code. Replace their bodies with host routines that work on guest
   memory through `c->mem`, in the module's runtime library, so each host gets its own best version.
-  Register these replacements through the expanded hook system and coordinate with A4's planned SDK layer instead
+  Register these replacements through the expanded hook system and coordinate with the planned SDK layer instead
   of maintaining duplicate replacements. Preserve guest memory
   permissions, GPU ownership traps and callback/state contracts at each supported entry point.
 - **Where.** `codegen.c`, `rtlib.c`, `ir_codegen.c`.
@@ -883,7 +830,7 @@ can show what plain accesses do there.
   addresses to 39 bits for debugging, off by default.
 - **Where.** `mem.c`, `ir_state.c`, `settings.txt`.
 - **ABI.** None.
-- **Proof.** A synthetic wild pointer faults cleanly. `llvm_bench` shows the mask's cost.
+- **Proof.** A synthetic wild pointer faults cleanly. `native_bench` shows the mask's cost.
 - **Size and priority.** S, P2.
 
 #### M3 Free the base register (experiment)
@@ -897,7 +844,7 @@ so one host register holds the base (`ir_codegen.c`, `ir_state.c`).
   is a second way. Windows reserves GS for itself.
 - **Where.** `mem.c`, `ir_state.c`.
 - **ABI.** Bump, because the module is compiled for one model.
-- **Proof.** `llvm_bench` and llvm-mca on hot loops first. Keep it only on hosts where the gain is clear. x86-64, with
+- **Proof.** `native_bench` and llvm-mca on hot loops first. Keep it only on hosts where the gain is clear. x86-64, with
   its 16 registers, is where it can matter.
 - **Size and priority.** M, P3.
 
@@ -994,12 +941,12 @@ translated processes.
 **Rosetta 2.** The runtime reads switches such as `ROSETTA_PRINT_IR`, which prints each block with its flag liveness,
 and `ROSETTA_PRINT_SEGMENTS` (Champollion part 2).
 
-**ScarletNX now.** `tests/llvm_bench.c` times six assembly kernels (integer, FP, SIMD, crypto, tricks, calls) with no
+**ScarletNX now.** `tests/native_bench.c` times six assembly kernels (integer, FP, SIMD, crypto, tricks, calls) with no
 native or QEMU baseline, and no doc records its numbers. At exit the log gives the AOT variant hits and misses and the
 JIT batch statistics (`jit_report` in `guest_jit.c`, `SnxJitStats` in `jit_service.h`). The Windows sampler, Tracy and
 `gdb_jit` exist. AOT functions carry `F_<address>` names in the module's symbol table (`ir_codegen.c`, `link_elf.c`),
-so Linux `perf` names them, but it cannot name JIT code. `tests/llvm_qemu_differential.c` checks samples of every row of
-the A64 decoder against `qemu-aarch64 -cpu max`, one instruction at a time.
+so Linux `perf` names them, but it cannot name JIT code. `tests/native_qemu_differential.c` checks samples of every row
+of the A64 decoder against `qemu-aarch64 -cpu max`, one instruction at a time.
 
 Every gain this plan claims needs these items first.
 
@@ -1009,7 +956,7 @@ Every gain this plan claims needs these items first.
   native time to translated time. Add a single-thread suite of AArch64 Linux programs run through `scarletnx-gnuabi`,
   with the same programs built natively, so every host that runs the GNU ABI runtime gets a speed ratio. The suite stays
   single-threaded until that runtime runs threads.
-- **Where.** `tests/llvm_bench.c`, `tests/CMakeLists.txt`, a new suite beside `tests/llvm_perf/`.
+- **Where.** `tests/native_bench.c`, `tests/CMakeLists.txt`, a new suite beside `tests/llvm_perf/`.
 - **ABI.** None.
 - **Proof.** CI prints the ratios. Repeated runs give the median and the spread, so a later change can be judged
   against noise.
@@ -1032,9 +979,9 @@ Every gain this plan claims needs these items first.
 - **Change.** After promotion, count for each unit: call sites, the stores and loads of guest state at those sites,
   helper calls by kind, lookups, polls and stale checks. Print the totals in the recompile log. Add a switch that dumps
   one guest function's leaders, blocks, flag origins and promoted registers, as `ROSETTA_PRINT_IR` does for Rosetta.
-- **Where.** `ir_promote.c`, `ir_codegen.c`, `module_llvm.c`.
+- **Where.** `ir_promote.c`, `ir_codegen.c`, `module_a64.c`.
 - **ABI.** None.
-- **Proof.** The counts for the `tests/llvm_module.c` program match a count by hand.
+- **Proof.** The counts for the `tests/native_module.c` program match a count by hand.
 - **Size and priority.** S, P0.
 
 #### T4 JIT code in Linux profilers
@@ -1050,7 +997,7 @@ Every gain this plan claims needs these items first.
 - **Change.** Generate random sequences of several blocks, with branches, calls and loops, from the same rows of the
   generated decoder, and compare the end state with QEMU. Run them with the settings that change code generation, and
   on every host that can run the test. Each bug it finds gets a fix that names the mechanism, with the seed as its test.
-- **Where.** A new test beside `tests/llvm_qemu_differential.c`, sharing its QEMU harness in `tests/qemu_ref/`.
+- **Where.** A new test beside `tests/native_qemu_differential.c`, sharing its QEMU harness in `tests/qemu_ref/`.
 - **ABI.** None.
 - **Proof.** It must find a bug planted in a flag origin across blocks, then pass on the unchanged tree.
 - **Size and priority.** M, P0. It must exist before I2, I3, I6 or I13 change how state flows between instructions.
@@ -1068,21 +1015,18 @@ The full T1 through T6 program is not a prerequisite for that milestone. Keep T5
 atomic-loop redesigns identified in the guide.
 
 Items that help every host come first. Hosts with no JIT need coverage before speed. A1 is accepted, and A2 is normal
-AOT coverage work. A3 must preserve optimization opportunities or measure the tradeoff. A4 is temporary pending the
-linked SDK layer. A5 and its profile-dependent L2 path are optional and do not gate the main work.
-J1 is deferred. L1's standalone PLT binder is retired in favor of the hook expansion planned by 2026-10-31. Prioritize
+AOT coverage work. A3 must preserve optimization opportunities or measure the tradeoff. A5 and its profile-dependent
+L2 path are optional and do not gate the main work. L1's standalone PLT binder is retired in favor of the hook expansion planned by 2026-10-31. Prioritize
 whole-vector execution, register traffic and coverage. Coordinate SDK call work with the hook system's owner.
 
 | Backlog phase | Items | What it gives |
 | --- | --- | --- |
-| 0. Measure and guard | T1, T2, T3, T4, T5, T6, I7 | Baselines, counters, the fuzzer, and the one quick fix |
+| 0. Measure and guard | T1, T2, T3, T4, T5, T6 | Baselines, counters and the fuzzer |
 | 1. Execution and coverage | I4, I2, A1, A2, J2, I13, I1, I15 | Cheaper guest calls, fewer misses and serial lane calls, exact fault pcs |
 | 2. Registers and instructions | I3, I8, I12 (AArch64), S1, I14 (if hot), I6 (P1 on RISC-V and LoongArch), L3 | Rosetta-like register passing, fewer helper calls, native FP on AArch64 |
-| 3. Coverage and correctness | A3, D1, J3, J4, I9, I10, I11, L4, M1 (P1 on PowerPC64), M2, R1 | Stable AOT units, a JIT everywhere, memory order tested on every host |
+| 3. Coverage and correctness | A3, D1, J3, J4, I9, I11, L4, M1 (P1 on PowerPC64), M2, R1 | Stable AOT units, a JIT everywhere, memory order tested on every host |
 | Optional profile work | A5, L2 | Workload-specific gains, measured against normal builds |
-| Transitional work | A4 | Small compiler improvements pending the linked SDK layer |
 | Hook integration | I14 where hot, with L1's integration constraints | SDK replacements share the expanded hook system and preserve its lifecycle |
-| Deferred | J1 | Tiered compilation only if later measurements justify it |
 | Research | A3's LTO path, M3, I5, R2 | Kept only where measurements show a gain |
 
 ## Prior art
@@ -1104,19 +1048,18 @@ ISC, zlib and Apache 2.0, never GPL-2.0-only (`CLAUDE.md`).
 
 ## How every change is proven
 
-* Emitter changes pass `ctest -R llvm_qemu_differential` (with `--sweep` on the touched rows), `tests/a64_ported.c`,
-  `tests/llvm_module.c` and the block fuzzer of T5, on every host that can run them. A new group that differs fails the
-  test.
+* Emitter changes pass `ctest -R native_qemu_differential` (with `--sweep` on the touched rows), `tests/a64_ported.c`,
+  `tests/native_module.c` and the block fuzzer of T5, on every host that can run them. A new group that differs fails
+  the test.
 * An `SNX_ABI` bump updates `tests/module_contract.c` and the table in `docs/dev/architecture.md`.
-* Speed claims come from repeated runs of the T1 suite and of `llvm_bench`, reported as a median with its spread, and
+* Speed claims come from repeated runs of the T1 suite and of `native_bench`, reported as a median with its spread, and
   from perf profiles (T4).
 * Runtime changes are checked by running games through the scenes they affect (the `snx-run` skill), several times for
   anything that could be intermittent. A build is not a test.
 
 ## Risks and non-goals
 
-* There is no interpreter, and none is planned. Keep the current JIT while J1 is deferred. J3 addresses hosts that lack
-  a runtime JIT, independently of tiered compilation.
+* There is no interpreter, and none is planned. J3 addresses hosts that lack a runtime JIT.
 * No delays, retries or special cases for a title ID.
 * A mode that changes results is a setting, and the exact behavior stays the default, as with `fpsr_flags` (default 1)
   today.
@@ -1133,9 +1076,9 @@ ISC, zlib and Apache 2.0, never GPL-2.0-only (`CLAUDE.md`).
 ## Decisions for the maintainers
 
 The AOT decisions settled by maintainer feedback are: A1 is accepted, A2 belongs in normal discovery, A3 needs an
-explicit optimization/LTO tradeoff, A4 is temporary pending linked SDK translation, and A5 is optional. Revisit these
+explicit optimization/LTO tradeoff, and A5 is optional. Revisit these
 only if measurements or the SDK interface change the premise.
-J1 is deferred by maintainer direction. Do not implement standalone L1 PLT binding ahead of the hook expansion planned
+Do not implement standalone L1 PLT binding ahead of the hook expansion planned
 by Saturday, 2026-10-31. Treat that date as a plan, not an availability guarantee. Evaluate remaining import costs
 after the hook system's coverage is known.
 
@@ -1156,7 +1099,7 @@ The readers of the code for this plan found these. Each needs a check against th
 * `docs/dev/architecture.md` names `ir_fp_fast`, which does not exist. The fast paths are `sg_fp_fast_binary`, `sg_fp_fast_sqrt` and
   `sg_fp_fast_fma` in `tools/sailgen/llvm.h`.
 * `docs/history/divergences.md` lists FP failures from an older audit. The code now uses guarded fast paths and soft-float
-  helpers, and `tests/llvm_qemu_expected.txt` lists no FP group.
+  helpers, and `tests/native_qemu_expected.txt` lists no FP group.
 * `docs/dev/roadmap.md` lists ARM NaN propagation, default NaN and directed rounding as CPU work. The helpers in
   `src/common/cpu/aarch64/helpers/fp.c` implement them, so the item may be done.
 * `docs/hosts/riscv-loongarch.md` says the JIT loader handles only x86-64 and AArch64, "as on PowerPC64", while

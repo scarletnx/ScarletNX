@@ -22,14 +22,14 @@
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
 
-#define NVN_STATE_VERSION 3 /* 3: the programs' early test flags */
+#define NVN_STATE_VERSION 4 /* 3: the programs' early test flags; 4: 32 vertex attributes */
 /* the heap memory g_nvn's members own, after it: g_nvn.object's program metadata and linkage maps, and the blocks the
    small store of g_nvn.cmd was given back */
 enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL, NH_EARLY_Z };

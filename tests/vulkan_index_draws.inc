@@ -1049,7 +1049,7 @@ static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 addre
 
 /* A sampler's min/max reduction on a device whose sampler has none (samplerFilterMinmax off): the fragment program
    takes the least or the greatest of the texels itself (vk_tex_minmax_in_program, shader_minmax_sample), where the
-   sampler would average them. Edenprobe's sampling case: a 2x1 R32F texture of 0 and 1, linear both ways, no mip
+   sampler would average them. Amberlith's sampling case: a 2x1 R32F texture of 0 and 1, linear both ways, no mip
    filter, clamped, looked up halfway between them, (0.5, 0.5): the least is 0, the greatest 1, the average a half.
    The fragment program writes the lookup's RGBA, so the first pixel's red is 0 or 255 (0.5 would be 127 or 128). The
    device's own filter first, where it has one for R32F */

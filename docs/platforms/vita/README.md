@@ -9,6 +9,7 @@
 * [The system's functions by NID](#the-systems-functions-by-nid)
 * [The shader corpus](#the-shader-corpus)
 * [Code compiled at run time](#code-compiled-at-run-time)
+* [Save states](#save-states)
 * [Checking the CPU backend](#checking-the-cpu-backend)
 * [Limits](#limits)
 * [Sources](#sources)
@@ -54,7 +55,7 @@ and plays its sound test.
 | Kernel and HLE | the process, threads and memory (`src/vita/runtime/`), the system libraries by NID (`src/vita/hle/`) | [How it fits together](#how-it-fits-together) |
 | GPU | sceGxm on Vulkan, USSE programs to SPIR-V (`src/vita/gpu/`) | [The shader corpus](#the-shader-corpus) |
 | Audio | the audio ports, NGS and the audio decoders (`src/vita/hle/audio.c`, `ngs.c`, `audiodec.c`) | this page |
-| Input | SceCtrl and touch from the keyboard, the mouse and gamepads (`src/vita/platform/input.c`) | this page |
+| Input | SceCtrl and touch from the keyboard, the mouse, fingers, the gamepads and the on-screen controls (`src/vita/platform/input.c`) | this page |
 | Platform | the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## How it fits together
@@ -62,14 +63,14 @@ and plays its sound test.
 | Part | Files |
 | --- | --- |
 | VPK, SELF and ELF loading (zip and zlib, relocations, imports patched to SVCs by index) | `src/vita/loader/` |
-| The offline compiler and the module it makes: the host's native back end's blocks (the A9's, chained: `src/common/cpu/arm/codegen.h`), as discovery finds them, and LLVM's where it refuses one, or all of them on a host without one or with `--keep-ir` (the recompile says how many each made, and why) | `src/vita/aot/` |
+| The offline compiler and the module it makes: the host's native back end's blocks (the A9's, chained: `src/common/cpu/arm/codegen.h`), as discovery finds them (the recompile says how many it made, and why it refused one) | `src/vita/aot/` |
 | Process, threads (cooperative, one host thread), waits, memory, the dispatcher, run-time compiles | `src/vita/runtime/` |
 | The system libraries, answered by NID: each module's functions declared in a `.hook` beside its `.c` ([The system's functions by NID](#the-systems-functions-by-nid)) | `src/vita/hle/` (`kernel.c`, `io.c`, `ctrl.c`, `display.c`, `audio.c`, `misc.c`, `gxm.c`, `fiber.c`, `ngs.c`) |
 | The game's own C and C++ libraries (SceLibc, SceLibm, SceLibstdcxx) and the Clib, malloc on a heap in guest memory | `src/vita/hle/libc.c`, `heap.c` |
 | sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host` (a driver without it, as Mali's, works on a host visible copy of each memory block the game maps, which takes the pages the game wrote before the GPU reads them and goes back to guest memory, the rows the GPU wrote alone, when its submission is done), USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
 | Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer; every block the GPU uses where it works on copies) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
-| Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
+| Keyboard, mouse and fingers (touch), the on-screen controls, gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
 
 ## The system's functions by NID
 
@@ -98,8 +99,13 @@ wait is met.
 `tests/vita_hle_adapters.c` checks the adapters of `tests/hook/vita.hook`, and the `hookgen_refuses_vita_*` tests the
 declarations that `--vita` refuses.
 
-Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the game, as a
-Switch game's notices show.
+The twelve keys and the two sticks are on the screen too ([On-screen controls](../../user/usage.md#on-screen-controls)),
+for fingers and the mouse's left button: shown on a touch screen while no gamepad is connected, or as `--controls=`
+says, their layout edited with F2. A finger or that button off them touches the front panel where it is on the picture,
+six at most (`--touch=1` the fingers alone, `--touch=0` neither), and the mouse's right button the rear panel, which no
+finger touches. Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the
+game, as a Switch game's notices show, and F11 or Alt+Return switches fullscreen: the runtime's keys, as a Switch game
+takes them ([On-screen controls](../../user/usage.md#on-screen-controls)).
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
 `vita_jit_trace` each block compiled at run time, `vita_gxm_trace` each scene and draw (and why a draw was
@@ -120,6 +126,40 @@ translator change kept them). The programs are the game's: the folder stays on t
 The run-time compiler's blocks are kept in the game's `.hints`, each once. When the game starts, the hints the module
 lacks make it compile the module again with them, so the next runs have them ahead of time; a hint discovery refuses
 (not code after all) is dropped then.
+
+## Save states
+
+A state is the whole game at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/vita/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| PROCESS | the threads with their registers, waits and fibers, the objects, the memory blocks, the display, the dialogs |
+| LINKS | the threads running and pacing the frames, and each thread's place in the module_start chain, as indices |
+| TIME | the times kept by the host's clock (the start, the next vblank, the threads' deadlines, the sound ports' play), counted from the save: a load counts them from its own |
+| MEMORY | the image's segments, the runtime's page with the threads' TLS, the imported variables' slots, every memory block |
+| IO | each file and folder open, as its host path, sceIoOpen's flags and its place, and the FIOS2 archives mounted (`hle/io.c`) |
+| GXM | sceGxm's contexts, programs, targets, mappings and display queue (`hle/gxm.c`) |
+| AUDIO, NGS, TROPHY | the sound ports, SceNgs's racks and voices, the trophy contexts (`hle/audio.c`, `ngs.c`, `trophy.c`) |
+| AUDIODEC | each audio decoder (AAC, ATRAC9) as its configuration, an ATRAC9 superframe not all handed out yet, the codec engine's blocks (`hle/audiodec.c`) |
+
+A save waits for the GPU, so what it wrote is in guest memory and what sceGxm notes is written; a load makes the
+renderer again, which draws from the GXPs and surfaces in memory as at the game's start. A file open is opened again
+at its place, never truncated: the game's save data and what it wrote since stay, as a Switch game's files do. An
+audio decoder is made again from its configuration: what FFmpeg's decoder keeps of the frames before (the overlap of
+their transforms) starts empty, so the first frame it decodes after a load differs from the console's, a click of one
+frame at most, and the frames after it are the same. The game is its title ID and its image's segments. A load reads
+and checks every section before it changes anything, and refuses another game's state (both named), another
+`SNX_VITA_STATE_VERSION` (both versions), a section of another layout (both hashes), a damaged file and one naming a
+file that is gone. A save is refused, saying what, while a thread runs, while one is inside a call of the runtime's
+into the game (a sort's comparison, a callback), while a scene is being drawn, and while the game plays a movie (an
+mp4 file or a video decoder: the demuxer's place and the pictures H.264 decodes the next ones from can't be put back)
+or has sockets open, which a state can't keep. The threads run by the host's clock, so `vita_state`
+(`tests/vita_state.c`) checks what a load puts back of a process the test drives through the imports, and that a save
+right after it is the same, rather than frames; `vita_state_gpu` (`tests/vita_state_gpu.c`) that a save holds the
+GPU's work it waited for (a scene, a copy) and that the renderer a load makes draws from the state's memory, on a
+device that imports guest memory and on one that copies it.
 
 ## Checking the CPU backend
 

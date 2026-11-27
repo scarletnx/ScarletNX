@@ -56,6 +56,37 @@ int main(void) {
     assert(n == 2 && !strcmp(notes[0]->text, "vulkan: pipeline cache loaded (662 KB)"));
     assert(gui_step_notes(&s, at(&s, 0), notes, 8) == 0 && gui_step_notes(&s, at(&s, 4), notes, 8) == 0);
 
+    /* a recompile refused, the host below its back end's floor (nx/runtime/driver/recompile.c): what it lacks is the
+       failed step's note, the longest of them (tests/native_floor.c) whole */
+    {
+        static const char refused[] = "cpu: needs SSE2, this host has none";
+        GuiSteps below;
+        char text[160];
+        gui_steps_reset(&below);
+        snprintf(text, sizeof text, "Recompiling Game (1 modules)\nscarletnx: %s\n", refused);
+        feed(&below, text, 10);
+        gui_steps_finish(&below, 0);
+        assert(below.count == 1 && at(&below, 0)->state == GUI_STEP_FAILED);
+        assert(gui_step_notes(&below, at(&below, 0), notes, 8) == 1 && !strncmp(notes[0]->text, "scarletnx: ", 11) &&
+               !strcmp(notes[0]->text + 11, refused));
+        /* said after how it ended, a theme without the notes too; a driver's other lines are none of it */
+        assert(!strcmp(below.refused, refused));
+        gui_steps_failure(&below, "Recompile failed (status 1).", text, sizeof text);
+        assert(!strncmp(text, "Recompile failed (status 1). ", 29) && !strcmp(text + 29, refused));
+        gui_steps_reset(&below);
+        feed(&below, "scarletnx-3ds: abi: needs ELFv2, this build has ELFv1\n", 10);
+        assert(!strcmp(below.refused, "abi: needs ELFv2, this build has ELFv1"));
+        gui_steps_reset(&below);
+        feed(&below,
+             "scarletnx: cpu: needs POPCNT, this host has SSE3: LLVM makes the code\n"
+             "jit: cannot start (cpu: needs POPCNT, this host has SSE3), so only the AOT pack can run\n"
+             "scarletnx: cannot create /games\n",
+             10);
+        assert(!below.refused[0]);
+        gui_steps_failure(&below, "Recompile failed (status 1).", text, sizeof text);
+        assert(!strcmp(text, "Recompile failed (status 1)."));
+    }
+
     /* a collection's program that starts another: a PROGRAM step, the switch under way until the program's window
        opens (its recompile in between when it is not made), and nothing once it has */
     gui_steps_reset(&s);

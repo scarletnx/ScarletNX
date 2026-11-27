@@ -145,7 +145,7 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
                                     : -1];
 
 /* ---- guest memory: a flat mapping at M, no translation, holding the guest's little-endian bytes: a big-endian
-   host (ppc64) swaps what it reads and writes as numbers, as the IR emitters' ir_rd and ir_wr do ---- */
+   host (ppc64) swaps what it reads and writes as numbers, as the big-endian back ends' code does ---- */
 #define MP(a) (M + (u64)(a))
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define SNX_GUEST16(v) snx_bswap16(v)
@@ -157,7 +157,7 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
 #define SNX_GUEST64(v) (v)
 #endif
 /* a vector register's lane as a number: V128 holds the guest's bytes (lane 0 lowest-addressed, as in memory), so on a
-   big-endian host each 16, 32 or 64-bit lane read or written as a number is swapped (the IR's ir_vd and ir_ve) */
+   big-endian host each 16, 32 or 64-bit lane read or written as a number is swapped */
 #define SNX_VB(v, i)         ((v).b[i])
 #define SNX_VH(v, i)         ((u16)SNX_GUEST16((v).h[i]))
 #define SNX_VS(v, i)         ((u32)SNX_GUEST32((v).s[i]))
@@ -360,7 +360,7 @@ SNX_INLINE i64 smulh64(i64 a, i64 b) {
     return (i64)high;
 }
 
-/* ---- UBFM, SBFM, BFM, as ir_helpers.c builds them in IR (DecodeBitMasks with immediate false) ----
+/* ---- UBFM, SBFM, BFM (DecodeBitMasks with immediate false) ----
    wmask is the rotated field of imms+1 ones, tmask the d+1 low ones, d = (imms - immr) mod datasize */
 SNX_INLINE u64 bmask(u32 n) { return n >= 64 ? ~(u64)0 : ((u64)1 << n) - 1; }
 SNX_INLINE u64 snx_bf_ror(u64 x, u32 s, u32 ds) { return ds == 32 ? ror32((u32)x, s) : ror64(x, s); }
@@ -381,9 +381,8 @@ SNX_INLINE u64 bfm_(u64 dst, u64 src, u32 immr, u32 imms, u32 ds) {
 
 /* ---- host instruction set extensions ----
    The helpers are plain C with no host-specific paths. The runtime library (rtlib.c) is compiled without -march,
-   since the recompiler that embeds it runs on other machines than the one that built it; the LLVM backend compiles
-   it for the CPU each module is built on (snx_ir_rtlib_object), and the generated code uses the host's extensions
-   itself (ir.c's snx_ir_host). */
+   since the recompiler that embeds it runs on other machines than the one that built it; the generated code uses the
+   host's extensions itself, where the native back end finds them (snx_native_features). */
 
 /* ---- floating point (helpers/fp.c) ----
    Raw IEEE encodings in and out, with integer arithmetic only: no host floating point, libm or host rounding
@@ -429,8 +428,8 @@ SnxFpReply snx_fp8_widen(u64 byte, int bfloat);
 SnxFpReply snx_fp8_narrow(u64 bits, int width);
 u64 snx_fp8_dot(u64 add, u64 a, u64 b, int n, int width);
 
-/* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code emits itself
-   (ir_fp.h's ir_fp_call), for the witnesses and oracles that drive the helpers directly. */
+/* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code makes itself, for the
+   witnesses and oracles that drive the helpers directly. */
 static inline u64 snx_fp_binary_c(CPU* c, u64 a, u64 b, int width, int op) {
     SnxFpReply r = snx_fp_binary(a, b, width, op, c->fpcr);
     c->fpsr |= r.flags;
@@ -492,7 +491,7 @@ static inline u64 snx_fp_bfcvt_c(CPU* c, u64 bits) {
     return r.value;
 }
 
-/* The host thread's FP environment must be the IEEE default for the FP fast paths (ir_fpu.c, ir_vec_fp.c): they use
+/* The host thread's FP environment must be the IEEE default for the generated code's FP fast paths: they use
    the host's arithmetic, so a thread with flush-to-zero or another rounding mode set gives other results. New host
    threads start there, but generated code shares its thread with whatever the runtime calls, so each generated
    function normalizes the environment on entry. It writes the control word only when it has drifted. */
@@ -564,16 +563,15 @@ u32 snx_vec_bfdot(CPU* c, u32 sum, u32 e1, u32 e2); /* BFDOT's step: sum plus th
 /* DC ZVA: DCZID_EL0 gives 64-byte blocks */
 SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
 
-/* ---- exclusives and ordering ----
-   Load-exclusive, load-acquire and store-release are sequentially consistent host atomics of the access size
-   (LDACQ), so no later access moves above an acquire load and no earlier one below a release store, which
-   plain or volatile accesses don't guarantee once the compiler reorders them. A DMB or DSB of the loads type is an
-   acquire fence, of the stores type a release fence, and every other one and ISB a seq_cst fence (ir_int.c's
-   barriers). Nothing else orders guest memory, so plain guest loads and
-   stores stay plain host ones, on x86-64, AArch64 and PowerPC64 hosts alike.
-   The monitor is value based: a store-exclusive succeeds when the monitor is armed for the same address and size
-   and a compare-and-swap from the value the load read succeeds. It is cleared after each store-exclusive. Status
-   0 is success. Unlike hardware it sees no ABA and ordinary stores don't clear it (docs/history/divergences.md). */
+/* ---- exclusives and ordering ---- Load-exclusive, load-acquire and store-release are sequentially consistent host
+   atomics of the access size (LDACQ), so no later access moves above an acquire load and no earlier one below a release
+   store, which plain or volatile accesses don't guarantee once the compiler reorders them. A DMB or DSB of the loads
+   type is an acquire fence, of the stores type a release fence, and every other one and ISB a seq_cst fence. Nothing
+   else orders guest memory, so plain guest loads and stores stay plain host ones, on x86-64, AArch64 and PowerPC64
+   hosts alike. The monitor is value based: a store-exclusive succeeds when the monitor is armed for the same address
+   and size and a compare-and-swap from the value the load read succeeds. It is cleared after each store-exclusive.
+   Status 0 is success. Unlike hardware it sees no ABA and ordinary stores don't clear it (docs/history/divergences.md).
+   */
 /* Guest memory holds whatever the guest stored last, at any width: the helpers' typed accesses to it go through
    these, which may alias every other access as a char's would, so none is assumed apart from another of a different
    type once the helpers are inlined into each other */

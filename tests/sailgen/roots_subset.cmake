@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# sailgen_roots_subset: a64.roots is the whole of A64's roots, and the back ends' a64_x64.roots and a64_risc.roots are
+# of it: a name either has that a64.roots lacks is a subset drifted from the whole list, said with its file. A roots
+# line is a word (root, keep, lower, stop) and a name.
+#   cmake -DDIR=<the folder of the three> -P roots_subset.cmake
+function(roots_names file out)
+    file(STRINGS "${file}" lines REGEX "^[a-z]+ +[A-Za-z0-9_]+")
+    set(names "")
+    foreach(line IN LISTS lines)
+        string(REGEX REPLACE "^[a-z]+ +([A-Za-z0-9_]+).*" "\\1" name "${line}")
+        list(APPEND names "${name}")
+    endforeach()
+    set(${out} "${names}" PARENT_SCOPE)
+endfunction()
+roots_names("${DIR}/a64.roots" whole)
+list(LENGTH whole n_whole)
+set(failed 0)
+set(said "")
+foreach(subset a64_x64 a64_risc)
+    roots_names("${DIR}/${subset}.roots" part)
+    list(LENGTH part n)
+    foreach(name IN LISTS part)
+        list(FIND whole "${name}" at)
+        if(at EQUAL -1)
+            message("sailgen_roots_subset: ${subset}.roots names ${name}, which a64.roots lacks")
+            set(failed 1)
+        endif()
+    endforeach()
+    list(APPEND said "${subset}.roots' ${n}")
+endforeach()
+if(failed)
+    message(FATAL_ERROR "sailgen_roots_subset: a subset of a64.roots names what it lacks")
+endif()
+list(JOIN said " and " said)
+message("sailgen_roots_subset: a64.roots has ${n_whole} names; ${said} are among them")

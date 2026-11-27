@@ -52,7 +52,7 @@ enum {
 #define VI_STRAY_ID 0x10000u /* vi's own layer ids, apart from am's managed ones */
 /* the layer the display shows. There's no compositor: only the first layer, the one a game opens for its window (and
    opens again into the same place after closing it), is shown and paced. Another layer's frames come free once their
-   fences are reached, unseen, where the console would compose them (edenprobe's binder suite opens one beside its
+   fences are reached, unseen, where the console would compose them (Amberlith's binder suite opens one beside its
    window, whose frames were shown as the program's) */
 #define VI_SHOWN    0
 

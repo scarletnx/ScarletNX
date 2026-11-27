@@ -148,6 +148,16 @@ typedef struct {
     u32* mh_new;
     u32 nmh_new;
     char mh_why[96];
+    /* the guard under which the value being found matters (mh_guard_code, 0 for none): the texture instruction's,
+       while no write of its predicate lies between; whether a writer under it was taken (mh_writer), and by
+       instruction the guard its value was found under (0 where none was needed) */
+    u32 mh_guard;
+    int mh_used;
+    u8* mh_gneed;
+    /* by instruction, whether it joined as a conditional write (mh_writer): its guard kept for sm86_eval, with the
+       guard's predicate and the value it leaves where the guard doesn't hold; and whether the one being added does */
+    u8* mh_cond;
+    int mh_take_cond;
     u32 img[8], img_type[8];
     u32 interfaces[MAX_INTERFACES], ninterfaces;
     /* the uniform register pair a ULDC.64 last loaded from a constant buffer: (bank << 16 | offset) + 1, 0 for none */
@@ -458,7 +468,8 @@ static u32 saturate(Ctx* c, u32 v, int on) {
    interface programs exit the lanes their KILL took with @P0 EXIT P1: with P1 left out, every lane of a draw with P0
    set exited before the MOVs to its outputs, and the whole title screen drew transparent black */
 static u32 guard(Ctx* c, const Sm86Insn* in) {
-    u32 v = prd(c, in->pred, in->pred_not, 0), p = sm86_field(in, 87, 3), negate = sm86_field(in, 90, 1);
+    u32 v = prd(c, in->pred, in->pred_not, sm86_uniform_guard(in)), p = sm86_field(in, 87, 3),
+        negate = sm86_field(in, 90, 1);
     if (!sm86_has_cond(in) || (p == SM86_PT && !negate)) return v;
     return op2(c, SPV_OP_LOGICAL_AND, c->t_bool, v, prd(c, p, negate, 0));
 }
@@ -3395,11 +3406,13 @@ static u32 coord_vector(Ctx* c, const u32* f, u32 count) {
 }
 static void texture(Ctx* c, const Sm86Insn* in) {
     /* a handle from memory (TEX and TLD4 with it in a uniform register) has its slot from memory_handles and none in
-       the operand list, as a constant buffer handle */
+       the operand list, as a constant buffer handle. A TEX.B's or a TLD4.B's handle is the first of list1, its slot
+       prepare_handles' or memory_handles' */
     int memory = in->op == SM86_TEX_U || in->op == SM86_TLD4_U;
-    int bindless = in->op == SM86_TEX_B, op = bindless || in->op == SM86_TEX_U ? SM86_TEX
-                                              : in->op == SM86_TLD4_U          ? SM86_TLD4
-                                                                               : in->op;
+    int bindless = in->op == SM86_TEX_B || in->op == SM86_TLD4_B;
+    int op = in->op == SM86_TEX_B || in->op == SM86_TEX_U    ? SM86_TEX
+             : in->op == SM86_TLD4_B || in->op == SM86_TLD4_U ? SM86_TLD4
+                                                              : in->op;
     u32 type, array, coords;
     if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
         fail(c, "%s dimension 6", sm86_ops[op].name);
@@ -3445,6 +3458,11 @@ static void texture(Ctx* c, const Sm86Insn* in) {
     u32 coord = coord_vector(c, f, count);
     u32 next = n0 + (u32)bindless, level = 0, dref = 0, off_reg = SM86_RZ;
     int indexed = (c->si->tex[slot].flags & SNX_TEX_INDEXED) != 0;
+    if (indexed && op == SM86_TLD4 && shadow) {
+        /* sample_indexed_shadow compares one texel: a gather's four have no path here */
+        fail(c, "TLD4.B of a table of handles with a depth reference");
+        return;
+    }
     u32 element = indexed ? indexed_element(c, slot, c->handle[c->handle[c->cur].ldc - 1].var) : 0;
     if (lod_mode == 2 || lod_mode == 3) level = to_f(c, rd(c, regs[next++]));
     if (offset) {
@@ -3669,6 +3687,15 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
             v[k] = spv_emit_iadd_u32(&c->e, c->t_u32, v[k],
                                      spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32,
                                                     offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
+    /* a 1D texture is bound as rows of 2^SH_TEXEL_ROW_SHIFT texels (shader.h): texel x is column x mod row of row
+       x / row, which is (x, 0) where the texture fits one row. A negative x lands in a negative row, out of the image */
+    if (type == 0 && !array) {
+        u32 x = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, v[0]);
+        v[1] = spv_emit_unary(
+            &c->e, SPV_OP_BITCAST, c->t_u32,
+            spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_ARITHMETIC, c->t_i32, x, cu(c, SH_TEXEL_ROW_SHIFT)));
+        v[0] = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, v[0], cu(c, (1u << SH_TEXEL_ROW_SHIFT) - 1));
+    }
     if (c->stage == ST_FS && type == 1) scaled_fetch(c, slot, &v[0], &v[1]);
     if (array) v[count++] = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
     u32 ivec = spv_emit_type_vector(&c->e, c->t_i32, count);
@@ -6165,7 +6192,7 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_LOP3:
             case SM86_ULOP3: return uk == u && p81;
             case SM86_UVOTE: return u && p81;
-            case SM86_R2P: return !u;
+            case SM86_R2P: return !u && (in->b.kind != SM86_SRC_IMM || (in->b.value >> r & 1)); /* its mask's */
             case SM86_VOTE:
             case SM86_MATCH:
             case SM86_SHFL_II:
@@ -6212,27 +6239,79 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
         for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                                \
             if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                     \
     } while (0)
-/* The one instruction whose write of value r of the file reaches instruction i on every path there, unguarded, as
-   reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes */
-static int mh_writer(Ctx* c, u32 i, int file, u32 r) {
+/* an instruction's guard as mh_guard holds it: 0 for none (PT), else 0x80, a uniform predicate at bit 4
+   (sm86_uniform_guard), the negation at bit 3, the predicate */
+static u32 mh_guard_code(const Sm86Insn* in) {
+    return in->pred == SM86_PT && !in->pred_not
+               ? 0
+               : 0x80u | (u32)sm86_uniform_guard(in) << 4 | (u32)in->pred_not << 3 | in->pred;
+}
+/* the file of a guard's predicate (mh_guard_code) */
+static int mh_guard_file(u32 g) { return g & 0x10u ? MH_UP : MH_P; }
+/* The one instruction whose write of value r of the file reaches instruction i on every path there, as
+   reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes. A
+   write needs no guard, or the one of c->mh_guard, or one that guard implies (mh_guard_implied): the compiler computes
+   a handle under the guard of the texture instruction that takes it (@P1 MOV R18 = c[3][0x70], @P1 LOP3 R18 = R18 |
+   c[3][0x78], then @P1 TEX.B of R18), and where the texture instruction runs, so does that write, when no write of
+   the guard's predicate lies between them. *changed: one does (the writer's own too), so that the
+   instructions before it can't count on the guard. A write under another guard, or under that one with such a write
+   between, is a conditional one (*cond): the value is the write's where its guard holds and the one before it where it
+   doesn't, which sm86_eval decides with the guard's predicate (mh_add). One program makes a handle so: UR4 =
+   c[4][0x8], UP0 = UR4 != 0, @UP0 UR4 = c[3][0x20], @UP0 UR4 |= c[3][0x48], P2 = UP0, then @P2 TEX of UR4 */
+static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed, int* cond);
+/* whether guard g (a lane's predicate), which holds at instruction i, implies the uniform guard of instruction k: its
+   predicate is a VOTEU of g's predicate, as written there and at i alike. With ALL, a lane where the predicate is false
+   sees the vote false; with ANY, one where it is true sees it true. The compiler computes a handle in uniform registers
+   so: UP0 = VOTEU.ALL(P0), @!UP0 ULOP3 UR4 = UR8 | UR4, then @!P0 TEX of UR4 */
+static int mh_guard_implied(Ctx* c, u32 i, u32 k, u32 g) {
+    u32 w = mh_guard_code(&c->in[k]), keep = c->mh_guard;
+    if (!g || (g & 0x10u) || !(w & 0x10u)) return 0;
+    int changed, cond, ok = 0;
+    c->mh_guard = 0;
+    int v = mh_writer(c, k, MH_UP, w & 7, &changed, &cond);
+    if (v >= 0 && !cond && c->in[v].op == SM86_UVOTE && sm86_always(&c->in[v])) {
+        const Sm86Insn* vi = &c->in[v];
+        u32 how = sm86_field(vi, 72, 2), p = sm86_field(vi, 87, 3), neg = sm86_field(vi, 90, 1);
+        /* g holds where the lane's vote input is false (ALL) or true (ANY), and w is the vote's !UP or UP */
+        int lane = (g & 7) == p && p < SM86_PT && (how == 0 ? (g >> 3 & 1) != neg : how == 1 && (g >> 3 & 1) == neg);
+        int vote = sm86_field(vi, 81, 3) == (w & 7) && (w >> 3 & 1) == (how == 0);
+        int pv = mh_writer(c, v, MH_P, p, &changed, &cond),
+            pi = pv >= 0 ? mh_writer(c, i, MH_P, p, &changed, &cond) : -1;
+        ok = lane && vote && pv >= 0 && pv == pi;
+    }
+    c->mh_guard = keep;
+    return ok;
+}
+static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed, int* cond) {
+    *changed = 0;
+    *cond = 0;
     if ((file == MH_R && r >= SM86_RZ) || (file == MH_UR && r >= SM86_URZ) || (file >= MH_P && r >= SM86_PT)) return -2;
     if (!flow_sources(c)) return -1;
-    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, g = c->mh_guard;
     u8* seen = calloc((size_t)n + 1, 1);
-    int ok = stack && seen, found = -1;
+    int ok = stack && seen, found = -1, under = 0, other = 0;
     if (ok) MH_FLOW_PREDS(i);
     while (ok && top) {
         u32 k = stack[--top];
         const Sm86Insn* in = &c->in[k];
+        if (g && mh_may_write(in, mh_guard_file(g), g & 7)) *changed = 1;
         if (!mh_may_write(in, file, r)) {
             MH_FLOW_PREDS(k);
             continue;
         }
-        if (!sm86_always(in) || (found >= 0 && (u32)found != k)) ok = 0;
+        int guarded =
+            !sm86_always(in) && g && !sm86_has_cond(in) && (mh_guard_code(in) == g || mh_guard_implied(c, i, k, g));
+        if ((!sm86_always(in) && sm86_has_cond(in)) || (found >= 0 && (u32)found != k)) ok = 0;
+        under |= guarded;
+        other |= !sm86_always(in) && !guarded;
         found = (int)k;
     }
     free(stack);
     free(seen);
+    if (ok && under && *changed) under = 0, other = 1;
+    if (other && file >= MH_P) ok = 0; /* a predicate's conditional write: not taken */
+    if (ok && under) c->mh_used = 1;
+    *cond = ok && other;
     return ok ? found : -1;
 }
 #undef MH_FLOW_PREDS
@@ -6248,9 +6327,20 @@ static int mh_fail(Ctx* c, const char* fmt, ...) {
     return 0;
 }
 static int mh_add(Ctx* c, u32 k, u32 reader);
+/* the writer k of a value that instruction at reads joins ShaderInfo.memh, under the guard only where no write of its
+   predicate lies between them */
+static int mh_add_under(Ctx* c, u32 k, u32 at, int changed, int cond) {
+    u32 g = c->mh_guard;
+    if (changed) c->mh_guard = 0;
+    c->mh_take_cond = cond;
+    int ok = mh_add(c, k, at);
+    c->mh_guard = g;
+    return ok;
+}
 /* instruction at, of ShaderInfo.memh or the texture instruction, reads value r of the file: its writer joins them */
 static int mh_need(Ctx* c, u32 at, int file, u32 r) {
-    int k = mh_writer(c, at, file, r);
+    int changed, cond;
+    int k = mh_writer(c, at, file, r, &changed, &cond);
     if (k == -2) return 1;
     if (k < 0 || (u32)k >= at)
         return mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file),
@@ -6265,7 +6355,7 @@ static int mh_need(Ctx* c, u32 at, int file, u32 r) {
         c->mh_dep = grown, c->mh_dep_cap = cap;
     }
     c->mh_dep[c->nmh_dep++] = (MhDep){at, (u32)file, r, (u32)k};
-    return mh_add(c, (u32)k, at);
+    return mh_add_under(c, (u32)k, at, changed, cond);
 }
 static int mh_src(Ctx* c, u32 at, const Sm86Src* s) {
     if (s->kind == SM86_SRC_REG) return mh_need(c, at, MH_R, s->reg);
@@ -6277,9 +6367,22 @@ static int mh_src(Ctx* c, u32 at, const Sm86Src* s) {
 static int mh_pred(Ctx* c, u32 at, int uniform, u32 field) {
     return mh_need(c, at, uniform ? MH_UP : MH_P, sm86_field(&c->in[at], field, 3));
 }
-/* instruction k, which reader reads, joins ShaderInfo.memh, with the writers of what it reads */
+static int mh_sources(Ctx* c, u32 k);
+/* instruction k, which reader reads, joins ShaderInfo.memh, with the writers of what it reads. One already there that
+   took a write under a guard holds for a reader under that guard alone */
 static int mh_add(Ctx* c, u32 k, u32 reader) {
-    if (c->mh_mark[k]) return 1;
+    int cond = c->mh_take_cond;
+    c->mh_take_cond = 0;
+    if (c->mh_mark[k]) {
+        if (cond && !c->mh_cond[k])
+            return mh_fail(c, "a texture handle from memory made with %s at %u under another guard",
+                           sm86_ops[c->in[k].op].name, k);
+        if (c->mh_gneed[k] && c->mh_gneed[k] != c->mh_guard)
+            return mh_fail(c, "a texture handle from memory made with %s at %u under another guard",
+                           sm86_ops[c->in[k].op].name, k);
+        c->mh_used |= c->mh_gneed[k] != 0;
+        return 1;
+    }
     const Sm86Insn* in = &c->in[k];
     if (!sm86_eval_takes(in))
         return mh_fail(c, "a texture handle from memory made with %s at %u (for %u)", sm86_ops[in->op].name, k, reader);
@@ -6287,7 +6390,25 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
         return mh_fail(c, "texture handles from memory made with more than %u instructions", SH_MEMH_MAX);
     c->nmh++;
     c->mh_mark[k] = 1;
+    c->mh_cond[k] = (u8)cond;
     c->mh_new[c->nmh_new++] = k;
+    int outer = c->mh_used;
+    c->mh_used = 0;
+    int ok = mh_sources(c, k);
+    /* a conditional write: its guard's predicate, and what its destination held before it */
+    if (ok && cond) {
+        int u = mh_uniform_dst(in);
+        u32 d = u && sm86_ops[in->op].kind != SM86_K_UALU ? sm86_field(in, 16, 6) : in->dst;
+        ok = mh_need(c, k, mh_guard_file(mh_guard_code(in)), in->pred);
+        for (u32 w = 0; ok && w < mh_words(in); w++) ok = mh_need(c, k, u ? MH_UR : MH_R, d + w);
+    }
+    c->mh_gneed[k] = (u8)(c->mh_used ? c->mh_guard : 0);
+    c->mh_used |= outer;
+    return ok;
+}
+/* the writers of what instruction k of ShaderInfo.memh reads join it */
+static int mh_sources(Ctx* c, u32 k) {
+    const Sm86Insn* in = &c->in[k];
     int op = in->op, u = sm86_ops[op].kind == SM86_K_UALU;
     switch (op) {
         case SM86_MOV:
@@ -6353,16 +6474,93 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
         default: return mh_fail(c, "a texture handle from memory made with %s", sm86_ops[op].name);
     }
 }
-/* the probe (SH_PROBE, by instruction index until mh_finish) of value r of the file at texture instruction at, whose
-   writer joins ShaderInfo.memh: ~0 when it can't */
-static u32 mh_probe(Ctx* c, u32 at, int file, u32 r) {
-    int k = mh_writer(c, at, file, r);
-    if (k < 0 || (u32)k >= at) {
-        mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file), r, at);
-        return SH_PROBE_NONE;
+/* the condition (mh_guard_code) that the edge from instruction j to k carries: a BRA guarded by a predicate alone (its
+   operand PT) jumps where the guard holds and goes on to the next instruction where it doesn't. 0 for none */
+static u32 mh_edge_guard(Ctx* c, u32 j, u32 k) {
+    const Sm86Insn* in = &c->in[j];
+    if (in->op != SM86_BRA || sm86_always(in) || sm86_never(in) || in->pred == SM86_PT ||
+        sm86_field(in, 87, 3) != SM86_PT || sm86_field(in, 90, 1))
+        return 0;
+    u32 t = sm86_branch_target(in, j);
+    if (t == j + 1) return 0;
+    return t == k ? mh_guard_code(in) : k == j + 1 ? mh_guard_code(in) ^ 8u : 0;
+}
+#define MH_GUARD_PREDS(k)                                                                                              \
+    do {                                                                                                               \
+        if ((k) == 0) ok = 0;                                                                                          \
+        if ((k) > 0 && falls_through(&c->in[(k) - 1])) MH_GUARD_EDGE((k) - 1, k);                                      \
+        for (u32 e = c->jump_first[k]; e < c->jump_first[(k) + 1]; e++) MH_GUARD_EDGE(c->jump_from[e], k);             \
+    } while (0)
+#define MH_GUARD_EDGE(j, k)                                                                                            \
+    do {                                                                                                               \
+        u32 eg = mh_edge_guard(c, j, k);                                                                               \
+        if (!g && eg) g = eg;                                                                                          \
+        if ((!eg || eg != g) && !seen[j]) seen[j] = 1, stack[top++] = (j);                                             \
+    } while (0)
+/* The guard under which instruction i runs though it has none of its own, 0 when none shows: every path to it from the
+   program's start takes an edge of a BRA that holds the guard (the fall-through of @!P0 BRA, the jump of @P0 BRA), and
+   no write of the guard's predicate lies after that edge on the way to i. The compiler computes the handle of a texture
+   instruction inside a block that a branch skips before the branch, under its predicate: @P6 MOV R49 = c[3][0x18],
+   @P6 LOP3 R49 = R49 | c[3][0x60], later @!P6 BRA past the block and an unguarded TLD4.B of R49 in it. The first
+   walk back names the guard by the first such edge it finds, the second checks it on every path */
+static u32 mh_flow_guard(Ctx* c, u32 i) {
+    if (!flow_sources(c)) return 0;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, g = 0;
+    u8* seen = calloc((size_t)n + 1, 1);
+    int ok = stack && seen;
+    if (ok) MH_GUARD_PREDS(i);
+    while (ok && top && !g) {
+        u32 k = stack[--top];
+        MH_GUARD_PREDS(k);
     }
-    if (!mh_add(c, (u32)k, at)) return SH_PROBE_NONE;
-    return SH_PROBE(k, file == MH_UR, r);
+    if (ok && g) {
+        memset(seen, 0, (size_t)n + 1);
+        top = 0;
+        MH_GUARD_PREDS(i);
+        while (ok && top) {
+            u32 k = stack[--top];
+            if (mh_may_write(&c->in[k], mh_guard_file(g), g & 7))
+                ok = 0;
+            else
+                MH_GUARD_PREDS(k);
+        }
+    }
+    free(stack);
+    free(seen);
+    return ok ? g : 0;
+}
+#undef MH_GUARD_EDGE
+#undef MH_GUARD_PREDS
+/* the probe (SH_PROBE, by instruction index until mh_finish) of value r of the file at texture instruction at, whose
+   writer joins ShaderInfo.memh: ~0 when it can't. The handle's value matters where the texture instruction runs,
+   under its guard, or under the one its block runs under where it has none (mh_flow_guard) */
+static u32 mh_probe(Ctx* c, u32 at, int file, u32 r) {
+    int changed, cond;
+    c->mh_guard = mh_guard_code(&c->in[at]);
+    if (!c->mh_guard) c->mh_guard = mh_flow_guard(c, at);
+    c->mh_used = 0;
+    int k = mh_writer(c, at, file, r, &changed, &cond);
+    int ok = k >= 0 && (u32)k < at;
+    if (!ok)
+        mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file), r, at);
+    else
+        ok = mh_add_under(c, (u32)k, at, changed, cond);
+    c->mh_guard = 0;
+    return ok ? SH_PROBE(k, file == MH_UR, r) : SH_PROBE_NONE;
+}
+/* whether an instruction of ShaderInfo.memh writes a value between its writer and an instruction there that reads it,
+   which the renderer, running only the list in order, would read instead (why in mh_why). memory_handles asks after
+   each texture instruction's handle, and samples one that brings such an instruction as none: one game's compute
+   program wrote UR6 twice for two handles, and as one list of the two it was not translated at all */
+static int mh_conflict(Ctx* c) {
+    for (u32 d = 0; d < c->nmh_dep; d++) {
+        const MhDep* x = &c->mh_dep[d];
+        for (u32 j = x->writer + 1; j < x->at; j++)
+            if (c->mh_mark[j] && mh_may_write(&c->in[j], (int)x->file, x->reg))
+                return !mh_fail(c, "a texture handle from memory whose %s%u another of its instructions writes",
+                                mh_file_name((int)x->file), x->reg);
+    }
+    return 0;
 }
 /* ShaderInfo.memh in program order. Each value an instruction there reads must be the one its writer left: no other
    instruction of the list between the two may write it, as the renderer runs only the list, in order */
@@ -6371,7 +6569,9 @@ static int mh_finish(Ctx* c) {
     for (u32 k = 0; k < c->n; k++) {
         if (!c->mh_mark[k]) continue;
         c->mh_pos[k] = pos + 1;
-        c->si->memh[pos][0] = c->in[k].lo;
+        /* sm86_eval keeps a conditional write's guard; the others run where the texture instruction does (their
+           guard PT) */
+        c->si->memh[pos][0] = c->mh_cond[k] ? c->in[k].lo : (c->in[k].lo & ~0xf000ull) | 0x7000ull;
         c->si->memh[pos][1] = c->in[k].hi;
         pos++;
     }
@@ -6427,15 +6627,24 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     return i;
 }
 static int tex_operands(const Sm86Insn* in, u32 n0, u32 n1, u32* regs);
-/* the register of a TEX.B's handle, the first of list1 (as prepare_handles finds it): RZ when it can't tell */
-static u32 tex_b_handle_reg(const Sm86Insn* in) {
-    u32 type, array, coords, regs[8], lod = sm86_field(in, 87, 3);
-    if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) return SM86_RZ;
-    u32 n0 = array + coords, n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + sm86_field(in, 78, 1);
-    return tex_operands(in, n0, n1, regs) ? regs[n0] : SM86_RZ;
+/* the values of a TEX.B's or a TLD4.B's list1 (nak_nir_lower_tex.c): the handle; TEX's LOD or bias and its offset
+   register, or TLD4's offset registers, one or two by its offset mode (bits 76-77; its bits 87-88 are the gather's
+   component, not a LOD mode); then the depth reference */
+static u32 tex_b_list1(const Sm86Insn* in) {
+    u32 lod = sm86_field(in, 87, 3);
+    u32 more = in->op == SM86_TLD4_B ? sm86_field(in, 76, 2) : (lod == 2 || lod == 3) + sm86_field(in, 76, 1);
+    return 1 + more + sm86_field(in, 78, 1);
 }
-/* the handle register of a TEX.B, or of a TXQ.B: its first source, the level in the register after it (NAK's OpTxq
-   with TexRef::Bindless) */
+/* the register of a TEX.B's or a TLD4.B's handle, the first of list1 (as prepare_handles finds it): RZ when it can't
+   tell */
+static u32 tex_b_handle_reg(const Sm86Insn* in) {
+    u32 type, array, coords, regs[8];
+    if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) return SM86_RZ;
+    u32 n0 = array + coords;
+    return tex_operands(in, n0, tex_b_list1(in), regs) ? regs[n0] : SM86_RZ;
+}
+/* the handle register of a TEX.B or a TLD4.B, or of a TXQ.B: its first source, the level in the register after it
+   (NAK's OpTxq with TexRef::Bindless) */
 static u32 handle_b_reg(const Sm86Insn* in) {
     return in->op == SM86_TXQ_B ? sm86_field(in, 24, 8) : tex_b_handle_reg(in);
 }
@@ -6461,16 +6670,18 @@ static void memory_handles(Ctx* c) {
     for (u32 i = 0; i < n; i++) {
         int op = c->in[i].op;
         any |= op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXD_U || op == SM86_TXQ_U ||
-               ((op == SM86_TEX_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
+               ((op == SM86_TEX_B || op == SM86_TLD4_B || op == SM86_TXQ_B) && handle_b_reg(&c->in[i]) < SM86_RZ &&
                 !tex_b_cbuf_handle(c, i, handle_b_reg(&c->in[i])));
     }
     if (!any) return;
     c->mh_mark = calloc((size_t)n + 1, 1);
+    c->mh_gneed = calloc((size_t)n + 1, 1);
+    c->mh_cond = calloc((size_t)n + 1, 1);
     c->mh_pos = calloc((size_t)n + 1, sizeof *c->mh_pos);
     c->mh_new = calloc((size_t)n + 1, sizeof *c->mh_new);
     u32(*probe)[2] = malloc(((size_t)n + 1) * sizeof *probe); /* ~0 for none */
     if (!c->handle) c->handle = calloc((size_t)n + 1, sizeof *c->handle);
-    if (!c->mh_mark || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
+    if (!c->mh_mark || !c->mh_gneed || !c->mh_cond || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
         free(probe);
         fail(c, "out of memory");
         return;
@@ -6483,7 +6694,7 @@ static void memory_handles(Ctx* c) {
         const Sm86Insn* in = &c->in[i];
         int op = in->op, u = op == SM86_TEX_U || op == SM86_TLD_U || op == SM86_TLD4_U || op == SM86_TXQ_U ||
                              op == SM86_TXD_U;
-        int b = op == SM86_TEX_B || op == SM86_TXQ_B;
+        int b = op == SM86_TEX_B || op == SM86_TLD4_B || op == SM86_TXQ_B;
         u32 reg = b ? handle_b_reg(in) : SM86_RZ;
         if (!u && !(b && reg < SM86_RZ && !tex_b_cbuf_handle(c, i, reg))) continue;
         u32 ur = sm86_field(in, 40, 6), nmh = c->nmh, ndep = c->nmh_dep;
@@ -6495,7 +6706,7 @@ static void memory_handles(Ctx* c) {
         c->mh_why[0] = 0;
         probe[i][0] = mh_probe(c, i, u ? MH_UR : MH_R, u ? ur : reg);
         if (u && probe[i][0] != SH_PROBE_NONE) probe[i][1] = mh_probe(c, i, MH_UR, ur + 1);
-        if (probe[i][0] == SH_PROBE_NONE || (u && probe[i][1] == SH_PROBE_NONE)) {
+        if (probe[i][0] == SH_PROBE_NONE || (u && probe[i][1] == SH_PROBE_NONE) || mh_conflict(c)) {
             for (u32 k = 0; k < c->nmh_new; k++) c->mh_mark[c->mh_new[k]] = 0;
             c->nmh = nmh, c->nmh_dep = ndep;
             probe[i][0] = SH_PROBE_NONE, probe[i][1] = u ? SH_PROBE_NONE : ~0u;
@@ -6515,7 +6726,7 @@ static void memory_handles(Ctx* c) {
             int query = op == SM86_TXQ_U || op == SM86_TXQ_B;
             if (probe[i][0] == ~0u || query != (pass == 1)) continue;
             if (op != SM86_TEX_U && op != SM86_TLD_U && op != SM86_TLD4_U && op != SM86_TXD_U && !query &&
-                op != SM86_TEX_B)
+                op != SM86_TEX_B && op != SM86_TLD4_B)
                 continue;
             u32 tex = mh_final(c, probe[i][0]), smp = probe[i][1] == ~0u ? 0 : mh_final(c, probe[i][1]);
             int has_smp = probe[i][1] != ~0u;
@@ -6575,16 +6786,17 @@ static void prepare_handles(Ctx* c) {
     memory_handles(c);
     for (u32 i = 0; i < c->n && !c->failed; i++) {
         const Sm86Insn* in = &c->in[i];
-        if (in->op != SM86_TEX_B || (c->handle && c->handle[i].slot)) continue; /* memory_handles' */
-        u32 type, array, coords, regs[8], lod = sm86_field(in, 87, 3);
+        if ((in->op != SM86_TEX_B && in->op != SM86_TLD4_B) || (c->handle && c->handle[i].slot))
+            continue; /* memory_handles' */
+        const char* name = sm86_ops[in->op].name;
+        u32 type, array, coords, regs[8];
         if (!tex_dim(sm86_field(in, 61, 3), &type, &array, &coords)) {
-            fail(c, "TEX.B dimension 6");
+            fail(c, "%s dimension 6", name);
             return;
         }
-        u32 shadow = sm86_field(in, 78, 1), n0 = array + coords;
-        u32 n1 = 1 + (lod == 2 || lod == 3) + sm86_field(in, 76, 1) + shadow;
+        u32 shadow = sm86_field(in, 78, 1), n0 = array + coords, n1 = tex_b_list1(in);
         if (!tex_operands(in, n0, n1, regs)) {
-            fail(c, "TEX.B with %u operands in the scalar form", n0 + n1);
+            fail(c, "%s with %u operands in the scalar form", name, n0 + n1);
             return;
         }
         if (!c->handle) c->handle = calloc((size_t)c->n + 1, sizeof *c->handle);
@@ -6598,7 +6810,7 @@ static void prepare_handles(Ctx* c) {
         const Sm86Insn* w = k >= 0 ? &c->in[k] : NULL;
         int slot = -1;
         if (!w) {
-            fail(c, "TEX.B whose handle R%u has no one writer", regs[n0]);
+            fail(c, "%s whose handle R%u has no one writer", name, regs[n0]);
         } else if (w->op == SM86_MOV && w->b.kind == SM86_SRC_CBUF && !w->b.bindless) {
             slot = tex_slot(c, w->b.bank, w->b.value, type, array, shadow, 0);
         } else if (w->op == SM86_LDC && sm86_field(w, 73, 3) == 4 && !sm86_field(w, 78, 2)) {
@@ -6612,9 +6824,9 @@ static void prepare_handles(Ctx* c) {
                 if (!g_spirv_translate.texture_arrays || c->stage == ST_CS) {
                     /* a compute program's table doesn't come here: tex_b_cbuf_handle leaves its TEX.B to
                        memory_handles, which gives it a slot (the dispatch's element, or none) or fails the program */
-                    fail(c, "TEX.B of a table of handles, without texture arrays");
+                    fail(c, "%s of a table of handles, without texture arrays", name);
                 } else if (!handle_table_index(c, m, &stride, &base)) {
-                    fail(c, "TEX.B of a table of handles, indexed by %s",
+                    fail(c, "%s of a table of handles, indexed by %s", name,
                          mul ? sm86_ops[mul->op].name : "several writes");
                 } else {
                     /* the index of a FLO on a 32-bit mask */
@@ -6633,7 +6845,7 @@ static void prepare_handles(Ctx* c) {
                 }
             }
         } else {
-            fail(c, "TEX.B whose handle comes from %s", sm86_ops[w->op].name);
+            fail(c, "%s whose handle comes from %s", name, sm86_ops[w->op].name);
         }
         if (slot >= 0) c->handle[i].slot = (u32)slot + 1;
     }
@@ -7213,6 +7425,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(c->fused);
     free(c->handle);
     free(c->mh_mark);
+    free(c->mh_gneed);
+    free(c->mh_cond);
     free(c->mh_pos);
     free(c->mh_dep);
     free(c->mh_new);

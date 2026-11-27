@@ -5,6 +5,7 @@
 #include "gnuabi/runtime/main.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include "common/utilities/old_llvm_caches.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include <openssl/crypto.h>
 #include <stdio.h>
@@ -38,7 +39,7 @@ static const char usage[] =
     "                         otherwise, as with QEMU's -L. The default is linux/ in the data folder (--data)\n"
     "  --isolated             No host files: /tmp in memory, the program alone as /program\n"
     "  --no-jit-cache         Keep no compiled code between runs\n"
-    "  --jit-opt=LEVEL        The JIT's LLVM optimization level: 0, 1, 2 (the default), 3, s or z, as -O\n"
+    "  --jit-opt=LEVEL        LLVM's level, which went with it: said, and nothing done, as -O\n"
     "  --verbose-jit          Say what the JIT compiles\n"
     "  --strace               Write every system call, its arguments and its result to stderr, with the\n"
     "                         process id\n"
@@ -223,7 +224,7 @@ static void options_free(char** changes, size_t change_count, char* sysroot) {
 int snx_gnuabi_main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    const char *argv0 = NULL, *cache_option = NULL, *opt = "2";
+    const char *argv0 = NULL, *cache_option = NULL;
     char *sysroot = NULL, *cache = NULL;
     char** changes = calloc((size_t)argc + 1, sizeof *changes);
     size_t change_count = 0;
@@ -256,7 +257,6 @@ int snx_gnuabi_main(int argc, char** argv) {
             continue;
         }
         if (id == SNX_CLI_OPT || id == SNX_CLI_JIT_CACHE || id == SNX_CLI_JIT_ONLY) {
-            if (id == SNX_CLI_OPT) opt = common.value;
             if (id == SNX_CLI_JIT_CACHE) cache_option = common.value;
             first++;
             continue;
@@ -272,6 +272,12 @@ int snx_gnuabi_main(int argc, char** argv) {
             const char* given = settings_arg(option, key, sizeof key);
             const IniOpt* o = given ? ini_find(g_linux_ini, key) : NULL;
             if (given && !o) o = ini_find(g_linux_debug_ini, key);
+            if (given && !o && ini_deprecated(key)) { /* an older version's key (linux_jit_opt): said, nothing done */
+                fprintf(stderr, "scarletnx-gnuabi: settings: %s=%s, deprecated, %s (docs/user/deprecations.md)\n", key,
+                        given, ini_deprecated(key));
+                first++;
+                continue;
+            }
             if (o && ini_check(o, given, error, sizeof error)) {
                 fprintf(stderr, "scarletnx-gnuabi: %s\n", error);
                 options_free(changes, change_count, sysroot);
@@ -279,7 +285,6 @@ int snx_gnuabi_main(int argc, char** argv) {
             }
             if (o) {
                 ini_read(o, given);
-                if (!strcmp(key, "linux_jit_opt")) opt = g_settings.linux_jit_level;
                 if (!strcmp(key, "linux_host_page")) {
                     snprintf(page_text, sizeof page_text, "%d", g_settings.linux_host_page);
                     host_page = g_settings.linux_host_page ? page_text : NULL;
@@ -305,8 +310,6 @@ int snx_gnuabi_main(int argc, char** argv) {
             /* the only mode */
         } else if (!strcmp(option, "--no-jit-cache"))
             g_settings.linux_kept_code = 0;
-        else if (!strncmp(option, "--jit-opt=", 10))
-            opt = option + 10;
         else if (!strcmp(option, "--verbose-jit"))
             g_settings.linux_jit_messages = 1;
         else if (!strcmp(option, "--strace"))
@@ -354,14 +357,12 @@ int snx_gnuabi_main(int argc, char** argv) {
         return 2;
     }
     gnu_syscall_trace(strace);
-    /* the JIT's branch profile an older version read, replaced by ir_branch_profile, a setting of scarletnx's runtime
-       and recompile only */
+    /* the JIT's branch profile an older version read */
     const char* old_profile = getenv("SNX_LLVM_BRANCH_PROFILE");
     if (old_profile)
         fprintf(stderr,
-                "scarletnx-gnuabi: SNX_LLVM_BRANCH_PROFILE=%s is deprecated, replaced by ir_branch_profile, a setting "
-                "of scarletnx's runtime and recompile and not of this one: its JIT runs without branch weights "
-                "(docs/user/deprecations.md)\n",
+                "scarletnx-gnuabi: SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and went with LLVM's branch odds: the "
+                "native back ends read no profile (docs/user/deprecations.md)\n",
                 old_profile);
     if (!isolated && !sysroot) sysroot = default_sysroot(argv[0], data);
     if (!no_cache) {
@@ -373,6 +374,14 @@ int snx_gnuabi_main(int argc, char** argv) {
             free(user);
         }
     }
+    if (cache) { /* what LLVM left there: said with where it is deleted, never deleted here */
+        SnxLlvmCaches old = {0};
+        char said[1400];
+        if (!snx_llvm_caches_library(cache, &old) &&
+            snx_llvm_caches_said(&old, cache, SNX_LLVM_CACHES_WHERE, said, sizeof said))
+            fprintf(stderr, "scarletnx-gnuabi: %s\n", said);
+        snx_llvm_caches_free(&old);
+    }
     process = calloc(1, sizeof *process);
     char error[1024] = {0};
     if (!process || gnu_jit_init(&process->jit, cache, error, sizeof error)) {
@@ -383,12 +392,6 @@ int snx_gnuabi_main(int argc, char** argv) {
     }
     process->jit.verbose = verbose;
     snx_recompiler_set_verbose(process->jit.recompiler, verbose);
-    if (snx_recompiler_set_optimization(process->jit.recompiler, opt[0]) || opt[1]) {
-        fprintf(stderr, "scarletnx-gnuabi: --jit-opt takes 0, 1, 2, 3, s or z, not %s\n", opt);
-        options_free(changes, change_count, sysroot);
-        free(cache);
-        return 2;
-    }
     char** env = isolated ? NULL : environment(changes, change_count);
     static const char* const isolated_environment[] = {"PATH=/bin", "LANG=C", NULL};
     const char** guest_argv = calloc((size_t)(argc - first) + 1, sizeof *guest_argv);
@@ -400,15 +403,12 @@ int snx_gnuabi_main(int argc, char** argv) {
         const char* forward[8];
         int n = 0;
         if (strace) forward[n++] = "--strace";
-        char *root_option = sysroot ? snx_format("--sysroot=%s", sysroot) : NULL, *cache_forward = NULL,
-             *opt_option = snx_format("--jit-opt=%s", opt);
+        char *root_option = sysroot ? snx_format("--sysroot=%s", sysroot) : NULL, *cache_forward = NULL;
         forward[n++] = isolated ? "--isolated" : root_option ? root_option : "--isolated";
         forward[n++] = cache ? (cache_forward = snx_format("--jit-cache=%s", cache)) : "--no-jit-cache";
-        forward[n++] = opt_option;
         gnu_spawn_set_options(n, forward);
         free(root_option);
         free(cache_forward);
-        free(opt_option);
     }
     if (gnu_process_init(process, argv[first], argc - first, guest_argv,
                          env ? (const char* const*)env : isolated_environment, isolated ? NULL : sysroot, error,

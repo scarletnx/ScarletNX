@@ -2,12 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* The build-side reader of the runtime JIT's cache: the profile run writes a unit,
    the reader hands the AOT build its metadata and object, and a wrong key or a
-   cut-off record is refused instead of linked. */
-#include "common/cpu/recompiler/llvm/ir.h"
+   cut-off record is refused instead of linked. A file of another build, one
+   whose native back ends made other code or one of the key LLVM's code had, is
+   refused naming the field its key differs in. */
+#include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include <llvm-c/TargetMachine.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,26 @@ static SnxJitService* profile(const char* path) {
     return service;
 }
 
+/* an empty cache at path, made with key: 1, 0 where it could not be written */
+static int write_header(const char* path, const char* key) {
+    const size_t n = strlen(key);
+    const unsigned char length[4] = {(unsigned char)n, (unsigned char)(n >> 8), (unsigned char)(n >> 16),
+                                     (unsigned char)(n >> 24)};
+    FILE* f = fopen(path, "wb");
+    int ok =
+        f && fwrite(SNX_JIT_CACHE_MAGIC, 1, 8, f) == 8 && fwrite(length, 1, 4, f) == 4 && fwrite(key, 1, n, f) == n;
+    if (f) ok = !fclose(f) && ok;
+    return ok;
+}
+/* a cache of the key of another build, refused with an error that names its field and the build's */
+static void refused_other(const char* path, const char* other, const char* key, const char* said) {
+    char error[512] = "";
+    CHECK(write_header(path, other));
+    CHECK(snx_jit_cache_open(path, key, error, sizeof(error)) == NULL);
+    CHECK(strstr(error, path) && strstr(error, "the cache key differs from the build's") && strstr(error, said));
+    if (!strstr(error, said)) fprintf(stderr, "the error lacks \"%s\": %s\n", said, error);
+}
+
 static int copy_prefix(const char* from, const char* to, size_t size) {
     unsigned char* bytes = (unsigned char*)malloc(size ? size : 1);
     FILE* f = fopen(from, "rb");
@@ -96,26 +117,13 @@ int main(void) {
     ok = snx_jit_wait(service, CODE_LO) != NULL;
     CHECK(ok);
     snx_jit_service_free(service);
-    CHECK(!snx_native_available() || !snx_ir_started()); /* the host's back end made the unit: LLVM never started */
 
     key = snx_jit_cache_key('2', 0, 0, 0);
     CHECK(key != NULL);
-    CHECK(key && strstr(key, "fpsr=1") != NULL);
     if (key) {
-        char expected[32];
-        char* triple = LLVMGetDefaultTargetTriple();
-        snprintf(expected, sizeof(expected), "obj=%d", SNX_IR_OBJECT_VERSION);
-        CHECK(strstr(key, expected) != NULL);
-        CHECK(triple != NULL && strstr(key, triple) != NULL);
-        if (triple) LLVMDisposeMessage(triple);
-    }
-    if (key) {
-        char* loose;
-        snx_ir_fpsr_flags(0);
-        loose = snx_jit_cache_key('2', 0, 0, 0);
-        CHECK(loose != NULL && strstr(loose, "fpsr=0") != NULL && strcmp(key, loose));
-        free(loose);
-        snx_ir_fpsr_flags(1);
+        char native[64];
+        snprintf(native, sizeof native, " native=%s ", snx_native_name());
+        CHECK(strstr(key, native) != NULL && strstr(key, " opt=2 hook=0 ") != NULL && !strstr(key, "llvm="));
     }
     cache = snx_jit_cache_open(path, key, error, sizeof(error));
     CHECK(cache != NULL);
@@ -147,6 +155,7 @@ int main(void) {
         error[0] = 0;
         CHECK(snx_jit_cache_open(path, wrong, error, sizeof(error)) == NULL);
         CHECK(strstr(error, "key") != NULL);
+        CHECK(strstr(error, "made for opt=2, and this build makes opt=3") != NULL);
         free(wrong);
     }
     /* another guest's features decode other instructions: their code is another cache's */
@@ -155,6 +164,30 @@ int main(void) {
     if (wrong) {
         CHECK(snx_jit_cache_open(path, wrong, error, sizeof(error)) == NULL);
         free(wrong);
+    }
+    /* the file of a build whose native back ends or sailgen made other code, and one of the key the code LLVM made had
+       (SNX_ABI 19's, obj=5 its IR's object version) */
+    if (key) {
+        static const char* old = "snx-test-jit-cache-reader-old.bin";
+        char *older = (char*)malloc(strlen(key) + 32), said[96], made[160];
+        if (older) {
+            const char* code = strstr(key, " native_code=");
+            CHECK(code && strlen(snx_native_code()) == 16 && !strncmp(code + 13, snx_native_code(), 16));
+            if (code) {
+                snprintf(older, strlen(key) + 32, "%.*s native_code=0123456789abcdef%s", (int)(code - key), key,
+                         code + 13 + 16);
+                snprintf(said, sizeof(said),
+                         "made for native_code=0123456789abcdef, and this build makes native_code=%s",
+                         snx_native_code());
+                refused_other(old, older, key, said);
+            }
+            snprintf(made, sizeof(made), "abi=%d obj=5 llvm=23.1.6 triple=x86_64-unknown-linux-gnu opt=2 hook=0 svc=0",
+                     SNX_ABI);
+            refused_other(old, made, key, "made for obj=5, and this build makes no obj");
+        } else
+            CHECK(0);
+        free(older);
+        remove(old);
     }
     free(key);
 

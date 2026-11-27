@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Included by mach_arm.inc. Thumb blocks (what cpu/arm/llvm_thumb.inc's thumb_block makes, for any profile and memory
-   mode): the 16-bit instructions are sailgen's emitters of the AArch32 Sail (sg_decode_t16), their condition the IT
-   block's while one is open, as the Sail's CurrentCond has it (before Thumb-2, on the ARM11, the ARM946E-S and the
-   ARM7TDMI, every halfword is one, BL's two halves among them); the 32-bit ones
-   the Thumb decoder's shapes (thumb.c), made here over the same SSA, and those that are an A32 instruction in another
-   encoding its emitter's (TH_A32: an A32 word whose PC reads Thumb's). ITSTATE is known as the block is made: it
-   advances with each instruction, and an SVC, a BKPT or a block that ends inside one leaves it in CPSR */
+/* Included by mach_arm.inc. Thumb blocks (for any profile and memory mode): the 16-bit instructions are sailgen's
+   emitters of the AArch32 Sail (sg_decode_t16), their condition the IT block's while one is open, as the Sail's
+   CurrentCond has it (before Thumb-2, on the ARM11, the ARM946E-S and the ARM7TDMI, every halfword is one, BL's two
+   halves among them); the 32-bit ones the Thumb decoder's shapes (thumb.c), made here over the same SSA, and those that
+   are an A32 instruction in another encoding its emitter's (TH_A32: an A32 word whose PC reads Thumb's). ITSTATE is
+   known as the block is made: it advances with each instruction, and an SVC, a BKPT or a block that ends inside one
+   leaves it in CPSR */
 
 /* R[r] as a Thumb operand: the PC reads as the instruction's address plus 4, unaligned (Align(PC, 4) of literals and ADR
    is tpcalign) */
@@ -17,7 +17,7 @@ static void tset(SgCtx* g, unsigned r, SgD v) {
     if (r != 15) sg_GPR_write(g, r, v);
 }
 
-/* x + y, or x - y, with their NZCV where flags (llvm_thumb.inc's taddsub) */
+/* x + y, or x - y, with their NZCV where flags */
 static SgD taddsub(SgCtx* g, SgD x, SgD y, int sub, int flags) {
     if (!flags) return sub ? sg_d_sub(g, x, y) : sg_d_add(g, x, y);
     SgD r, nzcv;
@@ -25,7 +25,7 @@ static SgD taddsub(SgCtx* g, SgD x, SgD y, int sub, int flags) {
     sg_PSTATE_write(g, SG_PSTATE_N, 4, nzcv);
     return r;
 }
-/* x + y + C, or x + NOT(y) + C, with their NZCV where flags (llvm.c's arithmetic of flag 29) */
+/* x + y + C, or x + NOT(y) + C, with their NZCV where flags */
 static SgD tadc(SgCtx* g, SgD x, SgD y, int sub, int flags) {
     SgD c = sg_PSTATE_read(g, SG_PSTATE_C), r, nzcv;
     if (!flags) return sg_d_add(g, sg_d_add(g, x, sub ? sg_d_not(g, y) : y), sg_d_zext(g, c, 32));
@@ -39,7 +39,7 @@ static void tlogic_flags(SgCtx* g, SgD r, const SgD* carry) {
     nz(g, r, 32);
     if (carry) sg_PSTATE_write(g, SG_PSTATE_C, 1, c);
 }
-/* v shifted by an immediate (llvm.c's shift with immediate set): its carry in *carry where it sets one, 0 where C stays
+/* v shifted by an immediate: its carry in *carry where it sets one, 0 where C stays
    as it was (LSL #0) */
 static SgD tshift_imm(SgCtx* g, SgD v, unsigned type, unsigned imm, SgD* carry, int* has_carry) {
     SgD r;
@@ -55,7 +55,7 @@ static SgD tshift_imm(SgCtx* g, SgD v, unsigned type, unsigned imm, SgD* carry, 
     sg_d_shift_c(g, v, imm ? imm : 32, (int)type, &r, carry);
     return r;
 }
-/* v shifted by a register's low byte (llvm.c's shift): an amount of 0 leaves v and C */
+/* v shifted by a register's low byte: an amount of 0 leaves v and C */
 static SgD tshift_reg(SgCtx* g, SgD v, unsigned type, SgD amount, SgD* carry) {
     SgD c = sg_PSTATE_read(g, SG_PSTATE_C), r;
     SgI n = sg_i_uint(g, sg_d_slice(g, amount, 7, 0));
@@ -65,7 +65,7 @@ static SgD tshift_reg(SgCtx* g, SgD v, unsigned type, SgD amount, SgD* carry) {
     return r; /* an amount of 0 shifts by none: the value is v */
 }
 
-/* LDR, STR and their byte, halfword and signed forms, of any offset and writeback (llvm_thumb.inc's thumb_ldst): 1 where
+/* LDR, STR and their byte, halfword and signed forms, of any offset and writeback: 1 where
    it loads the PC */
 static int tldst(SgCtx* g, const SnxThumb* t) {
     unsigned bytes = t->flags & TH_B ? 1 : t->flags & TH_H ? 2 : 4;
@@ -97,7 +97,7 @@ static int tldst(SgCtx* g, const SnxThumb* t) {
     return load && t->rd == 15;
 }
 
-/* LDRD and STRD (llvm_thumb.inc's thumb_dual): word aligned, both words read or checked before either is written */
+/* LDRD and STRD: word aligned, both words read or checked before either is written */
 static void tdual(SgCtx* g, const SnxThumb* t) {
     SgD base = t->rn == 15 ? tpcalign(g) : treg(g, t->rn);
     SgD adjusted =
@@ -118,7 +118,7 @@ static void tdual(SgCtx* g, const SnxThumb* t) {
     if (t->flags & TH_WB) tset(g, t->rn, adjusted);
 }
 
-/* the 32-bit data processing (llvm_thumb.inc's thumb_wdata): op AND, BIC, ORR, ORN, EOR, ADD, ADC, SBC, SUB, RSB, Rn 15
+/* the 32-bit data processing: op AND, BIC, ORR, ORN, EOR, ADD, ADC, SBC, SUB, RSB, Rn 15
    MOV, MVN and their kin, Rd 15 with the flags the compares */
 static void twdata(SgCtx* g, const SnxThumb* t) {
     SgD x = treg(g, t->rn), m = treg(g, t->rm), y, carry = sgx_const(1, 0);
@@ -200,7 +200,7 @@ static void tmul(SgCtx* g, const SnxThumb* t) {
     tset(g, t->rd, r);
 }
 
-/* SBFX, UBFX, BFI, BFC (llvm_thumb.inc's thumb_bitfield) */
+/* SBFX, UBFX, BFI, BFC */
 static void tbitfield(SgCtx* g, const SnxThumb* t) {
     unsigned lsb = t->imm;
     SgD x = treg(g, t->rn), r;
@@ -238,7 +238,7 @@ static void ttable(SgCtx* g, const SnxThumb* t) {
     sg_branch_to(g, sg_d_add(g, sg_d_lsl(g, index, 1), sgx_const(32, (SnxU32)g->pc + 4)), 0);
 }
 
-/* the offset a B.W, BL or BLX (immediate) adds to the PC (llvm_thumb.inc's thumb_branch_offset) from the raw halfwords
+/* the offset a B.W, BL or BLX (immediate) adds to the PC from the raw halfwords
    (.rn and .rm), BLX's base aligned: with BLX, A32 the target's state */
 static SnxU32 tbranch_target(const SnxThumb* t, SnxU32 pc, int* thumb) {
     unsigned hw1 = t->rn, hw2 = t->rm;
@@ -287,7 +287,7 @@ static int tbranch(SgCtx* g, const SnxThumb* t) {
     }
 }
 
-/* a 32-bit Thumb instruction (llvm_thumb.inc's thumb_instruction, its 32-bit shapes): 1 where the block ends after it */
+/* a 32-bit Thumb instruction: 1 where the block ends after it */
 static int thumb32(SgCtx* g, const SnxThumb* t) {
     if (sgx_a32_checked(g) && t->shape == TH_TABLE) {
         sgx_a32_trap(g, SNX_ARM_BACKEND_UNSUPPORTED);

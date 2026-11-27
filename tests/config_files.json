@@ -243,6 +243,14 @@
    ]
   },
   {
+   "id": "console game.ini controls",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/common/utilities/vpad.c:vpad_settings_file"
+   ]
+  },
+  {
    "id": "3DS game.ini",
    "adapter": "tests/config_files_common.c",
    "names": [],

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests, issues and their comments, the
-users' permissions, Build runs, their jobs and their cancel, files of a branch) and a fake Discord (a local HTTP server
-keeping each webhook's messages), for tests/publish_builds_test.py and tests/cancel_pr_runs_test.py. Offline."""
+users' permissions, Build runs, their jobs and their cancel, files of a branch, the pull requests a commit came in
+by, a run's artifacts) and a fake Discord (a local HTTP server keeping each webhook's messages), for tests/publish_builds_test.py and
+tests/cancel_pr_runs_test.py. Offline."""
 
 import http.server
 import json
@@ -41,6 +42,17 @@ if args[:2] == ['release', 'upload']:
 assert args[0] == 'api', args
 method = args[args.index('-X') + 1] if '-X' in args else 'GET'
 target = [a for a in args[1:] if not a.startswith('-') and a not in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE')][0]
+if target == 'graphql' and 'associatedPullRequests' in next(a for a in args if a.startswith('query=')):
+    # the pull requests each asked commit came in by, as GitHub's GraphQL gives them: s['associated'] by commit
+    asked = next(a for a in args if a.startswith('query='))
+    if s.get('graphql_fail'):  # what gh says when GitHub cannot answer
+        stop(s['graphql_fail'])
+    s.setdefault('graphql_asked', []).append(len(re.findall(r'object\(oid:', asked)))
+    save()
+    answer = {alias: {'associatedPullRequests': {'nodes': s.get('associated', {}).get(commit, [])}}
+              for alias, commit in re.findall(r'(c\d+): object\(oid: "([0-9a-f]+)"\)', asked)}
+    out({'data': {'repository': answer}})
+    sys.exit(0)
 if target == 'graphql':  # the links of a pull request or an issue, as GitHub's GraphQL gives them
     asked = next(a for a in args if a.startswith('query='))
     number = re.search(r'number:(\d+)', asked).group(1)
@@ -189,6 +201,9 @@ elif re.fullmatch(r'actions/runs/\d+', rest):
         run.update(status=step['status'], conclusion=step.get('conclusion'), jobs=step['jobs'])
         save()
     out(run)
+elif re.fullmatch(r'actions/runs/\d+/artifacts', rest):  # a run's artifacts: s['run_artifacts'] by run, their names
+    names = s.get('run_artifacts', {}).get(rest.split('/')[2], [])
+    out({'artifacts': [{'id': n, 'name': name, 'expired': False} for n, name in enumerate(names)][(page - 1) * per:page * per]})
 elif re.fullmatch(r'actions/runs/\d+/jobs', rest):
     run = next(r for r in s['runs'] if r['id'] == int(rest.split('/')[2]))
     out({'jobs': run.get('jobs', [])})

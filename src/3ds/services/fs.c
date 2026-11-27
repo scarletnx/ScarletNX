@@ -254,6 +254,13 @@ static const unsigned char* system_archive(uint64_t title, size_t* size) {
 }
 /* A DLC content's RomFS view, made on first open and kept for the process: 1 + its dlc_views entry, 0 when the table
    is full or the image does not parse */
+static uint32_t dlc_view(SnxCtrProcess* p, uint64_t title, unsigned index, const unsigned char* image, uint64_t size);
+uint32_t snx_ctr_fs_dlc_view(SnxCtrProcess* p, uint64_t title, unsigned index) {
+    uint64_t size;
+    bool found = false;
+    const unsigned char* image = p->source ? snx_ctr_source_dlc_romfs(p->source, title, index, &size, &found) : NULL;
+    return found && image ? dlc_view(p, title, index, image, size) : 0;
+}
 static uint32_t dlc_view(SnxCtrProcess* p, uint64_t title, unsigned index, const unsigned char* image, uint64_t size) {
     for (unsigned i = 0; i < p->dlc_view_count; ++i)
         if (p->dlc_views[i].title == title && p->dlc_views[i].index == index) return i + 1;

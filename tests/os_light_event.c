@@ -32,6 +32,9 @@ void kthread_block(KThread* t) { (void)t, unreached("kthread_block"); }
 KThread* kthread_cur(void) { unreached("kthread_cur"); }
 void kthread_unblock(KThread* t) { (void)t, unreached("kthread_unblock"); }
 u32 svc_arbitrate_unlock(u64 addr) { (void)addr, unreached("svc_arbitrate_unlock"); }
+u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed) {
+    (void)addr, (void)tag, (void)handed, unreached("svc_arbitrate_unlock_to");
+}
 u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
     (void)addr, (void)type, (void)value, (void)count, unreached("svc_signal_addr");
 }

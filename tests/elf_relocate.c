@@ -2,16 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 /* The ELF relocations the AOT linker (link_elf.c) and the JIT loader (code_loader.c) share (elf_object.c), checked on
    any host: every AArch64 relocation type and veneer against encodings worked out by hand from the Arm ARM, PowerPC64's
-   instruction fields and veneer from the ELF V2 ABI, then
-   AArch64 objects from the LLVM backend (when its LLVM has the AArch64 target) linked into a module and loaded into a
-   code arena whose code is only read, never run: calls out of reach must land on stubs that reach their targets (in a
-   load larger than B's reach, on the veneers after each object's code), and GOT slots must hold their symbols'
-   addresses. An arena sized by snx_code_need must hold what it counted. */
+   instruction fields and veneer from the ELF V2 ABI, then objects carrying the native back ends' relocations
+   (native_objects.c): AArch64's linked into a module and loaded into a code arena whose code is only read, never run
+   (calls out of reach must land on stubs that reach their targets, in a load larger than B's reach on the veneers
+   after each object's code, GOT slots and the objects' own slots must hold their symbols' addresses, and an arena sized
+   by snx_code_need must hold what it counted), x86-64's counted, and each RISC machine's of this host's byte order
+   linked into a module whose relocations land on their symbols, run where the host is MIPS64 or s390x. */
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/recompiler/loader/code_loader_int.h" /* the regions' use, against snx_code_need's */
-#include "common/cpu/recompiler/llvm/ir.h"
-#include <llvm-c/Target.h>
+#include "common/cpu/recompiler/mach/native.h"
+#include "native_objects.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -499,7 +500,7 @@ static void s390x_relocations(void) {
           "s390x relocation classes");
 }
 
-/* ---- the LLVM backend's AArch64 objects ---- */
+/* ---- objects of the native back ends' relocations (native_objects.c) ---- */
 
 static int64_t sign(uint64_t value, unsigned bits) {
     uint64_t m = (uint64_t)1 << (bits - 1);
@@ -528,56 +529,16 @@ static uint64_t stub_target(uint64_t address, int* indirect) {
     return page + (second >> 10 & 0xFFF);
 }
 
-/* An AArch64 object: caller() returns callee(*data + 1) + 1; callee is hidden (BL), data default visibility (the GOT) */
-static int object_for(const char* triple, const char* callee_name, const char* data_name, const char* caller_name,
-                      unsigned char** data, size_t* size) {
+/* An AArch64 object: caller() returns callee(*data + 1) + 1, data's address in a slot of the object's */
+static int object(const char* callee, const char* data, const char* caller, unsigned char** out, size_t* size) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("caller", '2', triple, error, sizeof(error));
-    LLVMValueRef value, callee, caller, args[1], result;
-    LLVMTypeRef params[1];
-    if (!ir) return snx_error("%s", error);
-    params[0] = ir->t_i64;
-    value = LLVMAddGlobal(ir->mod, ir->t_i64, data_name);
-    callee = ir_extern(ir, callee_name, ir->t_i64, params, 1);
-    caller = LLVMAddFunction(ir->mod, caller_name, LLVMFunctionType(ir->t_i64, NULL, 0, 0));
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, caller, "entry"));
-    args[0] = LLVMBuildAdd(ir->b, LLVMBuildLoad2(ir->b, ir->t_i64, value, "v"), LLVMConstInt(ir->t_i64, 1, 0), "a");
-    result = LLVMBuildCall2(ir->b, LLVMGlobalGetValueType(callee), callee, args, 1, "c");
-    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, result, LLVMConstInt(ir->t_i64, 1, 0), "r"));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
+    return nobj_a64_caller(0, callee, data, caller, out, size, error, sizeof error) ? snx_error("%s", error) : 0;
 }
-
-#ifndef __APPLE__ /* the AOT checks' objects: macOS links no ELF module (link_elf.c) */
-static int object(const char* callee_name, const char* data_name, const char* caller_name, unsigned char** data,
-                  size_t* size) {
-    return object_for("aarch64-unknown-linux-gnu", callee_name, data_name, caller_name, data, size);
-}
-#endif
-
-/* the definitions object() calls into */
-static int definitions_for(const char* triple, unsigned char** data, size_t* size) {
+/* the definitions object() calls into: ext_data and ext_fn, of machine */
+static int definitions(unsigned machine, unsigned char** out, size_t* size) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("definitions", '2', triple, error, sizeof(error));
-    LLVMValueRef value, callee;
-    LLVMTypeRef params[1];
-    if (!ir) return snx_error("%s", error);
-    params[0] = ir->t_i64;
-    value = LLVMAddGlobal(ir->mod, ir->t_i64, "ext_data");
-    LLVMSetInitializer(value, LLVMConstInt(ir->t_i64, 41, 0));
-    callee = ir_extern(ir, "ext_fn", ir->t_i64, params, 1);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, callee, "entry"));
-    LLVMBuildRet(ir->b, LLVMBuildMul(ir->b, LLVMGetParam(callee, 0), LLVMConstInt(ir->t_i64, 3, 0), "m"));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
+    return nobj_definitions(machine, 0, out, size, error, sizeof error) ? snx_error("%s", error) : 0;
 }
-#ifndef __APPLE__
-static int definitions(unsigned char** data, size_t* size) {
-    return definitions_for("aarch64-unknown-linux-gnu", data, size);
-}
-#endif
 
 /* the first B or BL of the function at address, before its RET: its target (0 for none) */
 static uint64_t first_branch(uint64_t address) {
@@ -588,7 +549,7 @@ static uint64_t first_branch(uint64_t address) {
     return 0;
 }
 /* the slot the function's first ADRP and LDR pair reads */
-static uint64_t first_got_load(uint64_t address) {
+static uint64_t first_slot(uint64_t address) {
     const unsigned char* code = (const unsigned char*)(size_t)address;
     size_t i, j;
     for (i = 0; i < 64; ++i) {
@@ -606,9 +567,9 @@ static uint64_t first_got_load(uint64_t address) {
 static SnxU64 probe_data = 0x1234;
 static SnxU64 probe_fn(SnxU64 a) { return a; }
 
-/* JIT: triple's objects loaded into an AArch64 arena. ext_fn and ext_data are in this executable, outside the arena:
-   the call goes through an indirect stub, the data through a GOT slot */
-static int jit_objects(const char* triple) {
+/* JIT: the objects loaded into an AArch64 arena. ext_fn and ext_data are in this executable, outside the arena: the
+   call goes through an indirect stub, the data's slot holds its address */
+static int jit_objects(void) {
     char error[1024];
     unsigned char *caller_data, *second_data;
     size_t caller_size, second_size;
@@ -617,8 +578,8 @@ static int jit_objects(const char* triple) {
     SnxU64 caller, second, target, slot;
     SnxCodeLoader* loader;
     int indirect = -1;
-    if (object_for(triple, "ext_fn", "ext_data", "caller", &caller_data, &caller_size) ||
-        object_for(triple, "caller", "ext_data", "second", &second_data, &second_size))
+    if (object("ext_fn", "ext_data", "caller", &caller_data, &caller_size) ||
+        object("caller", "ext_data", "second", &second_data, &second_size))
         return 1;
     loader = snx_code_loader_new_machine(0, EM_AARCH64, error, sizeof(error));
     if (!loader) return snx_error("loader: %s", error);
@@ -630,7 +591,7 @@ static int jit_objects(const char* triple) {
     input.name = "caller";
     names[0] = "caller";
     if (snx_code_load(loader, &input, 1, names, 1, &caller, error, sizeof(error)))
-        return snx_error("loader (%s): %s", triple, error);
+        return snx_error("loader: %s", error);
     target = first_branch(caller);
     if (target == (SnxU64)(size_t)&probe_fn)
         printf("the arena is within 128 MiB of this executable: no far call to check\n");
@@ -639,26 +600,27 @@ static int jit_objects(const char* triple) {
         slot = stub_target(target, &indirect);
         check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&probe_fn, "stub's GOT slot");
     }
-    slot = first_got_load(caller);
-    check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&probe_data, "data's GOT slot");
+    slot = first_slot(caller);
+    check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&probe_data,
+          "the object's slot of ext_data holds its address");
     /* a later unit calling the first, in the arena and in reach: directly */
     input.data = second_data;
     input.size = second_size;
     input.name = "second";
     names[0] = "second";
     if (snx_code_load(loader, &input, 1, names, 1, &second, error, sizeof(error)))
-        return snx_error("loader (%s): %s", triple, error);
+        return snx_error("loader: %s", error);
     check(first_branch(second) == caller, "near call to an earlier load, direct");
     /* and one whose callee is in the arena but beyond B's 128 MiB: through a direct stub (ADRP, ADD) */
     if (snx_code_define(loader, "far_in_arena", caller + ((SnxU64)300 << 20))) return snx_error("loader: defined");
     free(second_data);
-    if (object_for(triple, "far_in_arena", "ext_data", "third", &second_data, &second_size)) return 1;
+    if (object("far_in_arena", "ext_data", "third", &second_data, &second_size)) return 1;
     input.data = second_data;
     input.size = second_size;
     input.name = "third";
     names[0] = "third";
     if (snx_code_load(loader, &input, 1, names, 1, &second, error, sizeof(error)))
-        return snx_error("loader (%s): %s", triple, error);
+        return snx_error("loader: %s", error);
     target = first_branch(second);
     check(target && stub_target(target, &indirect) == caller + ((SnxU64)300 << 20) && indirect == 0,
           "call to a far symbol in the arena through a direct stub");
@@ -668,24 +630,11 @@ static int jit_objects(const char* triple) {
     return 0;
 }
 
-/* an object of nothing but bytes of code, which makes a load's code as large as bytes say. Module assembly: LLVM gives
-   a global's section the global's flags, so a global in a section named .text would be data */
-static int filler_object(const char* triple, size_t bytes, unsigned char** data, size_t* size) {
-    char error[1024], text[128];
-    SnxIr* ir = snx_ir_new_target("filler", '2', triple, error, sizeof(error));
-    if (!ir) return snx_error("%s", error);
-    snprintf(text, sizeof text, ".section .text.filler,\"ax\",%%progbits\n.space %zu\n", bytes);
-    LLVMSetModuleInlineAsm2(ir->mod, text, strlen(text));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
-}
-
 /* JIT: a game's whole code is one load of more than B and BL reach (128 MiB). A call from its first object to a
    definition in its third goes through a veneer in the island after the caller's code, which the call reaches, and
    the veneer to the definition, which the call does not; a call from its last object to this executable, outside the
-   arena, through that object's own veneer and a GOT slot of its own, beside the one of the data it reads */
-static int large_load(const char* triple) {
+   arena, through that object's own veneer and a GOT slot of its own, beside the slot of the data it reads */
+static int large_load(void) {
     static const char* const objects[4] = {"caller", "filler", "definitions", "outward"};
     const char* names[4] = {"caller", "ext_fn", "outward", "ext_data"};
     char error[1024];
@@ -697,9 +646,10 @@ static int large_load(const char* triple) {
     size_t need[3];
     char what[160];
     int indirect = -1;
-    if (object_for(triple, "ext_fn", "ext_data", "caller", &data[0], &size[0]) ||
-        filler_object(triple, (size_t)140 << 20, &data[1], &size[1]) || definitions_for(triple, &data[2], &size[2]) ||
-        object_for(triple, "probe_far", "ext_data", "outward", &data[3], &size[3]))
+    if (object("ext_fn", "ext_data", "caller", &data[0], &size[0])) return 1;
+    if (nobj_filler(EM_AARCH64, 0, (size_t)140 << 20, &data[1], &size[1], error, sizeof error))
+        return snx_error("%s", error);
+    if (definitions(EM_AARCH64, &data[2], &size[2]) || object("probe_far", "ext_data", "outward", &data[3], &size[3]))
         return 1;
     for (i = 0; i < 4; ++i) {
         inputs[i].data = data[i];
@@ -707,12 +657,12 @@ static int large_load(const char* triple) {
         inputs[i].name = objects[i];
     }
     /* the arena snx_code_need sizes, which must hold the islands too */
-    if (snx_code_need(inputs, 4, need, error, sizeof(error))) return snx_error("need (%s): %s", triple, error);
+    if (snx_code_need(inputs, 4, need, error, sizeof(error))) return snx_error("need: %s", error);
     loader = snx_code_loader_new_regions_machine(need, EM_AARCH64, error, sizeof(error));
     if (!loader) return snx_error("loader: %s", error);
     if (snx_code_define(loader, "probe_far", (SnxU64)(size_t)&probe_fn)) return snx_error("loader: defined twice");
     if (snx_code_load(loader, inputs, 4, names, 4, address, error, sizeof(error)))
-        return snx_error("large load (%s): %s", triple, error);
+        return snx_error("large load: %s", error);
     veneer = first_branch(address[0]);
     check(veneer > address[0] && veneer - address[0] < ((SnxU64)128 << 20),
           "a large load's call reaches the veneer after its object's code");
@@ -727,12 +677,12 @@ static int large_load(const char* triple) {
                   get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&probe_fn,
               "a large load's far call through its object's veneer and GOT slot");
     }
-    data_slot = first_got_load(address[2]);
+    data_slot = first_slot(address[2]);
     check(data_slot && get64((const unsigned char*)(size_t)data_slot) == address[3],
-          "a large load's data GOT slot, beside its far call's");
+          "a large load's slot of its data, beside its far call's");
     for (i = 0; i < 3; ++i) {
         snprintf(what, sizeof what,
-                 "%s: a large load's region %zu holds what snx_code_need counted (%zu bytes used of %zu)", triple, i,
+                 "a large load's region %zu holds what snx_code_need counted (%zu bytes used of %zu)", i,
                  loader->region[i].used, need[i]);
         check(loader->region[i].used <= need[i], what);
     }
@@ -741,66 +691,47 @@ static int large_load(const char* triple) {
     return 0;
 }
 
-/* An object of two functions, the first reading data1 (volatile, through the GOT) and calling call1 with it, the
+/* An object of machine's two functions, the first reading data1 (through its slot) and calling call1 with it, the
    second the same with data2 and call2: each function's code is its own, the same size whether the two of a pair are
-   one name or two */
-static int need_object(const char* triple, const char* call1, const char* call2, const char* data1, const char* data2,
+   one name or two, and one slot a name */
+static int need_object(unsigned machine, const char* call1, const char* call2, const char* data1, const char* data2,
                        SnxLinkInput* input) {
-    const char* calls[2] = {call1, call2};
-    const char* reads[2] = {data1, data2};
-    char error[1024], name[8];
-    SnxIr* ir = snx_ir_new_target("need", '2', triple, error, sizeof(error));
-    LLVMValueRef callee, datum, fn, v, args[1];
-    LLVMTypeRef params[1];
+    char error[1024];
     unsigned char* data;
     size_t size;
-    int i;
-    if (!ir) return snx_error("%s", error);
-    params[0] = ir->t_i64;
-    for (i = 0; i < 2; ++i) {
-        callee = LLVMGetNamedFunction(ir->mod, calls[i]);
-        if (!callee) callee = ir_extern(ir, calls[i], ir->t_i64, params, 1);
-        datum = LLVMGetNamedGlobal(ir->mod, reads[i]);
-        if (!datum) datum = LLVMAddGlobal(ir->mod, ir->t_i64, reads[i]);
-        snprintf(name, sizeof name, "need%d", i);
-        fn = LLVMAddFunction(ir->mod, name, LLVMFunctionType(ir->t_i64, params, 1, 0));
-        LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
-        v = LLVMBuildLoad2(ir->b, ir->t_i64, datum, "v");
-        LLVMSetVolatile(v, 1);
-        args[0] = LLVMBuildAdd(ir->b, LLVMGetParam(fn, 0), v, "a");
-        args[0] = LLVMBuildCall2(ir->b, LLVMGlobalGetValueType(callee), callee, args, 1, "c");
-        LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, args[0], LLVMConstInt(ir->t_i64, 1, 0), "r"));
-    }
-    if (snx_ir_object(ir, '2', &data, &size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
+    if (nobj_need(machine, call1, call2, data1, data2, &data, &size, error, sizeof error))
+        return snx_error("%s", error);
     input->data = data;
     input->size = size;
     input->name = "need";
     return 0;
 }
 
-/* snx_code_need's counts: a stub (stub bytes on this machine) and a GOT slot for each symbol an object calls, a GOT
-   slot for each it reads through the GOT, two references to one symbol counted once */
-static int need_counts(const char* triple, uint64_t stub) {
+/* snx_code_need's counts: a stub (stub bytes on this machine) and a GOT slot for each symbol an object calls, two calls
+   of one symbol counted once; a datum's slot is its object's data (.data.rel.ro, written as the object is relocated) */
+static int need_counts(unsigned machine, uint64_t stub) {
+    const char* what_machine = machine == EM_AARCH64 ? "AArch64" : "x86-64";
     SnxLinkInput one, calls, reads;
     size_t need_one[3], need_calls[3], need_reads[3];
-    char error[1024], what[160];
-    if (need_object(triple, "f", "f", "a", "a", &one) || need_object(triple, "f", "g", "a", "a", &calls) ||
-        need_object(triple, "f", "f", "a", "b", &reads))
+    char error[1024], what[200];
+    if (need_object(machine, "f", "f", "a", "a", &one) || need_object(machine, "f", "g", "a", "a", &calls) ||
+        need_object(machine, "f", "f", "a", "b", &reads))
         return 1;
     if (snx_code_need(&one, 1, need_one, error, sizeof(error)) ||
         snx_code_need(&calls, 1, need_calls, error, sizeof(error)) ||
         snx_code_need(&reads, 1, need_reads, error, sizeof(error)))
-        return snx_error("need (%s): %s", triple, error);
+        return snx_error("need (%s): %s", what_machine, error);
     snprintf(what, sizeof what,
              "%s: a second callee needs a stub of %llu bytes and a GOT slot (code %zu to %zu, "
              "read-only data %zu to %zu)",
-             triple, (unsigned long long)stub, need_one[0], need_calls[0], need_one[1], need_calls[1]);
+             what_machine, (unsigned long long)stub, need_one[0], need_calls[0], need_one[1], need_calls[1]);
     check(need_calls[0] == need_one[0] + stub && need_calls[1] == need_one[1] + 8 && need_calls[2] == need_one[2],
           what);
-    snprintf(what, sizeof what, "%s: a second datum needs a GOT slot (code %zu to %zu, read-only data %zu to %zu)",
-             triple, need_one[0], need_reads[0], need_one[1], need_reads[1]);
-    check(need_reads[0] == need_one[0] && need_reads[1] == need_one[1] + 8 && need_reads[2] == need_one[2], what);
+    snprintf(what, sizeof what,
+             "%s: a second datum needs its slot's 8 bytes of data (code %zu to %zu, read-only data %zu to %zu, data "
+             "%zu to %zu)",
+             what_machine, need_one[0], need_reads[0], need_one[1], need_reads[1], need_one[2], need_reads[2]);
+    check(need_reads[0] == need_one[0] && need_reads[1] == need_one[1] && need_reads[2] == need_one[2] + 8, what);
     free((void*)one.data);
     free((void*)calls.data);
     free((void*)reads.data);
@@ -808,26 +739,11 @@ static int need_counts(const char* triple, uint64_t stub) {
 }
 
 /* An object of data only: other_data (data), a table of constants (read-only data) and 4 KiB of zeros (bss) */
-static int held_object(const char* triple, SnxLinkInput* input) {
+static int held_object(SnxLinkInput* input) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("held", '2', triple, error, sizeof(error));
-    LLVMValueRef value, table[64];
-    LLVMTypeRef zeros;
     unsigned char* data;
     size_t size;
-    int i;
-    if (!ir) return snx_error("%s", error);
-    value = LLVMAddGlobal(ir->mod, ir->t_i64, "other_data");
-    LLVMSetInitializer(value, LLVMConstInt(ir->t_i64, 7, 0));
-    for (i = 0; i < 64; ++i) table[i] = LLVMConstInt(ir->t_i64, (unsigned long long)i * 3 + 1, 0);
-    value = LLVMAddGlobal(ir->mod, LLVMArrayType(ir->t_i64, 64), "held_table");
-    LLVMSetInitializer(value, LLVMConstArray(ir->t_i64, table, 64));
-    LLVMSetGlobalConstant(value, 1);
-    zeros = LLVMArrayType(ir->t_i8, 4096);
-    value = LLVMAddGlobal(ir->mod, zeros, "held_zeros");
-    LLVMSetInitializer(value, LLVMConstNull(zeros));
-    if (snx_ir_object(ir, '2', &data, &size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
+    if (nobj_held(EM_AARCH64, &data, &size, error, sizeof error)) return snx_error("%s", error);
     input->data = data;
     input->size = size;
     input->name = "held";
@@ -837,7 +753,7 @@ static int held_object(const char* triple, SnxLinkInput* input) {
 /* Two loads into an arena of the regions snx_code_need gives them, as a game's runtime library and pack: each region
    holds them, a call out of the arena and one to the first load through stubs and GOT slots included, and the second
    load's data, read-only data and bss */
-static int need_holds(const char* triple) {
+static int need_holds(void) {
     SnxLinkInput first, second[3];
     const char* names[1] = {"caller"};
     size_t need_first[3], need_second[3], need[3], i;
@@ -846,20 +762,19 @@ static int need_holds(const char* triple) {
     char error[1024], what[160];
     unsigned char* data;
     size_t size;
-    if (object_for(triple, "ext_fn", "ext_data", "caller", &data, &size)) return 1;
+    if (object("ext_fn", "ext_data", "caller", &data, &size)) return 1;
     first.data = data;
     first.size = size;
     first.name = "caller";
-    if (object_for(triple, "caller", "ext_data", "second", &data, &size) ||
-        need_object(triple, "caller", "ext_fn", "ext_data", "other_data", &second[1]) ||
-        held_object(triple, &second[2]))
+    if (object("caller", "ext_data", "second", &data, &size) ||
+        need_object(EM_AARCH64, "caller", "ext_fn", "ext_data", "other_data", &second[1]) || held_object(&second[2]))
         return 1;
     second[0].data = data;
     second[0].size = size;
     second[0].name = "second";
     if (snx_code_need(&first, 1, need_first, error, sizeof(error)) ||
         snx_code_need(second, 3, need_second, error, sizeof(error)))
-        return snx_error("need (%s): %s", triple, error);
+        return snx_error("need: %s", error);
     for (i = 0; i < 3; ++i) need[i] = need_first[i] + need_second[i];
     loader = snx_code_loader_new_regions_machine(need, EM_AARCH64, error, sizeof(error));
     if (!loader) return snx_error("loader: %s", error);
@@ -868,10 +783,10 @@ static int need_holds(const char* triple) {
         return snx_error("loader: defined twice");
     if (snx_code_load(loader, &first, 1, names, 1, &caller, error, sizeof(error)) ||
         snx_code_load(loader, second, 3, NULL, 0, NULL, error, sizeof(error)))
-        return snx_error("loads into the arena snx_code_need sized (%s): %s", triple, error);
+        return snx_error("loads into the arena snx_code_need sized: %s", error);
     for (i = 0; i < 3; ++i) {
-        snprintf(what, sizeof what, "%s: region %zu holds what snx_code_need counted (%zu bytes used of %zu)", triple,
-                 i, loader->region[i].used, need[i]);
+        snprintf(what, sizeof what, "region %zu holds what snx_code_need counted (%zu bytes used of %zu)", i,
+                 loader->region[i].used, need[i]);
         check(loader->region[i].used <= need[i], what);
     }
     snx_code_loader_free(loader);
@@ -890,33 +805,20 @@ static void need_too_large(void) {
     snx_code_loader_free(loader);
 }
 
-static int llvm_objects(void) {
-    char error[1024];
-    LLVMInitializeAllTargetInfos();
-    LLVMInitializeAllTargets();
-    LLVMInitializeAllTargetMCs();
-    LLVMInitializeAllAsmPrinters();
-    LLVMInitializeAllAsmParsers(); /* large_load's filler is module assembly */
-    if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
-    {
-        SnxIr* probe = snx_ir_new_target("probe", '2', "aarch64-unknown-linux-gnu", error, sizeof(error));
-        if (!probe) {
-            printf("skipped the LLVM objects: %s\n", error);
-            return 0;
-        }
-        snx_ir_free(probe);
-    }
+static int native_objects(void) {
 #ifndef __APPLE__ /* where the AOT linker writes no ELF module (link_elf.c) */
     {
+        char error[1024];
         unsigned char *caller_data, *defs_data;
         size_t caller_size, defs_size, i;
         SnxLinkInput inputs[2];
         SnxLinkOutput linked;
         const char* exports[1] = {"caller"};
         const Elf64_Ehdr* eh;
-        if (object("ext_fn", "ext_data", "caller", &caller_data, &caller_size) || definitions(&defs_data, &defs_size))
+        if (object("ext_fn", "ext_data", "caller", &caller_data, &caller_size) ||
+            definitions(EM_AARCH64, &defs_data, &defs_size))
             return 1;
-        /* AOT: one AArch64 module, rebased with R_AARCH64_RELATIVE (the GOT slot of ext_data at least) */
+        /* AOT: one AArch64 module, rebased with R_AARCH64_RELATIVE (the slot of ext_data at least) */
         inputs[0].data = caller_data;
         inputs[0].size = caller_size;
         inputs[0].name = "caller";
@@ -944,21 +846,9 @@ static int llvm_objects(void) {
         free(defs_data);
     }
 #endif
-    /* the JIT's objects on Linux and on macOS, where they are ELF with Darwin's calling convention (ir.c): both are
-       what elf_object.c reads, with the same relocations, and Darwin's names have no leading underscore in ELF */
-    if (jit_objects("aarch64-unknown-linux-gnu") || jit_objects("arm64-apple-macosx11.0.0-elf") ||
-        need_counts("aarch64-unknown-linux-gnu", SNX_ELF_VENEER_SIZE) || need_holds("aarch64-unknown-linux-gnu") ||
-        large_load("aarch64-unknown-linux-gnu"))
-        return 1;
-    {
-        SnxIr* probe = snx_ir_new_target("probe", '2', "x86_64-unknown-linux-gnu", error, sizeof(error));
-        if (!probe) {
-            printf("skipped snx_code_need's x86-64 counts: %s\n", error);
-            return 0;
-        }
-        snx_ir_free(probe);
-    }
-    return need_counts("x86_64-unknown-linux-gnu", 8); /* jmp *slot(%rip) and two int3 */
+    /* the JIT's objects, which are ELF on every host but Windows, macOS's too */
+    if (jit_objects() || need_counts(EM_AARCH64, SNX_ELF_VENEER_SIZE) || need_holds() || large_load()) return 1;
+    return need_counts(EM_X86_64, 8); /* jmp *slot(%rip) and two int3 */
 }
 
 #ifndef __APPLE__ /* AOT modules */
@@ -977,297 +867,113 @@ static uint64_t export_address(const unsigned char* module, const char* name) {
     return 0;
 }
 
-/* ppc64le objects (ELFv2) linked into a module, on a little-endian host, whose byte order they must share: the call
-   must reach ext_fn's local entry, past the two instructions that compute r2 from r12 when it has them, and the only
-   dynamic relocations be R_PPC64_RELATIVE */
-static int ppc64le_objects(void) {
-    char error[1024];
-    const char* triple = "powerpc64le-unknown-linux-gnu";
-    const char* exports[2] = {"caller", "ext_fn"};
-    unsigned char *caller_data, *defs_data;
-    size_t caller_size, defs_size, i, relatives = 0, others = 0;
-    SnxLinkInput inputs[2];
-    SnxLinkOutput linked;
-    const Elf64_Ehdr* eh;
-    const Elf64_Shdr* sh;
-    uint64_t caller, callee, at, target = 0;
-    if (snx_elf_host_data() != ELFDATA2LSB) return 0;
-    {
-        SnxIr* probe = snx_ir_new_target("probe", '2', triple, error, sizeof(error));
-        if (!probe) {
-            printf("skipped the PowerPC64 objects: %s\n", error);
-            return 0;
-        }
-        snx_ir_free(probe);
+/* where a code relocation of a RISC machine's lands in the module, read from the instructions or the literal at site:
+   a literal's value from its address (RISC-V's 32-bit, MIPS64's 32-bit and the others' 64-bit), RISC-V's AUIPC with the
+   JALR after it, LoongArch's PCADDU18I with JIRL. 0 for a type none of these is */
+static uint64_t site_target(unsigned machine, const unsigned char* module, uint64_t site, unsigned type) {
+    const uint32_t first = host32(module + site), second = host32(module + site + 4);
+    uint64_t v = 0;
+    if ((machine == EM_RISCV && type == SNX_RV_32_PCREL) || (machine == EM_MIPS && type == SNX_MIPS_PC32))
+        return site + (uint64_t)(int64_t)(int32_t)first;
+    if ((machine == EM_LOONGARCH && type == SNX_LA_64_PCREL) || (machine == EM_PPC64 && type == SNX_PPC_REL64) ||
+        (machine == EM_S390 && type == SNX_390_PC64)) {
+        memcpy(&v, module + site, sizeof v);
+        return site + v;
     }
-    if (object_for(triple, "ext_fn", "ext_data", "caller", &caller_data, &caller_size) ||
-        definitions_for(triple, &defs_data, &defs_size))
-        return 1;
-    inputs[0].data = caller_data;
-    inputs[0].size = caller_size;
-    inputs[0].name = "caller";
-    inputs[1].data = defs_data;
-    inputs[1].size = defs_size;
-    inputs[1].name = "definitions";
-    if (snx_link(inputs, 2, exports, 2, "caller.so", &linked, error, sizeof(error)))
-        return snx_error("PowerPC64 link: %s", error);
-    eh = (const Elf64_Ehdr*)(const void*)linked.data;
-    check(eh->e_machine == EM_PPC64 && eh->e_type == ET_DYN && snx_elf_ppc_abi(eh->e_flags) == SNX_ELF_PPC_ELFV2,
-          "PowerPC64 module header");
-    sh = (const Elf64_Shdr*)(const void*)(linked.data + eh->e_shoff);
-    for (i = 0; i < eh->e_shnum; ++i)
-        if (sh[i].sh_type == SHT_RELA) {
-            const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + sh[i].sh_offset);
-            size_t k;
-            for (k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
-                ELF64_R_TYPE(r[k].r_info) == SNX_PPC_RELATIVE ? ++relatives : ++others;
-        }
-    check(relatives >= 1 && !others, "PowerPC64 module's dynamic relocations are R_PPC64_RELATIVE");
-    caller = export_address(linked.data, "caller");
-    callee = export_address(linked.data, "ext_fn");
-    for (at = caller; caller && at < caller + 64 && !target; at += 4) {
-        uint32_t insn = host32(linked.data + at);
-        if ((insn & 0xFC000003u) == 0x48000001u) /* bl */
-            target = at + (uint64_t)(int64_t)(int32_t)((insn & 0x03FFFFFCu) << 6) / 64;
-    }
-    check(callee && (target == callee || (target == callee + 8 && (host32(linked.data + callee) >> 16) == 0x3C4Cu &&
-                                          (host32(linked.data + callee + 4) >> 16) == 0x3842u)),
-          "PowerPC64 call to the callee's local entry");
-    free(linked.data);
-    free(caller_data);
-    free(defs_data);
+    if (machine == EM_RISCV && type == SNX_RV_CALL_PLT)
+        return site + (uint64_t)sign(first & 0xFFFFF000u, 32) + (uint64_t)sign(second >> 20, 12);
+    if (machine == EM_LOONGARCH && type == SNX_LA_CALL36)
+        return site + (uint64_t)(sign(first >> 5 & 0xFFFFF, 20) * 262144) +
+               (uint64_t)(sign(second >> 10 & 0xFFFF, 16) * 4);
     return 0;
 }
 
-/* a guest function's tail call through a pointer, as snx_lookup's answer is called, which ir.c makes a stub of on
-   PowerPC64: its object links alone, the stub falling back to the CPU's RtAPI.miss rather than a symbol of its own */
-static int ppc64le_tail_call(void) {
-    char error[1024];
-    const char* exports[1] = {"guest"};
-    LLVMTypeRef params[2], type;
-    LLVMValueRef guest, call, args[2];
-    unsigned char* data;
-    size_t size;
-    SnxLinkInput input;
+/* the dynamic relocations of a linked module: the machine's RELATIVE ones (no symbol) and the others */
+static void dynamic_relocations(unsigned machine, const unsigned char* module, size_t* relatives, size_t* others) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(const void*)(module + eh->e_shoff);
+    *relatives = *others = 0;
+    for (size_t i = 0; i < eh->e_shnum; ++i)
+        if (sh[i].sh_type == SHT_RELA) {
+            const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(module + sh[i].sh_offset);
+            for (size_t k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
+                snx_elf_type(machine, r[k].r_info) == snx_elf_relative_type(machine) &&
+                        !snx_elf_symbol(machine, r[k].r_info)
+                    ? ++*relatives
+                    : ++*others;
+        }
+}
+
+/* A RISC machine's objects, its native back end's (native_objects.c), linked into a module: its header repeats theirs
+   (the float ABI, ELFv2), its dynamic relocations are only the machine's RELATIVE (caller_slot's and ext_pointer's), and
+   every relocation of the code lands on its symbol (the calls' instructions, the literals' values). Linked in both
+   orders, which moves the code and not the data: one layout alone can put a displacement's low 12 bits where the
+   AUIPC's own are, and hide a RISC-V low half written from the wrong value. The module is read in this host's byte
+   order: a machine of the other one is left out, said */
+static int other_objects(const char* desc, const char* what) {
+    char error[1024], name[160];
+    const char* exports[] = {"caller", "tail_direct", "tail_pointer", "third",
+                             "ext_fn", "ext_data",    "ext_pointer",  "ext_table"};
+    unsigned char* data[3];
+    size_t size[3];
+    NobjSite sites[16], ignored[1];
+    size_t nsites = 0, none = 0;
+    unsigned machine = 0, flags = 0;
+    int big = 0;
+    SnxLinkInput inputs[3];
     SnxLinkOutput linked;
-    SnxIr* ir;
-    if (snx_elf_host_data() != ELFDATA2LSB) return 0;
-    LLVMInitializeAllAsmParsers(); /* the stub is inline assembly */
-    ir = snx_ir_new_target("guest", '2', "powerpc64le-unknown-linux-gnu", error, sizeof(error));
-    if (!ir) {
-        printf("skipped the PowerPC64 tail call: %s\n", error);
+    if (nobj_desc(desc, 0, sites, 16, &nsites, &machine, &flags, &big, &data[0], &size[0], error, sizeof error)) {
+        printf("skipped the %s objects: %s\n", what, error);
         return 0;
     }
-    params[0] = ir->t_ptr;
-    params[1] = ir->t_i64;
-    type = LLVMFunctionType(ir->t_void, params, 2, 0);
-    guest = LLVMAddFunction(ir->mod, "guest", type);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, guest, "entry"));
-    args[0] = LLVMGetParam(guest, 0);
-    args[1] = LLVMGetParam(guest, 1);
-    call = LLVMBuildCall2(ir->b, type, LLVMBuildLoad2(ir->b, ir->t_ptr, args[0], "fn"), args, 2, "");
-    LLVMSetTailCallKind(call, LLVMTailCallKindMustTail);
-    LLVMBuildRetVoid(ir->b);
-    if (snx_ir_object(ir, '2', &data, &size, error, sizeof(error))) return snx_error("PowerPC64 tail call: %s", error);
-    snx_ir_free(ir);
-    input.data = data;
-    input.size = size;
-    input.name = "guest";
-    if (snx_link(&input, 1, exports, 1, "guest.so", &linked, error, sizeof(error))) {
-        printf("FAIL: a PowerPC64 tail call through a pointer links alone: %s\n", error);
-        ++failures;
-    } else
-        free(linked.data);
-    free(data);
-    return 0;
-}
-
-/* an AArch32 block going on to the next block, in another object, as module_arm.c's chain_block makes it: after the
-   load of a hidden global the other object defines, a one-argument musttail call of a declaration, which ir.c makes a
-   stub of on PowerPC64. The two link, and the block's jump lands on a branch to the next block's local entry */
-static int ppc64le_block_chain(void) {
-    char error[1024];
-    const char* exports[2] = {"A_00201000", "A_00201008"};
-    const char* triple = "powerpc64le-unknown-linux-gnu";
-    unsigned char* data[2];
-    size_t size[2], i;
-    SnxLinkInput inputs[2];
-    SnxLinkOutput linked;
-    uint64_t block, next, at, stub = 0, target = 0;
-    if (snx_elf_host_data() != ELFDATA2LSB) return 0;
-    LLVMInitializeAllAsmParsers(); /* the stub is inline assembly */
-    for (i = 0; i < 2; ++i) {
-        SnxIr* ir = snx_ir_new_target(i ? "next" : "block", '2', triple, error, sizeof(error));
-        LLVMTypeRef type;
-        LLVMValueRef fn, global;
-        if (!ir) {
-            printf("skipped the PowerPC64 block chain: %s\n", error);
-            return 0;
-        }
-        type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
-        global = LLVMAddGlobal(ir->mod, ir->t_i64, "snx_arm_poll_offset");
-        LLVMSetVisibility(global, LLVMHiddenVisibility);
-        fn = LLVMAddFunction(ir->mod, exports[i], type);
-        LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
-        if (i) {
-            LLVMSetInitializer(global, LLVMConstInt(ir->t_i64, 0, 0));
-            LLVMBuildRetVoid(ir->b);
-        } else {
-            LLVMBasicBlockRef go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "go"),
-                              out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
-            LLVMValueRef cpu = LLVMGetParam(fn, 0), off = LLVMBuildLoad2(ir->b, ir->t_i64, global, ""), call;
-            LLVMValueRef poll = LLVMBuildLoad2(ir->b, ir->t_i32, LLVMBuildGEP2(ir->b, ir->t_i8, cpu, &off, 1, ""), "");
-            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, poll, LLVMConstInt(ir->t_i32, 0, 0), ""), go, out);
-            LLVMPositionBuilderAtEnd(ir->b, go);
-            call = LLVMBuildCall2(ir->b, type, LLVMAddFunction(ir->mod, exports[1], type), &cpu, 1, "");
-            LLVMSetTailCallKind(call, LLVMTailCallKindMustTail);
-            LLVMBuildRetVoid(ir->b);
-            LLVMPositionBuilderAtEnd(ir->b, out);
-            LLVMBuildRetVoid(ir->b);
-        }
-        if (snx_ir_object(ir, '2', &data[i], &size[i], error, sizeof(error)))
-            return snx_error("PowerPC64 block chain: %s", error);
-        snx_ir_free(ir);
-        inputs[i].data = data[i];
-        inputs[i].size = size[i];
-        inputs[i].name = exports[i];
+    if ((big ? ELFDATA2MSB : ELFDATA2LSB) != snx_elf_host_data()) {
+        printf("skipped the %s objects: a module of the other byte order than this host's\n", what);
+        free(data[0]);
+        return 0;
     }
-    if (snx_link(inputs, 2, exports, 2, "block.so", &linked, error, sizeof(error))) {
-        printf("FAIL: a PowerPC64 block's tail call of the next block links: %s\n", error);
-        ++failures;
-    } else {
-        block = export_address(linked.data, exports[0]);
-        next = export_address(linked.data, exports[1]);
-        for (at = block; block && at < block + 64 && !stub; at += 4) {
-            uint32_t insn = host32(linked.data + at);
-            if ((insn & 0xFC000003u) == 0x48000000u) /* b */
-                stub = at + (uint64_t)(int64_t)(int32_t)((insn & 0x03FFFFFCu) << 6) / 64;
-        }
-        if (stub && (host32(linked.data + stub) & 0xFC000003u) == 0x48000000u)
-            target = stub + (uint64_t)(int64_t)(int32_t)((host32(linked.data + stub) & 0x03FFFFFCu) << 6) / 64;
-        check(next && (target == next || (target == next + 8 && (host32(linked.data + next) >> 16) == 0x3C4Cu)),
-              "PowerPC64 block's jump to its stub, a branch to the next block's local entry");
-        free(linked.data);
-    }
-    free(data[0]);
-    free(data[1]);
-    return 0;
-}
-
-/* Where caller's first call and first GOT load go, decoded from the module: RISC-V's AUIPC with the JALR or LD after
-   it (compressed instructions skipped by their length), LoongArch's PCADDU18I with JIRL and PCALAU12I with LD.D */
-static void decode_caller(unsigned machine, const unsigned char* module, uint64_t caller, uint64_t* call,
-                          uint64_t* slot) {
-    uint64_t at = caller, hi_at = 0, hi = 0;
-    unsigned hi_rd = 0;
-    *call = *slot = 0;
-    while (at < caller + 96 && (!*call || !*slot)) {
-        uint32_t insn = get32(module + at);
-        if (machine == EM_RISCV) {
-            unsigned rd = insn >> 7 & 31, rs1 = insn >> 15 & 31;
-            uint64_t lo = (uint64_t)sign(insn >> 20, 12);
-            if ((insn & 3) != 3) { /* compressed */
-                at += 2;
-                continue;
-            }
-            if ((insn & 0x7F) == 0x17) { /* AUIPC */
-                hi_at = at;
-                hi = (uint64_t)sign(insn & 0xFFFFF000u, 32);
-                hi_rd = rd;
-            } else if (hi_at && rs1 == hi_rd && (insn & 0x707F) == 0x67 && !*call) /* JALR */
-                *call = hi_at + hi + lo;
-            else if (hi_at && rs1 == hi_rd && (insn & 0x707F) == 0x3003 && !*slot) /* LD */
-                *slot = hi_at + hi + lo;
-        } else {
-            unsigned rd = insn & 31, rj = insn >> 5 & 31;
-            if (insn >> 25 == 0x0D || insn >> 25 == 0x0F) { /* PCALAU12I, PCADDU18I */
-                hi_at = at;
-                hi = insn >> 25 == 0x0D ? (at & ~(uint64_t)0xFFF) + (uint64_t)(sign(insn >> 5 & 0xFFFFF, 20) * 4096)
-                                        : at + (uint64_t)(sign(insn >> 5 & 0xFFFFF, 20) * 262144);
-                hi_rd = rd;
-            } else if (hi_at && rj == hi_rd && insn >> 26 == 0x13 && !*call) /* JIRL */
-                *call = hi + (uint64_t)(sign(insn >> 10 & 0xFFFF, 16) * 4);
-            else if (hi_at && rj == hi_rd && insn >> 22 == 0xA3 && !*slot) /* LD.D */
-                *slot = hi + (uint64_t)sign(insn >> 10 & 0xFFF, 12);
-        }
-        at += 4;
-    }
-}
-
-/* riscv64 and loongarch64 objects linked into a module: its header repeats theirs (the float ABI), its dynamic
-   relocations are only the machine's RELATIVE, the call reaches ext_fn and the GOT load a slot that holds ext_data.
-   Linked in both orders, which moves the code and not the GOT: one layout alone can put a displacement's low 12 bits
-   where the AUIPC's own are, and hide a RISC-V low half written from the wrong value */
-static int other_objects(const char* triple, unsigned machine, const char* what) {
-    char error[1024], name[128];
-    const char* exports[3] = {"caller", "ext_fn", "ext_data"};
-    unsigned char *caller_data, *defs_data;
-    size_t caller_size, defs_size, i;
-    SnxLinkInput inputs[2];
-    SnxLinkOutput linked;
-    const Elf64_Ehdr* eh;
-    const Elf64_Shdr* sh;
-    uint64_t call, slot, data;
-    int order;
-    {
-        SnxIr* probe = snx_ir_new_target("probe", '2', triple, error, sizeof(error));
-        if (!probe) {
-            printf("skipped the %s objects: %s\n", what, error);
-            return 0;
-        }
-        snx_ir_free(probe);
-    }
-    if (object_for(triple, "ext_fn", "ext_data", "caller", &caller_data, &caller_size) ||
-        definitions_for(triple, &defs_data, &defs_size))
-        return 1;
-    for (order = 0; order < 2; ++order) {
-        size_t relatives = 0, others = 0;
+    if (nobj_desc(desc, 1, ignored, 1, &none, &machine, &flags, &big, &data[1], &size[1], error, sizeof error) ||
+        nobj_desc(desc, 2, ignored, 1, &none, &machine, &flags, &big, &data[2], &size[2], error, sizeof error))
+        return snx_error("%s", error);
+    for (int order = 0; order < 2; ++order) {
+        static const char* const objects[3] = {"caller", "definitions", "table"};
         const char* which = order ? "definitions first" : "caller first";
-        inputs[order].data = caller_data;
-        inputs[order].size = caller_size;
-        inputs[order].name = "caller";
-        inputs[!order].data = defs_data;
-        inputs[!order].size = defs_size;
-        inputs[!order].name = "definitions";
-        if (snx_link(inputs, 2, exports, 3, "caller.so", &linked, error, sizeof(error)))
-            return snx_error("%s link: %s", what, error);
-        eh = (const Elf64_Ehdr*)(const void*)linked.data;
-        snprintf(name, sizeof name, "%s module header, the objects' e_flags (%s)", what, which);
-        check(eh->e_machine == machine && eh->e_type == ET_DYN &&
-                  eh->e_flags == ((const Elf64_Ehdr*)(const void*)caller_data)->e_flags,
-              name);
-        sh = (const Elf64_Shdr*)(const void*)(linked.data + eh->e_shoff);
-        for (i = 0; i < eh->e_shnum; ++i)
-            if (sh[i].sh_type == SHT_RELA) {
-                const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + sh[i].sh_offset);
-                size_t k;
-                for (k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
-                    ELF64_R_TYPE(r[k].r_info) == snx_elf_relative_type(machine) ? ++relatives : ++others;
-            }
-        snprintf(name, sizeof name, "%s module's dynamic relocations are RELATIVE (%s)", what, which);
-        check(relatives >= 1 && !others, name);
-        decode_caller(machine, linked.data, export_address(linked.data, "caller"), &call, &slot);
-        data = export_address(linked.data, "ext_data");
-        snprintf(name, sizeof name, "%s call to ext_fn (%s)", what, which);
-        check(call && call == export_address(linked.data, "ext_fn"), name);
-        snprintf(name, sizeof name, "%s GOT slot of ext_data (%s)", what, which);
-        check(slot && data && slot + 8 <= linked.size && get64(linked.data + slot) == data, name);
+        size_t relatives, others;
+        for (int i = 0; i < 3; ++i) {
+            const int at = order ? (i + 1) % 3 : i;
+            inputs[at].data = data[i];
+            inputs[at].size = size[i];
+            inputs[at].name = objects[i];
+        }
+        if (snx_link(inputs, 3, exports, sizeof exports / sizeof *exports, "caller.so", &linked, error, sizeof(error)))
+            return snx_error("%s link (%s): %s", what, which, error);
+        const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)linked.data;
+        snprintf(name, sizeof name, "%s module header, the objects' e_flags 0x%x (%s)", what, flags, which);
+        check(eh->e_machine == machine && eh->e_type == ET_DYN && eh->e_flags == flags, name);
+        dynamic_relocations(machine, linked.data, &relatives, &others);
+        snprintf(name, sizeof name, "%s module's dynamic relocations, %zu RELATIVE and %zu others (%s)", what,
+                 relatives, others, which);
+        check(relatives == 2 && !others, name);
+        for (size_t k = 0; k < nsites; ++k) {
+            const uint64_t fn = export_address(linked.data, sites[k].fn),
+                           sym = export_address(linked.data, sites[k].sym);
+            const uint64_t lands = fn ? site_target(machine, linked.data, fn + sites[k].at, sites[k].type) : 0;
+            snprintf(name, sizeof name, "%s: %s's relocation %u at +%zu lands on %s%+lld, 0x%llx (%s): 0x%llx", what,
+                     sites[k].fn, sites[k].type, sites[k].at, sites[k].sym, sites[k].addend,
+                     (unsigned long long)(sym + (uint64_t)sites[k].addend), which, (unsigned long long)lands);
+            check(fn && sym && lands == sym + (uint64_t)sites[k].addend, name);
+        }
         free(linked.data);
     }
-    free(caller_data);
-    free(defs_data);
+    for (int i = 0; i < 3; ++i) free(data[i]);
     return 0;
 }
 
 #if defined(__mips64) || defined(__s390x__)
-/* ---- modules made, linked and run on a host whose objects only the AOT linker takes (code_loader.h), from the
-   recompiler's objects for this host alone: MIPS64's (+xgot, MIPS64r2 and its tail calls) and s390x's (z13), ir.c ----
-   */
+/* ---- a module made, linked and run on a host whose objects only the AOT linker takes (code_loader.h), of the native
+   back end's descriptor functions (native_objects.c): MIPS64's and s390x's ---- */
 #if defined(__mips64)
-#define HOST_EM   EM_MIPS
 #define HOST_NAME "MIPS64"
 #else
-#define HOST_EM   EM_S390
 #define HOST_NAME "s390x"
 #endif
 
@@ -1286,7 +992,6 @@ static int dynamic_tag(const unsigned char* module, int64_t tag, uint64_t* value
         }
     return 0;
 }
-
 /* the module's section of a name; NULL for none */
 static const Elf64_Shdr* section_named(const unsigned char* module, const char* name) {
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
@@ -1296,171 +1001,39 @@ static const Elf64_Shdr* section_named(const unsigned char* module, const char* 
         if (!strcmp(names + sh[i].sh_name, name)) return &sh[i];
     return NULL;
 }
-
-/* how many of an object's relocations are of type */
-static size_t object_relocations(const unsigned char* object, unsigned type) {
-    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)object;
-    const Elf64_Shdr* sh = (const Elf64_Shdr*)(const void*)(object + eh->e_shoff);
-    size_t n = 0;
-    for (size_t i = 0; i < eh->e_shnum; ++i)
-        if (sh[i].sh_type == SHT_RELA) {
-            const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(object + sh[i].sh_offset);
-            for (size_t k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
-                n += snx_elf_type(HOST_EM, r[k].r_info) == type;
-        }
-    return n;
-}
-
-/* caller() = ext_fn(ext_data + 1) + 1; pick(x) one of six operations on ext_data by x, a jump table; tail_direct(x)
-   and tail_pointer(x) are musttail calls of ext_fn, declared with default visibility, and of ext_pointer's function;
-   third() = ext_table[2] */
-static int host_caller_object(unsigned char** data, size_t* size) {
-    char error[1024];
-    SnxIr* ir = snx_ir_new("caller", '2', error, sizeof(error));
-    if (!ir) return snx_error("%s", error);
-    LLVMTypeRef i64 = ir->t_i64, unary = LLVMFunctionType(i64, &i64, 1, 0);
-    LLVMValueRef value = LLVMAddGlobal(ir->mod, i64, "ext_data");
-    LLVMValueRef pointer = LLVMAddGlobal(ir->mod, ir->t_ptr, "ext_pointer");
-    LLVMValueRef ext_fn = LLVMAddFunction(ir->mod, "ext_fn", unary);
-    LLVMValueRef caller = LLVMAddFunction(ir->mod, "caller", LLVMFunctionType(i64, NULL, 0, 0));
-    LLVMValueRef one = LLVMConstInt(i64, 1, 0), args[1], result, site;
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, caller, "entry"));
-    args[0] = LLVMBuildAdd(ir->b, LLVMBuildLoad2(ir->b, i64, value, ""), one, "");
-    result = LLVMBuildCall2(ir->b, unary, ext_fn, args, 1, "");
-    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, result, one, ""));
-
-    LLVMValueRef pick = LLVMAddFunction(ir->mod, "pick", unary);
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ir->ctx, pick, "entry");
-    LLVMBasicBlockRef other = LLVMAppendBasicBlockInContext(ir->ctx, pick, "other");
-    LLVMPositionBuilderAtEnd(ir->b, other);
-    LLVMBuildRet(ir->b, LLVMConstInt(i64, 0, 0));
-    LLVMPositionBuilderAtEnd(ir->b, entry);
-    LLVMValueRef d = LLVMBuildLoad2(ir->b, i64, value, "");
-    LLVMValueRef choice = LLVMBuildSwitch(ir->b, LLVMGetParam(pick, 0), other, 6);
-    for (unsigned k = 0; k < 6; ++k) {
-        LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(ir->ctx, pick, "case");
-        LLVMAddCase(choice, LLVMConstInt(i64, k, 0), block);
-        LLVMPositionBuilderAtEnd(ir->b, block);
-        LLVMValueRef c = LLVMConstInt(i64, k == 0 ? 100 : k == 1 ? 3 : k == 2 ? 7 : k == 3 ? 0xFF : k == 4 ? 4 : 2, 0);
-        LLVMBuildRet(ir->b, k == 0   ? LLVMBuildAdd(ir->b, d, c, "")
-                            : k == 1 ? LLVMBuildMul(ir->b, d, c, "")
-                            : k == 2 ? LLVMBuildSub(ir->b, d, c, "")
-                            : k == 3 ? LLVMBuildXor(ir->b, d, c, "")
-                            : k == 4 ? LLVMBuildShl(ir->b, d, c, "")
-                                     : LLVMBuildUDiv(ir->b, d, c, ""));
-    }
-
-    LLVMValueRef direct = LLVMAddFunction(ir->mod, "tail_direct", unary);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, direct, "entry"));
-    args[0] = LLVMGetParam(direct, 0);
-    site = LLVMBuildCall2(ir->b, unary, ext_fn, args, 1, "");
-    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
-    LLVMBuildRet(ir->b, site);
-
-    LLVMValueRef through = LLVMAddFunction(ir->mod, "tail_pointer", unary);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, through, "entry"));
-    args[0] = LLVMGetParam(through, 0);
-    site = LLVMBuildCall2(ir->b, unary, LLVMBuildLoad2(ir->b, ir->t_ptr, pointer, ""), args, 1, "");
-    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
-    LLVMBuildRet(ir->b, site);
-
-    LLVMValueRef table = LLVMAddGlobal(ir->mod, i64, "ext_table");
-    LLVMValueRef third = LLVMAddFunction(ir->mod, "third", LLVMFunctionType(i64, NULL, 0, 0));
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, third, "entry"));
-    LLVMValueRef two = LLVMConstInt(i64, 2, 0);
-    LLVMBuildRet(ir->b, LLVMBuildLoad2(ir->b, i64, LLVMBuildGEP2(ir->b, i64, table, &two, 1, ""), ""));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
-}
-
-/* ext_data = 41, ext_fn(x) = 3x, and ext_pointer = ext_fn, an address in data */
-static int host_definitions_object(unsigned char** data, size_t* size) {
-    char error[1024];
-    SnxIr* ir = snx_ir_new("definitions", '2', error, sizeof(error));
-    if (!ir) return snx_error("%s", error);
-    LLVMTypeRef i64 = ir->t_i64, unary = LLVMFunctionType(i64, &i64, 1, 0);
-    LLVMValueRef value = LLVMAddGlobal(ir->mod, i64, "ext_data");
-    LLVMSetInitializer(value, LLVMConstInt(i64, 41, 0));
-    LLVMValueRef ext_fn = LLVMAddFunction(ir->mod, "ext_fn", unary);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, ext_fn, "entry"));
-    LLVMBuildRet(ir->b, LLVMBuildMul(ir->b, LLVMGetParam(ext_fn, 0), LLVMConstInt(i64, 3, 0), ""));
-    LLVMValueRef pointer = LLVMAddGlobal(ir->mod, ir->t_ptr, "ext_pointer");
-    LLVMSetInitializer(pointer, ext_fn);
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
-}
-
-/* ext_table = {5, 6, 7}, an object of data alone (whose e_flags on MIPS64 have no noreorder, as the code's do) */
-static int host_table_object(unsigned char** data, size_t* size) {
-    char error[1024];
-    SnxIr* ir = snx_ir_new("table", '0', error, sizeof(error));
-    if (!ir) return snx_error("%s", error);
-    LLVMValueRef values[3] = {LLVMConstInt(ir->t_i64, 5, 0), LLVMConstInt(ir->t_i64, 6, 0),
-                              LLVMConstInt(ir->t_i64, 7, 0)};
-    LLVMValueRef table = LLVMAddGlobal(ir->mod, LLVMArrayType2(ir->t_i64, 3), "ext_table");
-    LLVMSetInitializer(table, LLVMConstArray2(ir->t_i64, values, 3));
-    if (snx_ir_object(ir, '0', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
-}
-
-/* The module the three objects link into, loaded with dlopen as library.c's load_image does: its code runs (calls
-   and loads through the GOT, the jump table, the musttail calls as jumps, a load from the object of data), and its
-   header and dynamic section are what the system's loader takes. MIPS64: the objects' e_flags but noreorder, the GOT
-   glibc's MIPS loader relocates itself (DT_PLTGOT and DT_MIPS_LOCAL_GOTNO its slots, no dynamic symbol with a slot),
-   and its only dynamic relocations REL32 with 64, without DT_RELACOUNT, which glibc's MIPS loader would skip. s390x:
-   calls (PLT32DBL) and GOT slots (GOTENT) relative to the code, and every dynamic relocation R_390_RELATIVE */
+/* The module the three objects link into, loaded with dlopen as library.c's load_image does: its code runs (the
+   address of a datum by a literal, tail calls of a symbol and through a pointer), and its header and dynamic section
+   are what the system's loader takes. MIPS64: the objects' e_flags, the GOT glibc's MIPS loader relocates itself
+   (DT_PLTGOT and DT_MIPS_LOCAL_GOTNO its slots, no dynamic symbol with a slot), and its only dynamic relocations
+   REL32 with 64, without DT_RELACOUNT, which glibc's MIPS loader would skip. s390x: every dynamic relocation
+   R_390_RELATIVE, and counted */
 static int host_module(void) {
     typedef int64_t (*Unary)(int64_t);
     char error[1024];
-    const char* exports[5] = {"caller", "pick", "tail_direct", "tail_pointer", "third"};
-    unsigned char *caller_data, *defs_data, *table_data;
-    size_t caller_size, defs_size, table_size, relatives = 0, others = 0;
-    SnxLinkInput inputs[3];
-    SnxLinkOutput linked;
+    const char* exports[] = {"caller", "tail_direct", "tail_pointer", "third", "ext_data"};
+    const SnxNativeDesc* d = snx_native_desc();
+    unsigned char* data[3];
+    size_t size[3], relatives = 0, others = 0, none = 0;
+    NobjSite ignored[16];
+    unsigned machine = 0, flags = 0;
+    int big = 0;
     uint64_t count = 0;
-    if (host_caller_object(&caller_data, &caller_size) || host_definitions_object(&defs_data, &defs_size) ||
-        host_table_object(&table_data, &table_size))
-        return 1;
-#if defined(__mips64)
-    check(!(((const Elf64_Ehdr*)(const void*)table_data)->e_flags & SNX_EF_MIPS_NOREORDER) &&
-              (((const Elf64_Ehdr*)(const void*)caller_data)->e_flags & SNX_EF_MIPS_NOREORDER),
-          "MIPS64 objects: noreorder on the code's e_flags, not on the data's");
-    check(object_relocations(caller_data, SNX_MIPS_CALL_HI16) && object_relocations(caller_data, SNX_MIPS_GOT_HI16) &&
-              object_relocations(caller_data, SNX_MIPS_GPREL_HI) &&
-              object_relocations(caller_data, SNX_MIPS_GOT_PAGE) &&
-              object_relocations(caller_data, SNX_MIPS_GPREL32_64) && !object_relocations(caller_data, SNX_MIPS_CALL16),
-          "MIPS64 caller object: 32-bit GOT offsets, gp from its address and a jump table");
-#else
-    check(object_relocations(caller_data, SNX_390_PLT32DBL) && object_relocations(caller_data, SNX_390_GOTENT),
-          "s390x caller object: calls and GOT slots relative to the code");
-#endif
-    inputs[0].data = caller_data;
-    inputs[0].size = caller_size;
-    inputs[0].name = "caller";
-    inputs[1].data = defs_data;
-    inputs[1].size = defs_size;
-    inputs[1].name = "definitions";
-    inputs[2].data = table_data;
-    inputs[2].size = table_size;
-    inputs[2].name = "table";
-    if (snx_link(inputs, 3, exports, 5, "caller.so", &linked, error, sizeof(error)))
+    if (!d) return snx_error(HOST_NAME ": no native back end's descriptor");
+    for (int i = 0; i < 3; ++i)
+        if (nobj_desc(d->name, i, ignored, 16, &none, &machine, &flags, &big, &data[i], &size[i], error, sizeof error))
+            return snx_error("%s", error);
+    SnxLinkInput inputs[3] = {
+        {data[0], size[0], "caller"}, {data[1], size[1], "definitions"}, {data[2], size[2], "table"}};
+    SnxLinkOutput linked;
+    if (snx_link(inputs, 3, exports, sizeof exports / sizeof *exports, "caller.so", &linked, error, sizeof(error)))
         return snx_error(HOST_NAME " link: %s", error);
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)linked.data;
     const Elf64_Shdr *got_section = section_named(linked.data, ".got"), *dynsym = section_named(linked.data, ".dynsym"),
                      *rela = section_named(linked.data, ".rela.dyn");
-    for (size_t k = 0; rela && k < rela->sh_size / sizeof(Elf64_Rela); ++k) {
-        const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + rela->sh_offset) + k;
-        snx_elf_type(HOST_EM, r->r_info) == snx_elf_relative_type(HOST_EM) && !snx_elf_symbol(HOST_EM, r->r_info)
-            ? ++relatives
-            : ++others;
-    }
+    dynamic_relocations(machine, linked.data, &relatives, &others);
 #if defined(__mips64)
     uint64_t got = 0, local = 0, gotsym = 0, symtabno = 0;
-    check(eh->e_machine == EM_MIPS && eh->e_type == ET_DYN &&
-              eh->e_flags == ((const Elf64_Ehdr*)(const void*)caller_data)->e_flags,
+    check(eh->e_machine == EM_MIPS && eh->e_type == ET_DYN && eh->e_flags == flags,
           "MIPS64 module header, the objects' e_flags");
     check(got_section && dynsym && rela && dynamic_tag(linked.data, DT_PLTGOT, &got) && got == got_section->sh_addr &&
               dynamic_tag(linked.data, 0x7000000a, &local) && local == got_section->sh_size / 8 &&
@@ -1468,12 +1041,14 @@ static int host_module(void) {
               gotsym == symtabno && symtabno == dynsym->sh_size / sizeof(Elf64_Sym) &&
               !dynamic_tag(linked.data, 0x6ffffff9, &count),
           "MIPS64 module's GOT tags: every slot local, no DT_RELACOUNT");
-    check(relatives == 1 && !others, "MIPS64 module's dynamic relocation, ext_pointer's REL32 with 64");
+    check(relatives == 2 && !others,
+          "MIPS64 module's dynamic relocations, caller_slot's and ext_pointer's REL32 with 64");
 #else
     const Elf64_Shdr* hash = section_named(linked.data, ".hash");
-    check(eh->e_machine == EM_S390 && eh->e_type == ET_DYN && !eh->e_flags && got_section && dynsym && hash &&
+    check(eh->e_machine == EM_S390 && eh->e_type == ET_DYN && eh->e_flags == flags && dynsym && hash &&
               hash->sh_entsize == 8 && hash->sh_size == 8 * (2 + 5 + dynsym->sh_size / sizeof(Elf64_Sym)),
           "s390x module header, and its .hash of 64-bit words (glibc's Elf_Symndx there)");
+    (void)got_section;
     check(rela && relatives >= 2 && !others && dynamic_tag(linked.data, 0x6ffffff9, &count) && count == relatives,
           "s390x module's dynamic relocations, every one R_390_RELATIVE and counted");
 #endif
@@ -1488,23 +1063,19 @@ static int host_module(void) {
     void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     unlink(path);
     if (!module) return snx_error(HOST_NAME " module: dlopen: %s", dlerror());
-    Unary pick = (Unary)(uintptr_t)dlsym(module, "pick");
     Unary direct = (Unary)(uintptr_t)dlsym(module, "tail_direct");
     Unary through = (Unary)(uintptr_t)dlsym(module, "tail_pointer");
-    int64_t (*caller)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "caller");
-    int64_t (*third)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "third");
-    check(caller && caller() == 127, HOST_NAME " module's call through its GOT: ext_fn(ext_data + 1) + 1");
-    check(pick && pick(0) == 141 && pick(1) == 123 && pick(2) == 34 && pick(3) == (41 ^ 0xFF) && pick(4) == 656 &&
-              pick(5) == 20 && pick(6) == 0,
-          HOST_NAME " module's jump table");
-    check(direct && direct(5) == 15, HOST_NAME " module's musttail call of a declared function");
-    check(through && through(7) == 21, HOST_NAME " module's musttail call through a pointer");
-    check(third && third() == 7, HOST_NAME " module's load from the object of data");
+    const int64_t* (*caller)(void) = (const int64_t* (*)(void))(uintptr_t)dlsym(module, "caller");
+    const int64_t* (*third)(void) = (const int64_t* (*)(void))(uintptr_t)dlsym(module, "third");
+    const int64_t* ext_data = (const int64_t*)dlsym(module, "ext_data");
+    check(caller && ext_data && caller() == ext_data && *ext_data == 41,
+          HOST_NAME " module's literal: caller returns &ext_data");
+    check(direct && direct(5) == 15, HOST_NAME " module's tail call of ext_fn");
+    check(through && through(7) == 21, HOST_NAME " module's tail call through ext_pointer");
+    check(third && third()[2] == 7, HOST_NAME " module's literal of the object of data: third returns &ext_table");
     dlclose(module);
     free(linked.data);
-    free(caller_data);
-    free(defs_data);
-    free(table_data);
+    for (int i = 0; i < 3; ++i) free(data[i]);
     return 0;
 }
 #endif
@@ -1576,8 +1147,42 @@ static void malformed_objects(void) {
     }
 }
 
+/* an object of another ABI than the first's: its e_flags and the first object's, as the link compares them (a MIPS
+   object's without NOREORDER), and PowerPC64's ELF version */
+static void other_abi(void) {
+    static const struct {
+        unsigned machine, first, flags;
+        const char* want;
+    } cases[] = {
+        {EM_RISCV, 0x5, 0x1,
+         "rv.o: another ABI's object (e_flags 0x1, where the first object's are 0x5: the float ABI"},
+        {EM_LOONGARCH, 0x43, 0x41, "rv.o: another ABI's object (e_flags 0x41, where the first object's are 0x43"},
+        {EM_MIPS, 0x80000007, 0x80000407,
+         "rv.o: another ABI's object (e_flags 0x80000406, where the first object's are 0x80000006: the ISA"},
+        {EM_PPC64, SNX_ELF_PPC_ELFV2, 1, "rv.o: another ABI's object (ELFv1, where the first object is ELFv2)"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        Elf64_Ehdr header = {0};
+        SnxLinkInput input = {(const unsigned char*)&header, sizeof header, "rv.o"};
+        SnxElfObject o;
+        char error[256] = "";
+        unsigned machine = cases[i].machine;
+        unsigned abi = cases[i].machine == EM_MIPS ? cases[i].first & ~SNX_EF_MIPS_NOREORDER : cases[i].first;
+        memcpy(header.e_ident, ELFMAG, SELFMAG);
+        header.e_ident[EI_CLASS] = ELFCLASS64, header.e_ident[EI_DATA] = snx_elf_host_data();
+        header.e_type = ET_REL, header.e_machine = (uint16_t)cases[i].machine, header.e_flags = cases[i].flags;
+        header.e_shentsize = sizeof(Elf64_Shdr);
+        if (snx_elf_parse(&o, &input, &machine, &abi, error, sizeof error) == 0 || !strstr(error, cases[i].want)) {
+            printf("FAIL: another ABI's object of machine %u: \"%s\", not \"%s\"\n", cases[i].machine, error,
+                   cases[i].want);
+            ++failures;
+        }
+    }
+}
+
 int main(void) {
     malformed_objects();
+    other_abi();
     data_relocations();
     instruction_relocations();
     veneers();
@@ -1587,11 +1192,11 @@ int main(void) {
     mips_relocations();
     s390x_relocations();
     need_too_large();
-    if (llvm_objects()) ++failures;
+    if (native_objects()) ++failures;
 #ifndef __APPLE__ /* AOT modules, which macOS doesn't link as ELF (link_elf.c) */
-    if (ppc64le_objects() || ppc64le_tail_call() || ppc64le_block_chain()) ++failures;
-    if (other_objects("riscv64-unknown-linux-gnu", EM_RISCV, "RISC-V") ||
-        other_objects("loongarch64-unknown-linux-gnu", EM_LOONGARCH, "LoongArch"))
+    if (other_objects("riscv64", "RISC-V") || other_objects("loongarch64", "LoongArch") ||
+        other_objects("ppc64le", "PowerPC64 little-endian") || other_objects("mips64el", "MIPS64 little-endian") ||
+        other_objects("ppc64", "PowerPC64") || other_objects("mips64", "MIPS64") || other_objects("s390x", "s390x"))
         ++failures;
 #if defined(__mips64) || defined(__s390x__)
     if (host_module()) ++failures;

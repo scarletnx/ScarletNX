@@ -118,7 +118,7 @@ static void mg_tail(MG_ARM* c, int reg) {
 }
 
 /* the exit function (state, the block's address, its first word), each object's own, where a block's entry check
-   failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address; else CPSR.T set,
+   failed, in this order: R15 not the address, BAD_ENTRY with the address; else CPSR.T set,
    BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
 static void entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
@@ -147,7 +147,7 @@ static void entry_exit_fn(SnxXElf* o) {
     size_t at = snx_xelf_put(o, SNX_ELF_TEXT, code, b.n, 16);
     snx_xelf_symbol(o, MG_ARM_ENTRY_EXIT, SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
 }
-/* the Thumb blocks' (llvm_thumb.inc's checks, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T
+/* the Thumb blocks', in this order: R15 not the address, BAD_ENTRY with the address; CPSR.T
    clear, BAD_ENTRY with the halfword; ITSTATE in CPSR, IT_ENTRY with it; else (E) ENDIAN_UNSUPPORTED with the halfword */
 static void thumb_entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};

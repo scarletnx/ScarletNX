@@ -19,6 +19,10 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
+#include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
+#include "common/utilities/state_header.h"
+#include "nds/runtime/state.h"
 #include "common/online/wfc.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -50,6 +54,13 @@ static void usage(FILE* out) {
     fputs(
         "NDS options:\n"
         "  --press-len=MS         How long each scripted press is held (default 300)\n"
+        "  --controls=0|1|2       The on-screen controls: 1 shown, 0 hidden, 2 (Auto, the default) shown on a touch\n"
+        "                         screen while no gamepad is connected. --controls-scale=N, --controls-snap=0|1,\n"
+        "                         --controls-dpad-slide=0|1, --controls-haptics=0|1 and --controls-<ID>-shown=0|1\n"
+        "                         (ID one of a, b, x, y, l, r, plus for Start, minus for Select, dpad) as a Switch\n"
+        "                         game's\n"
+        "  --touch=0|1|2          The lower screen's touch: 2 (default) a finger or the mouse's left button, 1 a\n"
+        "                         finger, 0 none\n"
         "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
         "  --aot-threads-most=N   The most threads --aot-threads=0 takes (0: the computer's cores, a quarter left\n"
         "                         free); beside --aot-threads=N it changes nothing, which the recompile says\n"
@@ -68,6 +79,9 @@ static void usage(FILE* out) {
         "as --aot, --trace, --wav and --dump_ram: the last given counts.\n"
         "--press-len, --aot-threads, --aot-threads-most, --shot-every, --nds-wfc and --nds-wfc-dns are settings:\n"
         "each with an _ for each - (--press_len=MS), the older spelling, is still read, and said once.\n"
+        "\n"
+        "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
+        "sized from the bar; Done, Esc, F2 or Back ends it, and <name>.ini keeps it. Back twice quits.\n"
         "\n"
         "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
         "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
@@ -216,6 +230,35 @@ static void save_store(NdsBoard* board, const char* path) {
     board->save_dirty = 0;
 }
 
+/* the DS's pair as the window's save states call it */
+typedef struct {
+    NdsBoard* board;
+    NdsCpu* cpu;
+} StateGame;
+static int state_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_nds_state_save(g->board, g->cpu, path, thumb, why, whysize);
+}
+static int state_load(void* game, const char* path, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_nds_state_load(g->board, g->cpu, path, why, whysize);
+}
+/* between two frames: a save states' key asked of host, and the unattended saves and loads due at ms of the run's
+   clock, both screens shown their picture */
+static void states_step(NdsHost* host, NdsBoard* board, NdsCpu* cpu, const char* folder, const char* name, double ms) {
+    int ask = nds_host_state_ask(host);
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
+    uint8_t* thumb = malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4);
+    char* prefix = folder ? snx_format("%s/", folder) : NULL;
+    StateGame game = {board, cpu};
+    SnxVpadStates states = {prefix ? prefix : "./", name, &game, state_save, state_load};
+    const uint8_t* picture = thumb && nds_host_thumb(host, thumb) ? thumb : NULL;
+    if (ask >= 0) snx_vpad_window_states(ask, &states, picture);
+    snx_vpad_window_states_due((uint64_t)ms, &states, picture);
+    free(prefix);
+    free(thumb);
+}
+
 int snx_nds_main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -228,6 +271,8 @@ int snx_nds_main(int argc, char** argv) {
     const char* wav = NULL; /* the run's sound written there, 16 bits stereo */
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
     SnxCli cli;
+    vpad_console(&snx_vpad_nds);
+    snx_vpad_sdl_settings();
     snx_cli_init(&cli, "scarletnx-nds", nds_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -241,6 +286,14 @@ int snx_nds_main(int argc, char** argv) {
             return common < 0 ? 2 : 0;
         }
         if (common) continue;
+        /* the on-screen controls' and the pen's settings, read with the game's own once its folder is known */
+        int controls = vpad_arg(argv[i], error, sizeof error);
+        if (controls < 0) {
+            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        if (controls) continue;
         char* end;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
@@ -383,7 +436,7 @@ int snx_nds_main(int argc, char** argv) {
     if (!module || !hints || !save) goto done;
     if (recompile || (aot && !nds_module_current(module, &rom))) {
         printf("Recompiling %s (offline static AOT)\n", rom.title[0] ? rom.title : name);
-        if (nds_aot_compile(&rom, module, hints, threads, most, NULL, NULL, error, sizeof error)) {
+        if (nds_aot_compile(&rom, module, hints, threads, most, NULL, error, sizeof error)) {
             fprintf(stderr, "scarletnx-nds: %s\n", error);
             goto done;
         }
@@ -442,7 +495,9 @@ int snx_nds_main(int argc, char** argv) {
     printf("card: %s\n", rom.code);
     {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
-        host = nds_host_open(board, title, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
+        vpad_set_say(nds_host_say);
+        vpad_settings(folder, name, argc, argv);
+        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
                              sizeof error);
         free(title);
         if (!host) {
@@ -459,6 +514,11 @@ int snx_nds_main(int argc, char** argv) {
     for (; limit < 0 || frame < limit; ++frame) {
         NdsInput input = {0};
         if (!nds_host_poll(host, &input)) break;
+        if (nds_host_held(host)) { /* paused: the board stopped */
+            states_step(host, board, cpu, folder, name, (double)frame * FRAME_MS);
+            --frame;
+            continue;
+        }
         uint64_t held = snx_script_held(presses, press_count, (double)frame * FRAME_MS, (uint32_t)press_len);
         /* the pen of the last press that names it */
         if (held & 0x1000) {
@@ -484,6 +544,7 @@ int snx_nds_main(int argc, char** argv) {
             told_swi = cpu->unknown_swi;
         }
         nds_host_frame(host);
+        states_step(host, board, cpu, folder, name, (double)frame * FRAME_MS);
         if (shot && shot_every && frame && !(frame % shot_every)) {
             char* each = snx_format("%s.%06ld.ppm", shot, frame);
             if (each) (void)nds_host_shot(host, each);

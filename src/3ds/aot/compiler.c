@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The offline compiler, part of the driver: the extracted image's static blocks to a native module, by the host's native
-   back end, and the fallback for what that does not make (cpu/arm/aot.h, recompiler/fallback.h). Never creates an
-   execution engine. */
+   back end (cpu/arm/aot.h). */
 #include "3ds/aot/ctr_compile.h"
 #include "3ds/aot/ctr_module.h"
 #include "3ds/aot/ctr_discover.h"
 #include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/checked.h"
-#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
@@ -56,14 +54,17 @@ static SnxCtrModule describe(const SnxCtrImage* image) {
     memcpy(m.image_identity, image->identity, sizeof m.image_identity);
     return m;
 }
-/* The index without LLVM (native.h's snx_native_data): a table of the blocks of each state, an entry for every word and
-   every halfword of the text (entries are sorted by state, then place), and the descriptor, the object's one global. 1,
-   0 where this host's native back end has no objects, -1 with the reason in error */
-static int native_index(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
-                        char* error, size_t size) {
+/* The index (native.h's snx_native_data): a table of the blocks of each state, an entry for every word and every
+   halfword of the text (entries are sorted by state, then place), and the descriptor, the object's one global. 1, or 0
+   with the reason in error */
+static bool index_object(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
+                         char* error, size_t size) {
     unsigned pointer = 0;
     SnxXElf* o = snx_native_data(&pointer);
-    if (!o) return 0;
+    if (!o) {
+        snprintf(error, size, "this host's native back end (%s) makes no module index", snx_native_name());
+        return false;
+    }
     const SnxCtrModule m = describe(image);
     unsigned cursor = 0;
     for (unsigned mode = 0; mode < 2; ++mode) {
@@ -85,102 +86,15 @@ static int native_index(const SnxCtrImage* image, const Entry* entries, unsigned
     snx_xelf_free(o);
     output->data = object;
     if (rc) snprintf(error, size, "out of memory for static index");
-    return rc ? -1 : 1;
+    return !rc;
 }
-/* ---- the index by the fallback, where the host has no native back end or its IR is kept ---- */
-/* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
-static bool save_ir(const char* text, const char* dir, const char* id, char* error, size_t size) {
-    char *file = snx_format("%s.ll", id), *path = file ? snx_path_join(dir, file) : NULL;
-    bool ok = path && !snx_write_file(path, text, strlen(text));
-    if (!ok) {
-        char why[256];
-        snprintf(error, size, "cannot save the IR of %s in %s: %s", id, dir, snx_os_error(why, sizeof why));
-    }
-    free(file);
-    free(path);
-    return ok;
-}
-/* the slots of a state's table, i by i: each the block of the entry of that state at it, the entries sorted by state
-   and place, from cursor on */
-typedef struct {
-    const Entry* entries;
-    unsigned count, cursor, mode;
-} Slots;
-static int slot_name(void* user, size_t i, char* out, size_t size) {
-    Slots* s = user;
-    while (s->cursor < s->count && (s->entries[s->cursor].mode < s->mode ||
-                                    (s->entries[s->cursor].mode == s->mode && s->entries[s->cursor].index < i)))
-        ++s->cursor;
-    if (s->cursor == s->count || s->entries[s->cursor].mode != s->mode || s->entries[s->cursor].index != i) return 0;
-    char id[40];
-    name(id, s->mode, (unsigned)i);
-    snprintf(out, size, "%s", id);
-    return 1;
-}
-/* the index in a module made for this machine as the backend makes the Switch's (ir.c): the target, CPU and ABI the
-   helpers (armlib.c) are compiled for, which the module is linked with */
-static bool fallback_index(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
-                           char opt, const char* keep_ir, char* error, size_t size) {
-    SnxFallbackData* d = snx_fallback_data_new("ctr-static-aot", "ctr-static-aot-v1", opt,
-                                               keep_ir ? snx_arm_aot_kept : snx_arm_aot_none);
-    if (!d) {
-        snprintf(error, size, "out of memory for static index");
-        return false;
-    }
-    const SnxCtrModule m = describe(image);
-#define FIELD(field, width)                                                                                            \
-    { .bits = width, .value = m.field, .offset = offsetof(SnxCtrModule, field) }
-    const SnxFallbackField fields[] = {
-        FIELD(magic, 64),
-        FIELD(abi, 32),
-        FIELD(descriptor_size, 32),
-        FIELD(cpu_size, 32),
-        FIELD(checked_size, 32),
-        FIELD(arm_abi, 32),
-        FIELD(checked_abi, 32),
-        FIELD(codegen_abi, 32),
-        FIELD(profile, 32),
-        FIELD(memory_mode, 32),
-        FIELD(pointer_size, 32),
-        FIELD(text_address, 32),
-        FIELD(text_bytes, 32),
-        FIELD(arm_count, 32),
-        FIELD(thumb_count, 32),
-        {.bytes = m.image_identity, .count = sizeof m.image_identity, .offset = offsetof(SnxCtrModule, image_identity)},
-        {.global = "ctr_arm", .offset = offsetof(SnxCtrModule, arm_blocks)},
-        {.global = "ctr_thumb", .offset = offsetof(SnxCtrModule, thumb_blocks)}};
-#undef FIELD
-    Slots slots = {entries, count, 0, 0};
-    bool ok = !snx_fallback_data_blocks(d, "ctr_arm", image->segment[0].bytes / 4, slot_name, &slots, error, size);
-    slots.mode = 1;
-    ok = ok && !snx_fallback_data_blocks(d, "ctr_thumb", image->segment[0].bytes / 2, slot_name, &slots, error, size);
-    ok = ok && !snx_fallback_data_descriptor(d, "snx_ctr_module_v1", fields, sizeof fields / sizeof *fields,
-                                             sizeof(SnxCtrModule), error, size);
-    char* text = NULL;
-    ok = ok &&
-         (!keep_ir || (!snx_fallback_data_ir(d, &text, error, size) && save_ir(text, keep_ir, "index", error, size)));
-    unsigned char* object = NULL;
-    ok = ok && !snx_fallback_data_object(d, &object, &output->size, error, size);
-    output->data = object;
-    free(text);
-    snx_fallback_data_free(d);
-    return ok;
-}
-static bool index_object(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output, char opt,
-                         const char* keep_ir, char* error, size_t size) {
-    const int made = keep_ir ? 0 : native_index(image, entries, count, output, error, size);
-    return made > 0 || (!made && fallback_index(image, entries, count, output, opt, keep_ir, error, size));
-}
-
 /* ---- the blocks ---- */
 
-/* The entries' blocks into objects (two at most: cpu/arm/aot.h), the fallback's IR kept as id.ll where it is kept. A
-   block the backend ends sooner than discovery planned (at an MSR to the CPSR, which it ends blocks on) goes on as a
+/* The entries' blocks into an object (cpu/arm/aot.h). A block the backend ends sooner than discovery planned (at an MSR to the CPSR, which it ends blocks on) goes on as a
    block of its own at the instruction after, appended to *rest (*rest_count of them, the caller's to free) for the
    index */
-static bool chunk(SnxArmAot* aot, const SnxCtrImage* image, const Entry* entries, unsigned count,
-                  SnxLinkInput output[2], const char* id, Entry** rest, unsigned* rest_count, char* error,
-                  size_t size) {
+static bool chunk(SnxArmAot* aot, const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
+                  Entry** rest, unsigned* rest_count, char* error, size_t size) {
     unsigned capacity = 0;
     const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11,
                                           (SnxArmMemoryMode)snx_ctr_module_memory(), 0, 0};
@@ -212,7 +126,7 @@ static bool chunk(SnxArmAot* aot, const SnxCtrImage* image, const Entry* entries
             e.length -= (unsigned)consumed;
         }
     }
-    return snx_arm_aot_objects(aot, id, output, error, size) >= 0;
+    return snx_arm_aot_objects(aot, output, error, size) >= 0;
 }
 /* A title's hints (snx_ctr_jit_save_hints), at path: the blocks earlier runs compiled at run time, one pc a line in
    hex, | 1 for Thumb. *count of them, the caller's to free; none (NULL) without the file */
@@ -251,10 +165,8 @@ typedef struct {
     const SnxCtrImage* image;
     const Entry* entries;
     const unsigned* starts; /* chunk i is entries starts[i] to starts[i + 1] */
-    SnxLinkInput* objects;  /* chunk i's objects are objects[2 * i] and the next, no data for one it lacks */
+    SnxLinkInput* objects;  /* chunk i's object is objects[i], no data for one of no blocks */
     unsigned count, chunks, next, finished;
-    char opt;            /* the -O letter */
-    const char* keep_ir; /* where each chunk's IR goes, NULL for nowhere */
     bool quiet, failed;
     Entry* rest; /* the blocks the backend split off, every chunk's */
     unsigned rest_count;
@@ -265,8 +177,8 @@ typedef struct {
 } Work;
 static void worker(void* arg) {
     Work* w = arg;
-    char error[512] = "out of memory for a maker of blocks";
-    SnxArmAot* aot = snx_arm_aot_new(w->opt, w->keep_ir);
+    char error[512];
+    SnxArmAot* aot = snx_arm_aot_new(error, sizeof error);
     bool ok = aot != NULL;
     for (;;) {
         snx_work_lock(&w->lock);
@@ -283,8 +195,7 @@ static void worker(void* arg) {
         char id[24];
         snprintf(id, sizeof id, "blocks_%03u", i);
         double start = snx_seconds();
-        ok = chunk(aot, w->image, w->entries + begin, n, &w->objects[2 * i], id, &rest, &rest_count, error,
-                   sizeof error);
+        ok = chunk(aot, w->image, w->entries + begin, n, &w->objects[i], &rest, &rest_count, error, sizeof error);
         double seconds = snx_seconds() - start;
         snx_work_lock(&w->lock);
         Entry* merged = rest_count ? realloc(w->rest, (w->rest_count + rest_count) * sizeof *merged) : w->rest;
@@ -296,7 +207,7 @@ static void worker(void* arg) {
             w->rest = merged;
             if (rest_count) memcpy(w->rest + w->rest_count, rest, rest_count * sizeof *rest);
             w->rest_count += rest_count;
-            w->output_bytes += w->objects[2 * i].size + w->objects[2 * i + 1].size;
+            w->output_bytes += w->objects[i].size;
             /* a line for each chunk, as the Switch's recompile gives one for each unit, + the index */
             char label[64];
             chunk_label(w->image, w->entries + begin, n, label, sizeof label);
@@ -357,12 +268,11 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
     size_t armlib_size = (size_t)snx_armlib_object_size;
-    char *directory = NULL, *target = NULL, *staged = NULL, *previous = NULL, *kept = NULL, *recorded = NULL;
+    char *directory = NULL, *target = NULL, *staged = NULL, *previous = NULL, *recorded = NULL;
     const char* exports[1] = {"snx_ctr_module_v1"};
     Entry* entries = NULL;
     unsigned count = 0, files = 0, *starts = NULL;
     Work work = {0};
-    const char opt = g_settings.optimization_level[0]; /* the setting opt's, which -O sets */
     bool quiet = asked && asked->quiet;
     if (error_size) error[0] = 0;
     if (!(game ? snx_ctr_image_from_source(game, &image, error, error_size)
@@ -384,16 +294,6 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     if (!staged) {
         snprintf(error, error_size, "out of memory");
         goto done;
-    }
-    /* --keep-ir's folder, <title ID>_build, as a Switch game's */
-    if (asked && asked->keep_ir) {
-        kept = snx_ctr_game_file(directory, "_build");
-        if (!kept || snx_mkdirs(kept)) {
-            char why[256];
-            snprintf(error, error_size, "cannot make the folder of the IR --keep-ir keeps, %s: %s",
-                     kept ? kept : "(out of memory)", snx_os_error(why, sizeof why));
-            goto done;
-        }
     }
     bool exhaustive = image.segment[0].bytes <= SNX_CTR_AOT_EXHAUSTIVE_LIMIT;
     unsigned capacity = image.segment[0].bytes / 4 + image.segment[0].bytes / 2;
@@ -438,7 +338,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
                exhaustive ? " (exhaustive tiny image)" : " (conservative CFG)");
     starts = malloc(((size_t)count + 1) * sizeof *starts);
     unsigned chunks = starts ? cut_chunks(entries, count, asked ? asked->chunk : 0, starts) : 0;
-    files = starts ? 2 + 2 * chunks : 0; /* the helpers, the index, two at most for each chunk */
+    files = starts ? 2 + chunks : 0; /* the helpers, the index, one for each chunk */
     objects = files ? calloc(files, sizeof *objects) : NULL;
     if (!objects) {
         snprintf(error, error_size, "out of memory for native chunks");
@@ -451,14 +351,12 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
                   .objects = objects + 2,
                   .count = count,
                   .chunks = chunks,
-                  .opt = opt,
-                  .keep_ir = kept,
                   .quiet = quiet};
     if (!compile_chunks(&work)) {
         snprintf(error, error_size, "%s", work.error);
         goto done;
     }
-    snx_arm_aot_report(&work.made, "scarletnx-3ds", quiet);
+    snx_arm_aot_report(&work.made, quiet ? NULL : stdout);
     /* the index of every block, the ones the backend split off with the planned ones */
     if (work.rest_count) {
         Entry* all = realloc(entries, (count + work.rest_count) * sizeof *all);
@@ -472,7 +370,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         qsort(entries, count, sizeof *entries, by_place);
     }
     double start = snx_seconds();
-    if (!index_object(&image, entries, count, &objects[1], opt, kept, error, error_size)) goto done;
+    if (!index_object(&image, entries, count, &objects[1], error, error_size)) goto done;
     if (!quiet) {
         char label[48];
         snprintf(label, sizeof label, "the module's index, %u block%s", count, count == 1 ? "" : "s");
@@ -533,7 +431,6 @@ done:
     free(linked.data);
     free(entries);
     free(starts);
-    free(kept);
     free(recorded);
     free(work.rest);
     free(staged);

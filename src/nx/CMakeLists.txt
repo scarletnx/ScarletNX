@@ -32,10 +32,10 @@ function(snx_component name)
     target_link_libraries(snx_${name} PUBLIC snx_nx_flags)
 endfunction()
 
-snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/linker.c runtime/rtapi.c runtime/hints.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/state_file.c runtime/crash.c runtime/options.c runtime/deprecated_env.c
+snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/linker.c runtime/rtapi.c runtime/hints.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/crash.c runtime/options.c runtime/deprecated_env.c
               runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c runtime/guest_stats.c
               runtime/cheats.c runtime/nce/nce.c runtime/nce/nce_host.c runtime/nce/nce_net.c)
-target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
+target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info snx_state_file)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
 if(APPLE)
     # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,
@@ -113,11 +113,10 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
              runtime/platform/joycon2_known.c
-             runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
-             runtime/platform/stats.c
+             runtime/platform/help.c runtime/platform/hud.c runtime/platform/overlay.c
              runtime/platform/touch.c
              runtime/platform/audio_denoise.c
-             runtime/platform/ui.c runtime/platform/vpad.c
+             runtime/platform/ui.c
              runtime/platform/fatal_screen.c
              runtime/platform/prepare_screen.c runtime/platform/wait_screen.c runtime/platform/resources.c)
 if(WIN32)
@@ -141,6 +140,8 @@ snx_component(platform ${platform})
 target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 # the GPU driver a run asks for (src/common/gpu/vk/gpu_driver_load.h), which the other renderers share
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
+# the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
+target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
 target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 

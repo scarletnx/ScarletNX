@@ -1482,6 +1482,10 @@ msgid "Off"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Ask"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Full"
 msgstr ""
 
@@ -1772,6 +1776,10 @@ msgid "Overwrite users.ini? It is kept as users.ini.old"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Check for new nightlies?"
+msgstr ""
+
+#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr ""
 
@@ -1945,6 +1953,18 @@ msgstr ""
 msgid "Forget"
 msgstr ""
 
+#: src/gui/main.c
+msgid "Don't Ask Again"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Close"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Open Page"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -2080,7 +2100,27 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Delete the old caches of %s? %s of a code cache LLVM made, %s. This version does not use it, and the game does not make it again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s, and %s of a code cache LLVM made, %s. This version does not use them, and the game does not make them again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Could not delete %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not read %s: out of memory"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2374,11 +2414,11 @@ msgid "%s has no save states: F7 saves one while it plays, the menu's Save state
 msgstr ""
 
 #: src/gui/main.c
-msgid "S lists the save states of a recompiled Switch game in focus."
+msgid "S lists the save states of a recompiled Switch, GBA or DS game in focus."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
+msgid "Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."
 msgstr ""
 
 #: src/gui/main.c
@@ -2522,6 +2562,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Last Run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "LLVM's Caches"
 msgstr ""
 
 #: src/gui/main.c
@@ -2909,6 +2953,14 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, Full on the charger. Full: its threads as the recompile's settings give them. Gentle: as many as the memory holds, up to half of those, at a low priority. Each goes gently while a game plays"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Check for updates"
+msgstr ""
+
+#: src/gui/main.c
+msgid "At each start, whether a newer nightly is out, said with what changed and its page; nothing is downloaded. Ask: asks first. On: looks. Off: never looks"
 msgstr ""
 
 #: src/gui/main.c
@@ -3734,6 +3786,58 @@ msgid "Not downloaded: %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Check for updates: this build of the launcher has no HTTPS client"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Check for updates: no memory to ask"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d for %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is tagged %s, not nightly-YYYY-MM-DD-<commit>"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is %s, and this build (%s %s, committed %s) has no day to compare"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is out; this build is %s %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "What changed:"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "cannot write %s: %s"
 msgstr ""
@@ -4043,7 +4147,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
+msgid "%s is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have settings of their own"
 msgstr ""
 
 #: src/gui/main.c
@@ -4622,6 +4726,40 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s%s: %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete LLVM's Caches? %s. Only these files go: this version neither reads nor makes them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d of %d files, %s; %d stay: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "they changed since they were found, so they are not LLVM's now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: the setup asks again"
 msgstr ""
 
@@ -4730,11 +4868,19 @@ msgid "Skip"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Delete LLVM's Caches"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Changed since the last version"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Changed in older versions"
+msgstr ""
+
+#: src/gui/main.c
+msgid "What only LLVM made: this version neither reads nor makes it"
 msgstr ""
 
 #: src/gui/main.c
@@ -4781,6 +4927,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Tip: Settings > App > Move Old Files moves them later"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Tip: Settings > App > Move Old Files deletes them later"
 msgstr ""
 
 #: src/gui/main.c
@@ -4865,6 +5015,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Continue goes on from its journal: %d cases so far"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete LLVM's Caches deletes these files alone, after asking; one that changed since stays"
 msgstr ""
 
 #: src/gui/main.c
@@ -5889,7 +6053,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
+msgid "The JIT cache's level, O%c, is an older version's, and a recompile makes the game at O%c. An AOT pack needs them equal: play the game once to make a cache at O%c."
 msgstr ""
 
 #: src/gui/main.c
@@ -6100,6 +6264,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s did not start: a game plays"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Open Page: %s did not open: %s"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word
@@ -6620,6 +6789,20 @@ msgstr ""
 
 #: src/gui/model.c
 msgid "Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an XCI whose NCAs are decrypted, which needs no keys to read"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub's answer is no JSON object (%zu bytes)"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub names no release: %s"
+msgstr ""
+
+#: src/gui/nightly_check.c
+msgid "its answer has no tag"
 msgstr ""
 
 #: src/gui/process_posix.c
@@ -7813,22 +7996,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Optimization level"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM batch"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr ""
 
@@ -7865,131 +8032,7 @@ msgid "The most memory, in MB, the x86-64 back end's code units are held in whil
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Instruction combining"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Combines instructions into fewer, simpler ones (instcombine)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inlining"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inlines calls into their callers (inline)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Scalar replacement of aggregates"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Splits stack objects into values kept in registers (sroa)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Global value numbering"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Removes redundant computations and loads (gvn)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Control flow simplification"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Unrolls loops with known trip counts (loop-unroll)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop invariant code motion"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Hoists computations that do not change across a loop out of it (licm)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Fast instruction selection"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Global instruction selection"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inliner threshold"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "Launch"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM Internals"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

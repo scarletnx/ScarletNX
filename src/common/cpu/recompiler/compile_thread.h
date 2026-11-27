@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A thread that runs LLVM's passes over a unit (workers.h, nx/loader/module_llvm.c and module_arm.c, vita/aot, the
-   JIT service): LLVM recurses with the function it works on, a frame per block in MemoryDependence's walk of a load's
-   predecessors, and a game's biggest functions overflowed the 1 MiB a thread gets by default on Android and Windows.
-   8 MiB is glibc's default, where every game recompiled. The stack is a reservation: a thread uses the pages it
-   touches */
+/* A thread that compiles a unit (library.c, nx/loader/module_a64.c and module_arm.c, vita/aot, the JIT service),
+   with 8 MiB of stack, glibc's default, on every host (a thread gets 1 MiB by default on Android and Windows). The
+   stack is a reservation: a thread uses the pages it touches */
 #ifndef SNX_RECOMPILER_COMPILE_THREAD_H
 #define SNX_RECOMPILER_COMPILE_THREAD_H
 #include <stddef.h>

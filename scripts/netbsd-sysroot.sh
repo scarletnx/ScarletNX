@@ -7,7 +7,7 @@
 #   scripts/netbsd-sysroot.sh DIR
 #
 # The C library and the rest of the system from base, its headers, crt files and libgcc from comp (base has none),
-# and from pkgsrc LLVM (the LLVM backend, with zstd and libxml2, which LLVM's CMake package asks for) and SDL3.
+# and SDL3 from pkgsrc.
 # NETBSD_RELEASE (11.1), NETBSD_PKGSRC (11.0_2026Q3) and NETBSD_MIRROR (https://cdn.netbsd.org/pub) pick others.
 # Then `export SNX_SYSROOT=DIR` and configure with the preset.
 set -eu
@@ -19,7 +19,7 @@ mirror=${NETBSD_MIRROR:-https://cdn.netbsd.org/pub}
 sets=$mirror/NetBSD/NetBSD-$release/amd64/binary/sets
 packages=$mirror/pkgsrc/packages/NetBSD/x86_64/$pkgsrc/All
 # the packages, by name: the newest version of each is taken from the SHA512 list
-names="llvm zstd libxml2 SDL3"
+names="SDL3"
 
 mkdir -p "$dir/.download" "$dir/usr/pkg"
 dl=$dir/.download
@@ -46,7 +46,7 @@ tar -xJf "$dl/comp.tar.xz" -C "$dir" --no-same-owner --wildcards './usr/include/
 fetch "$packages/.." SHA512.bz2
 bzip2 -dc "$dl/SHA512.bz2" > "$dl/SHA512.pkgsrc"
 for name in $names; do
-    # names are followed by a version that starts with a digit: llvm-21.1.8nb1, not llvm-libs-...
+    # names are followed by a version that starts with a digit: SDL3-3.4.16, not SDL3_image-...
     file=$(sed -n "s|^SHA512 (All/\\($name-[0-9][^)]*\\.tgz\\)) = .*|\\1|p" "$dl/SHA512.pkgsrc" | sort -V | tail -1)
     [ -n "$file" ] || { echo "no $name package in pkgsrc $pkgsrc" >&2; exit 1; }
     fetch "$packages" "$file"

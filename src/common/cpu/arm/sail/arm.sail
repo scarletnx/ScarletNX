@@ -5,7 +5,7 @@
    ScarletNX's AArch32 CPU (arm.h's SnxArmCPU) keeps the registers. sailgen reads this file after a32.sail (--overlay),
    and a definition here takes the place of a32.sail's of the same name; a top-level let is a constant the generated
    code folds. a32.roots stops the extraction at the names defined here, so a32.sail holds only sail-arm's own text.
-   What differs from one architecture to the next asks ArchVersion(), the guest's (llvm_arm.h), as the ARMv7 ARM's ASL
+   What differs from one architecture to the next asks ArchVersion(), the guest's (mach_a32.h), as the ARMv7 ARM's ASL
    does; which encodings each one has is a32.profile's */
 
 // ---- the registers ----
@@ -37,7 +37,7 @@ function SelectInstrSet iset = {
 
 // ---- the condition and the IT block ----
 
-// The block compilers decide an IT block's conditions when they compile it (llvm_thumb.inc): ITSTATE before each
+// The block compilers decide an IT block's conditions when they compile it: ITSTATE before each
 // instruction is known when the recompiler runs, the back end's (ITSTATE), as is CurrentCond (sail-arm's
 // AArch32_CurrentCond, a val its runtime answers): an A32 word's condition, the T1 and T3 B<c>'s own, else the IT
 // block's or AL. ConditionPassed is then sail-arm's, the run-time test of the flags that sailgen runs the rest of the
@@ -55,7 +55,7 @@ function execute_aarch32_instrs_IT_Op_A_txt (firstcond, mask) = ITSTATE_set(firs
 
 // ---- guest memory ----
 
-// Guest memory is the board's own (llvm.c's readmem and writemem: flat, checked or hosted, with the ARM7TDMI's and the
+// Guest memory is the board's own (flat, checked or hosted, with the ARM7TDMI's and the
 // ARM946E-S's bus rules and hook). GuestRead and GuestWrite are one access of size bytes; aligned is MemA's and MemS's
 // (the multiple transfers', whose alignment the ARMv4T and ARMv5TE buses do not check) against MemU's, which takes any
 // address
@@ -141,7 +141,7 @@ function AArch32_SetLSInstructionSyndrome (size, sign_extend, Rt, acq_rel) = ()
 // GuestTransfer(address, bytes, write) opens it, and the accesses after it in the instruction are within it. These are
 // sail-arm's LDM, STM, PUSH and POP with that call first. A register stored that the instruction writes back before
 // (UNKNOWN in ARMv6 and later) is stored as it was, where the ARM7TDMI (ARMv4T) stores the base written back
-// (llvm_thumb.inc's STMIA, mGBA's); ARMv6 made that store UNPREDICTABLE (UnpredictableEncoding, below), ARMv7 UNKNOWN
+// (mGBA's); ARMv6 made that store UNPREDICTABLE (UnpredictableEncoding, below), ARMv7 UNKNOWN
 val GuestTransfer : (bits(32), int, bool) -> unit
 // An empty list (UNPREDICTABLE) ends an LDM or an STM UNDEFINED, as the block compilers always had it: the board whose
 // core does something of its own with one runs it in its interpreter (the GBA's ARM7TDMI transfers R15 and moves the

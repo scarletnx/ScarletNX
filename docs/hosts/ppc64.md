@@ -20,11 +20,11 @@ for pull requests
 (`ScarletNX-linux-ppc64le.AppImage`, the `appimage-cross` job in `.github/workflows/build.yml`) against an Arch POWER
 system root and runs it under qemu as installed; no job runs the test suite. The big-endian AppImage
 (`ScarletNX-linux-ppc64.AppImage`, ELFv2) is cross-built the same way for the nightlies; a pull request cross-builds
-and tests it alike and makes no AppImage. No job
-builds or tests the ELFv1 port (`linux-ppc64-cross`, Debian ports' glibc).
+and tests it alike and makes no AppImage. There is no ELFv1 build: the ppc64 back end writes ELFv2's calls, and the
+configure refuses `SNX_PPC64_ELFV2=OFF`.
 
-On a big-endian host the Linux runtime runs AArch64 and 32-bit Arm programs, with Debian ports' glibc
-(`linux-ppc64-cross`, ELFv1) and with Arch POWER's (`linux-ppc64-elfv2-cross`, ELFv2): under qemu-ppc64, an
+On a big-endian host the Linux runtime runs AArch64 and 32-bit Arm programs with Arch POWER's glibc
+(`linux-ppc64-elfv2-cross`, ELFv2): under qemu-ppc64, an
 AArch64-hosted GCC compiles a C file and the program it made runs, both dynamically linked against glibc. The Switch
 runtime is ported to big-endian ELFv2 too, its services, IPC, memory, GPU front end and video, and the renderer
 treats the Vulkan device as little-endian, as the drivers for big-endian PowerPC64 are. Its test suite passes under
@@ -36,11 +36,11 @@ The tools, once:
 
 ```bash
 sudo apt install clang lld llvm ninja-build meson cmake ccache mmdebstrap qemu-user qemu-user-binfmt binfmt-support \
-    glslang-tools debian-ports-archive-keyring
+    glslang-tools
 ```
 
-A sysroot with the target's libraries and LLVM, made without root by `scripts/ppc64-sysroot.sh` (about 1 GB). It is
-staged in `/var/tmp`, as `/tmp` is often too small. `ppc64` makes the big-endian one from Debian's ports archive:
+A sysroot with the target's libraries, made without root by `scripts/ppc64-sysroot.sh` (about 1 GB). It is
+staged in `/var/tmp`, as `/tmp` is often too small. The big-endian one is Arch POWER's ([Big-endian hosts](#big-endian-hosts)):
 
 ```bash
 scripts/ppc64-sysroot.sh ppc64el .cache/sysroot-ppc64el
@@ -55,8 +55,7 @@ cmake --build --preset linux-ppc64le-cross
 ctest --preset linux-ppc64le-cross -j"$(nproc)"
 ```
 
-The target's `llvm-config` is a PowerPC program, so `scripts/cross-llvm-config.sh` runs it under qemu. The presets
-point pkg-config at the sysroot and set `QEMU_LD_PREFIX` for the tests. One test is skipped under the emulator:
+The presets point pkg-config at the sysroot and set `QEMU_LD_PREFIX` for the tests. One test is skipped under the emulator:
 `gui_process_tree` reads a resident size that qemu reports as zero.
 
 ## Running a game under qemu
@@ -96,11 +95,6 @@ itself.
   POWER8 there is
   no `lqarx`/`stqcx.`, and the 128-bit compare-and-swap that STXP becomes would be a libatomic call,
   which a module doesn't link.
-- **Guest tail calls go through stubs.** Without POWER10's PC-relative code, LLVM refuses a guaranteed tail call to a
-  function it can't see shares the caller's TOC: another unit's function, or a pointer. A module has one TOC, so the
-  jump is safe, and `ppc_tail_calls` in `src/common/cpu/recompiler/llvm/ir.c` sends those calls to a naked stub of the
-  same module that branches on. A pointer's stub that misses calls `RtAPI.miss` from a frame of its own and keeps r2
-  in that frame: r1 may still be the runtime's frame that called into the module, whose saved TOC it reloads.
 - **The linker** (`src/common/cpu/recompiler/object/link_elf.c`, with the relocations in `elf_object.c`) handles the
   TOC relocations, ELFv2's local entry points, ELFv1's `.opd` descriptors, and 16-byte stubs for a call past `bl`'s
   32 MiB.
@@ -108,7 +102,7 @@ itself.
   (`code_loader.c`, `library.c`'s `arena_load`) with the runtime library once, and the arena has one TOC, which every
   step's code keeps in r2. Elsewhere each step is a module of its own, linked and loaded with `dlopen`. On PowerPC64
   that gave each step its own TOC, and a guest's jump from one step into another came back to its caller with the
-  other step's TOC. Loaded code calls the runtime only through pointers (RtAPI), which LLVM calls with r2 saved. A
+  other step's TOC. Loaded code calls the runtime only through pointers (RtAPI), with r2 saved. A
   forked child copies the arena's pages, which are shared memory, into its own (`snx_recompiler_forked`).
 - **The runtime JIT shares the game module's TOC.** Its units call the AOT module's functions directly, so their
   arena is placed within 32-bit reach of the module's TOC, which every unit keeps in r2
@@ -117,10 +111,6 @@ itself.
 - **A32 blocks call the 32-bit runtime library in their arena.** The executor (`common/cpu/arm/exec.c`) loads
   `armlib` into its code arena first, as `arena_load` does with `rtlib` for A64, so blocks share one TOC and reach
   the runtime only through `cpu->rt`. The Linux runtime runs 32-bit programs on PowerPC64 with it.
-- **Rounding mostly stays on the fast path.** LLVM 23 still lowers `llvm.roundeven` to a libm call on POWER8, and
-  fails on its vector form, so FRINTN and the conversions in that mode use the software path (FPCR's own mode, which
-  may select it, too). The other modes are instructions. Fused multiply-add and square root are fast paths on the
-  scalar FPU of every PowerPC64, and on the vectors where VSX is there.
 - **SDL3 built from source has no AltiVec** (`SDL_ALTIVEC OFF`, `cpmfile.json`): its blitters prefetch with `dstt`, which
   the ISA phased out and qemu traps. The AppImages take Arch POWER's `sdl3` package instead (`SNX_SYSTEM_SDL3`),
   which has them.
@@ -130,39 +120,18 @@ itself.
 AArch64 is little-endian, so on a big-endian host guest memory keeps the guest's byte order and everything that reads
 or writes a guest value as a number converts it:
 
-- The recompiler swaps where generated code reads memory as numbers (`ir_rd`, `ir_wr`, `ir_ldacq`, `ir_strel` in
-  `ir_state.c`) and where it compares in memory (`cas` in `ir_helpers.c`, `snx_cas128`). LLVM folds the swaps into
-  POWER's byte-reversed loads and stores. The vector registers hold the guest's bytes too: the views that read a lane
-  as a number swap it (`ir_vd`, `ir_ve`, the lane helpers of `ir_vec.c`), and Q loads, LD1 to LD4, TBL and EXT stay
-  byte copies. The emitters decide by the target's data layout, so a little-endian host's code is what it was. The
-  helpers and the tests that set and check lanes read and write a lane as a number through `SNX_VS` and its kin in
-  `cpu.h`, which swap on a big-endian host.
+- The recompiler's big-endian back ends (`src/common/cpu/recompiler/ppc64` and `mips64` built with `PPC_BE` and
+  `MIPS_BE`) read and write guest memory with the host's byte-reversed loads and stores, and compare in it with
+  `snx_cas128`'s. The helpers and the tests that set and check lanes read and write a lane as a number through
+  `SNX_VS` and its kin in `cpu.h`, which swap on a big-endian host.
 - The Linux runtime's system calls read and write the guest's structures through `common/utilities/endian.h`
   (`snx_ld_le32`, `snx_st_le64` and their kin), which compile to plain copies on a little-endian host.
 - `scripts/le-unchanged.sh` builds a base commit and the working tree on a little-endian machine and lists every
   object whose code differs, and whether the recompiler's output for an AArch64 program changed.
 
-The build links with GNU ld, since LLD links no ELFv1 object: `binutils-powerpc64-linux-gnu` on Debian. The system
-root is Debian ports' unstable:
-
-```bash
-scripts/ppc64-sysroot.sh ppc64 .cache/sysroot-ppc64
-export SNX_SYSROOT=$PWD/.cache/sysroot-ppc64
-cmake --preset linux-ppc64-cross -DSNX_BUILD_NX=OFF -DSNX_BUILD_3DS=OFF -DSNX_BUILD_VITA=OFF -DSNX_BUILD_AGB=OFF \
-    -DSNX_BUILD_GUI=OFF
-cmake --build --preset linux-ppc64-cross --target scarletnx
-```
-
-`scarletnx` is then the Linux runtime alone, and `scarletnx-gnuabi` a link to it.
-
-No CI job builds it. Its tests, the Linux runtime's (`gnuabi_*`, `endian`, `cas128`), run under qemu-ppc64 with
-`ctest --preset linux-ppc64-cross`.
-
 Arch POWER's big-endian glibc is ELFv2, as LLD links it. Its preset (`linux-ppc64-elfv2-cross`, `SNX_PPC64_ELFV2`)
 builds for ELFv2 with `-mabi=elfv2`, every runtime and the launcher. Its system root is pkgforge's Arch image of the
-architecture with LLVM and GCC's runtime installed into it, as the `appimage-cross` job makes it. The runtime's own
-code generator takes its ABI from the runtime itself (`_CALL_ELF`, `new_ir` in `ir.c`), as LLVMs differ in which
-ABI their `powerpc64-*-linux-gnu` picks: Debian's 19 ELFv1, Arch POWER's 22 ELFv2.
+architecture with GCC's runtime installed into it, as the `appimage-cross` job makes it.
 
 What was run under qemu-ppc64: the Linux runtime's tests (`gnuabi_*`, `endian`, `cas128`), `tools/gnuabi_diff.py
 --suite all` against qemu-aarch64 (the CPU suite covers SIMD, floating point, exclusives and unaligned accesses), a
@@ -195,7 +164,7 @@ compile to nothing on a little-endian host:
 - hactool's headers are converted as they are read, or at each field where they are signed or written back, so
   extraction and recompiling work on a big-endian machine.
 
-The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime, SDL3 and LLVM installed):
+The build (the Arch POWER system root of the `appimage-cross` job, with GCC's runtime and SDL3 installed):
 
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64
@@ -226,35 +195,27 @@ Big-endian builds run on every 64-bit PowerPC, as x86-64 builds run on every x86
 `ppc64` CPU without AltiVec, which POWER4, POWER5 and the e5500 lack (Clang's default `ppc64` is the 970's, with
 it), and without the optional `fsqrt`, `fres`, `frsqrte` and `stfiwx`, which the e5500 and e6500 lack. Clang has no
 `-mno-` flag for those, so they go to cc1 as `-Xclang -target-feature -Xclang -fsqrt` and so on. The code keeps
-`fsel`, which LLVM emits for every PowerPC (its e5500 too), and `mfocrf`, which a CPU before POWER4 runs as `mfcr`.
+`fsel`, which Clang emits for every PowerPC (its e5500 too), and `mfocrf`, which a CPU before POWER4 runs as `mfcr`.
 FFmpeg is built without AltiVec (`cmake/ffmpeg.cmake`), as its configure would compile every file with `-maltivec`;
 OpenSSL picks its routines for later CPUs by the machine's capabilities.
 
-The recompiler builds a game's module for the host's CPU, which LLVM names from `/proc/cpuinfo` (`970` on a
-PowerMac G5, with AltiVec), and for this baseline where it names none (`new_ir` in `ir.c`): an e5500, or qemu-user.
-
-The `linux-ppc64-g5-cross` preset is the ELFv2 build with this baseline, named for the PowerMac G5. Arch POWER's
-`libLLVM` is built for POWER8 and stops in its static constructors on a 970, so the preset links the LLVM
-`scripts/linux-llvm.sh ppc64` builds for the baseline, as the big-endian AppImage does, from `.cache/llvm/ppc64`:
+The `linux-ppc64-g5-cross` preset is the ELFv2 build with this baseline, named for the PowerMac G5:
 
 ```bash
 export SNX_SYSROOT=/path/to/arch-power-ppc64
-scripts/linux-llvm.sh ppc64 "$PWD/.cache/llvm/ppc64"
 cmake --preset linux-ppc64-g5-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-ppc64-g5-cross
 ```
+
+The recompiler's back end runs on all of them too. Its code reads and writes the guest's doublewords with `ldbrx`
+and `stdbrx` where the kernel's `AT_HWCAP` says the CPU has them (`PPC_FEATURE_ARCH_2_06`, POWER7 on, or
+`PPC_FEATURE_CELL`), and as two words each (`lwbrx`, `stwbrx`) on the others: POWER4 to POWER6, the 970, PA6T, and NXP's
+e5500 and e6500; neither is one access, where Arm's aligned doubleword is. Its calls are ELFv2's.
 
 What changes before POWER8:
 
 - **STXP's 16-byte compare-and-swap goes through the runtime** (`RtAPI.cas128`, `common/runtime/cas128.c`), as on
   RISC-V and LoongArch. It runs POWER8's `lqarx`/`stqcx.` where the kernel reports ISA 2.07, and takes a lock of the
   address's stripe elsewhere, which keeps the 16 bytes atomic against other STXPs but not against plain stores.
-- **Single-precision vector lanes can flush denormals on an AltiVec host.** Where the module is built for a CPU with
-  AltiVec but no VSX (the 970, POWER6, Cell), LLVM puts them on AltiVec, whose VSCR[NJ] is set when Linux starts a
-  thread, so denormals flush to zero where an emitter (`ir_vec_fp.c`) uses the host's vector arithmetic. Double
-  lanes and scalars use the FPU, as every lane does for the baseline.
-- **Square roots are libm calls** for the baseline, where the host's CPU has no name LLVM knows.
-- Rounding, `floor`, `trunc`, `rint`, `minnum` and the half conversions would be libm calls on these CPUs, which the
-  emitters already avoid on PowerPC64.
 
 The PowerMac G5's own graphics cards have no Vulkan driver, so the 970 build needs a later card that Mesa drives.

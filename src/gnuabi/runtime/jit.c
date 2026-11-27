@@ -5,6 +5,7 @@
 #endif
 #include "gnuabi/runtime/jit.h"
 #include "gnuabi/process/process.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include <inttypes.h>
@@ -199,9 +200,11 @@ int gnu_jit_init(GnuJit* jit, const char* cache, char* error, size_t error_size)
                  (uint64_t)TABLE_BYTES >> 30, snx_os_error(why, sizeof why));
         return -1;
     }
-    jit->recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    jit->recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     if (!jit->recompiler) {
-        snprintf(error, error_size, "the LLVM backend cannot target this host");
+        if (!snx_native_refused(error, error_size))
+            snprintf(error, error_size, "no recompiler for this host: its native back end (%s) makes none",
+                     snx_native_name());
         gnu_jit_destroy(jit);
         return -1;
     }

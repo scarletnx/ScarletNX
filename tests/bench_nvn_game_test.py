@@ -22,7 +22,30 @@ IMAGE = b'P6\n2 1\n255\n\x01\x02\x03\x04\x05\x06'
 VALID = 'game: 0100000000000000, version 1.2.0\nframes=12 hash=0123456789abcdef\n'
 
 
+def symlink(link, target, **kwargs):
+    """link made to point at target, or the case skipped, saying why, where the system refuses symbolic links: Windows
+    without the privilege of making them (WinError 1314); any other failure stays one"""
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1314:
+            raise unittest.SkipTest(f'the system refuses symbolic links here: {error}') from None
+        raise
+
+
 class Measurements(unittest.TestCase):
+    def test_a_refused_symlink_skips_the_case_saying_why(self):
+        refused = OSError(22, 'A required privilege is not held by the client')
+        refused.winerror = 1314
+        with mock.patch.object(Path, 'symlink_to', side_effect=refused):
+            with self.assertRaises(unittest.SkipTest) as skipped:
+                symlink(Path('link'), Path('target'))
+        self.assertIn('the system refuses symbolic links here', str(skipped.exception))
+        self.assertIn('A required privilege is not held by the client', str(skipped.exception))
+        with mock.patch.object(Path, 'symlink_to', side_effect=FileExistsError(17, 'File exists')):
+            with self.assertRaises(FileExistsError):
+                symlink(Path('link'), Path('target'))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -102,14 +125,14 @@ class Measurements(unittest.TestCase):
         source = self.root / 'source'
         source.mkdir()
         (source / 'save').write_text('original')
-        (source / 'link').symlink_to(source / 'save')
+        symlink(source / 'link', source / 'save')
         copy = self.root / 'copy'
         bench.clone_tree(source, copy)
         (copy / 'save').write_text('changed')
         (copy / 'link').write_text('independent')
         self.assertEqual((source / 'save').read_text(), 'original')
         self.assertFalse((copy / 'link').is_symlink())
-        (source / 'loop').symlink_to(source, target_is_directory=True)
+        symlink(source / 'loop', source, target_is_directory=True)
         with self.assertRaises(ValueError):
             bench.clone_tree(source, self.root / 'bad-copy')
 
@@ -325,4 +348,4 @@ print('frames=' + str(frames) + ' hash=0123456789abcdef', file=sys.stderr)
 
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main(verbosity=2)  # each skip says why: a refused link names its error

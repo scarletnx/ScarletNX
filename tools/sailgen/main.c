@@ -7,10 +7,10 @@
      sailgen --extract ROOTS -o OUT INPUT...
          copies the definitions of INPUT (sail-arm's .sail files) that ROOTS reaches into OUT (extract.c)
      sailgen --generate ROOTS --backend FILE... [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
-         writes OUT, C that builds each decode function ROOTS names as LLVM IR (gen.c), from INPUT and the overlays,
-         whose definitions take the place of INPUT's of the same name (a platform's fixups), with the back end's files
-         (bits.h, the values known while recompiling, core.h, the lowering of Sail's builtins, then a machine's state:
-         llvm.h for A64, llvm_arm.h for AArch32)
+         writes OUT, C that emits each decode function ROOTS names as a machine's code (gen.c), from INPUT and the
+         overlays, whose definitions take the place of INPUT's of the same name (a platform's fixups), with the back
+         end's files (bits.h, the values known while recompiling, then a machine's: machdef.h, its own header, mach.h,
+         its assembly and its guest's part, as cmake/sailgen.cmake's snx_sailgen_machine_backends lists them)
          copied at its top in their order. A feature the profile's feature lines do not name is one no guest has:
          IsFeatureImplemented of it is false when sailgen runs; its since lines give an encoding's architecture
      sailgen --gpu ROOTS --backend FILE... -o OUT INPUT... [--overlay FILE]...
@@ -24,9 +24,10 @@
      sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]
          writes OUT, the x86-64 back end's instruction selection out of PAGES (--sdm's) and the back end's primitives OPS
          (x64.ops), with TEXT, where PAGES are from, in its header; REPORT, what was selected and what could not be read
-     sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...
-         writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT, or of
-         those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that architecture
+     sailgen --encoders PREFIX [--roots ROOTS] [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
+         writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT and the
+         overlays, or of those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that
+         architecture, with what each clause's code reaches of FPCR and FPSR under PROFILE's features
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -155,7 +156,8 @@ static int usage(const char* why) {
             "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n"
             "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n"
             "       sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]\n"
-            "       sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...\n",
+            "       sailgen --encoders PREFIX [--roots ROOTS] [--profile PROFILE] -o OUT INPUT...\n"
+            "               [--overlay FILE]...\n",
             why);
     return 2;
 }
@@ -220,8 +222,8 @@ int main(int argc, char** argv) {
     }
     if (!strcmp(mode, "--encoders")) {
         if (!out || !count) return usage("--encoders writes -o OUT from the Sail's files");
-        if (backend_count || profile) return usage("--encoders takes no back end and no profile");
-        return sg_encoders(roots, enc_roots, inputs, count, out);
+        if (backend_count) return usage("--encoders takes no back end");
+        return sg_encoders(roots, enc_roots, inputs, overlays, count, profile, out);
     }
     if (!strcmp(mode, "--sdm")) {
         /* the SDM's text, and the overrides: no Sail */

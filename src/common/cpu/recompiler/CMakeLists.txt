@@ -3,15 +3,10 @@
 # The recompiler, a static library for each layer, each over the ones before it:
 #   snx_recompiler_base   the A64 decoder, the function discovery and the host calls (src/common/CMakeLists.txt)
 #   snx_recompiler_core   the native back ends (mach/ and a folder a machine), what links and loads their objects
-#                         (object/, loader/) and the runtime library's objects (rtlib/). No LLVM: the tests
-#                         runtime_architecture and recompiler_core_symbols hold it to that
-#   snx_llvm              the LLVM backend (llvm/), where the build has it (SNX_WITH_LLVM), and the fallback it is
-#                         (fallback.h): it makes what the native back ends leave. snx_fallback_none refuses it instead
+#                         (object/, loader/) and the runtime library's objects (rtlib/)
 #   snx_recompiler_jit    what makes the code a running program reaches (jit/, cpu/arm/exec.c), and the AArch32 blocks
 #                         of the AOT compilers (cpu/arm/aot.c)
 #   scarletnx-recompiler  the library (snx_recompiler.h, docs/dev/library.md): an archive of all their objects
-# A build without LLVM has the core, snx_fallback_none, the AArch32 executor and AOT blocks and the JIT cache's reader
-# alone: the others still call it
 
 # The runtime library every module links (rtlib.c): the helpers, compiled here with this Clang and the flags toolchain.c
 # gives generated C
@@ -33,9 +28,8 @@ else()
     set(snx_rtlib_gen snx-rtlib-gen)
 endif()
 # No -march=native: the recompiler builds modules for the machine it runs on, which is often not the one that built
-# it (the Windows zip and the AppImage come from CI runners). The LLVM backend compiles the library's bitcode
-# (llvm/CMakeLists.txt) for each module with the module's target machine, the host CPU as for the generated code; the
-# object below is the one the runtime JIT loads (jit_service.c). A CI runner's -march=native library used AVX-512, an
+# it (the Windows zip and the AppImage come from CI runners). The object below is the one every module links and the
+# runtime JIT loads (library.c, jit_service.c). A CI runner's -march=native library used AVX-512, an
 # illegal instruction on a Ryzen 3000 the first time a module called a helper using it. Android's is the phone's ABI
 # baseline, which Clang targets by default
 if(ANDROID)
@@ -69,7 +63,7 @@ else()
     list(APPEND snx_rtlib_flags -fPIC)
 endif()
 # The object is the JIT loader's (code_loader.c), which reads ELF: on macOS and iOS too, where the triple's object format
-# says so and the code stays Darwin's (ir.c's host_triple). The bitcode keeps the Mach-O triple of the AOT modules
+# says so and the code stays Darwin's
 set(snx_rtlib_object_flags "")
 set(snx_rtlib_object_base ${snx_rtlib_flags})
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
@@ -119,9 +113,9 @@ set_source_files_properties(object/elf_object.c loader/code_loader.c loader/code
 target_compile_options(snx_recompiler_core PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_recompiler_core PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(snx_recompiler_core PUBLIC snx_recompiler_base snx_arm_decode Threads::Threads)
-# the x86-64 back end (src/common/cpu/recompiler/x64): its functions' code without LLVM, from the A64 emitters sailgen
-# generates with the instruction selection derived from the Intel SDM that the tree has (tools/sailgen/sdm/x64_isel.inc,
-# cmake/sdm.cmake); the default code generator where it is built, LLVM making what it can't
+# the x86-64 back end (src/common/cpu/recompiler/x64): its functions' code, from the A64 emitters sailgen generates
+# with the instruction selection derived from the Intel SDM that the tree has (tools/sailgen/sdm/x64_isel.inc,
+# cmake/sdm.cmake); the code generator where it is built
 target_sources(snx_recompiler_core PRIVATE x64/x64_codegen.c x64/x64_cache.c x64/x64_elf.c x64/x64_arm.c)
 include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
 if(SNX_X64)
@@ -161,30 +155,41 @@ target_sources(snx_recompiler_core PRIVATE la64/la64_codegen.c la64/la64_arm.c)
 snx_sailgen_a64_risc(snx_recompiler_core la64)
 snx_sailgen_a32_risc(snx_recompiler_core la64)
 
-# no fallback: each thing asked of it is an error that names it. The tests link it in every build
-add_library(snx_fallback_none STATIC EXCLUDE_FROM_ALL fallback_none.c)
-set_target_properties(snx_fallback_none PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
-target_compile_options(snx_fallback_none PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(snx_fallback_none PUBLIC snx_recompiler_core)
+# the version of the code the native back ends make (snx_native_code), a hash of every file that decides it: their
+# sources and the object writers', sailgen's headers and the SDM's selection, and what sailgen generated for them above.
+# The JIT cache's key names it, so a cache made before a change to that code is refused rather than run
+set(snx_native_code_globs "${PROJECT_SOURCE_DIR}/tools/sailgen/*.h" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm/*.inc")
+foreach(dir mach object x64 arm64 rv64 ppc64 mips64 s390x la64)
+    list(APPEND snx_native_code_globs "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.h"
+         "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.inc")
+endforeach()
+file(GLOB snx_native_code_files CONFIGURE_DEPENDS ${snx_native_code_globs})
+get_target_property(snx_native_generated snx_recompiler_core SOURCES)
+list(FILTER snx_native_generated INCLUDE REGEX "/sailgen/[^/]*\\.inc$")
+list(APPEND snx_native_code_files ${snx_native_generated})
+list(SORT snx_native_code_files)
+list(JOIN snx_native_code_files "\n" snx_native_code_list)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt" CONTENT "${snx_native_code_list}\n")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native_code.c"
+    COMMAND "${CMAKE_COMMAND}" "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt"
+            "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${PROJECT_BINARY_DIR}"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/native_code.c" -P "${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
+    DEPENDS ${snx_native_code_files} "${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt"
+            "${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
+    COMMENT "Hashing the native back ends' code" VERBATIM)
+target_sources(snx_recompiler_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/native_code.c")
 
 add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c" jit/jit_cache.c
-                                      "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c")
+                                      jit/jit_cache_key.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
+                                      jit/jit_service.c)
 set_target_properties(snx_recompiler_jit PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_recompiler_jit PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_recompiler_jit PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(snx_recompiler_jit PUBLIC snx_recompiler_core snx_arm_rt)
-if(NOT SNX_WITH_LLVM)
-    target_link_libraries(snx_recompiler_jit PUBLIC snx_fallback_none)
-    return()
-endif()
-add_subdirectory(llvm)
-# these call LLVM themselves
-target_sources(snx_recompiler_jit PRIVATE jit/jit_service.c jit/jit_cache_key.c)
-target_link_libraries(snx_recompiler_jit PUBLIC snx_llvm)
 
 # The recompiler as a library (snx_recompiler.h): the backends and the function discovery behind one C interface,
 # without the Switch runtime. One archive holds everything of this tree the interface needs (the objects of the
-# libraries above), so a consumer links it and the external libraries (LLVM) and nothing else. A tools-only build
+# libraries above), so a consumer links it and the system's libraries and nothing else. A tools-only build
 # (-DSNX_TOOLS_ONLY=ON) has it too. SNX_RECOMPILER_SHARED also builds the shared library, which needs the parts
 # compiled as position-independent code.
 option(SNX_RECOMPILER_SHARED "Also build the recompiler as a shared library (libscarletnx-recompiler.so)" OFF)
@@ -193,11 +198,10 @@ option(SNX_RECOMPILER_SHARED "Also build the recompiler as a shared library (lib
 option(SNX_RECOMPILER_INSTALL "Install the recompiler library, its headers and its CMake package" ${SNX_TOOLS_ONLY})
 include(GNUInstallDirs)
 # the core alone: the backends, and what they take of src/common (snx_recompiler_base: the A64 decoder, the function
-# discovery, allocation, files, clocks), never the rest of common or the platform. Beside them it links LLVM and the
-# system's libraries alone (snx_recompiler_external): recompiler_symbols (tests/CMakeLists.txt) fails on any other
-set(snx_recompiler_parts snx_recompiler_base snx_recompiler_core snx_llvm snx_recompiler_jit snx_arm_llvm snx_arm_decode
-                         snx_arm_rt)
-set(snx_recompiler_external ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+# discovery, allocation, files, clocks), never the rest of common or the platform. Beside them it links the system's
+# libraries alone (snx_recompiler_external): recompiler_symbols (tests/CMakeLists.txt) fails on any other
+set(snx_recompiler_parts snx_recompiler_base snx_recompiler_core snx_recompiler_jit snx_arm_decode snx_arm_rt)
+set(snx_recompiler_external Threads::Threads ${CMAKE_DL_LIBS})
 set(snx_recompiler_defines _CRT_SECURE_NO_WARNINGS)
 if(WIN32)
     list(APPEND snx_recompiler_external advapi32)
@@ -241,10 +245,8 @@ foreach(kind IN LISTS snx_recompiler_kinds)
     foreach(part IN LISTS snx_recompiler_parts)
         target_include_directories(${target} PRIVATE "$<TARGET_PROPERTY:${part},INTERFACE_INCLUDE_DIRECTORIES>")
     endforeach()
-    target_include_directories(${target} SYSTEM PRIVATE "${SNX_LLVM_INCLUDE_DIR}")
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror=missing-prototypes)
     target_compile_definitions(${target} PRIVATE ${snx_recompiler_defines})
-    target_link_directories(${target} PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
     if(kind STREQUAL STATIC)
         target_link_libraries(${target} PUBLIC ${snx_recompiler_external})
     else()

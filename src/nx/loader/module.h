@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the game module's backends (module_llvm.c, module_arm.c) share: their options, how code is
+/* What the game module's backends (module_a64.c, module_arm.c) share: their options, how code is
    cut into units and the dispatch entry table */
 #ifndef SNX_TOOL_MODULE_H
 #define SNX_TOOL_MODULE_H

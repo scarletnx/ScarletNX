@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The LLVM backend's linker: relocatable objects (as LLVM and Clang write them: x86-64, AArch64 or PowerPC64 ELF on
-   Unix and Android, x86-64 or ARM64 COFF on Windows, arm64 Mach-O on macOS and iOS) into the game module the runtime
+/* The recompiler's linker: relocatable objects (as the back ends and Clang write them: x86-64, AArch64 or PowerPC64 ELF
+   on Unix and Android, x86-64 or ARM64 COFF on Windows, arm64 Mach-O on macOS and iOS) into the game module the runtime
    loads, an ELF shared object, a PE DLL or a Mach-O dylib. The module defines everything it uses (rtlib.c), so the
-   linker resolves every symbol itself and writes no imports: only the relocations position-independent code needs
-   (ELF R_*_RELATIVE, PE base relocations, Mach-O rebases) and an export table */
+   linker resolves every symbol itself and writes no imports: only the relocations position-independent code needs (ELF
+   R_*_RELATIVE, PE base relocations, Mach-O rebases) and an export table */
 #ifndef SNX_RECOMPILER_OBJECT_LINK_H
 #define SNX_RECOMPILER_OBJECT_LINK_H
 #include <stddef.h>

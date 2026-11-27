@@ -88,6 +88,11 @@ NdsVkImage* nds_vk_frame_image(void);
 /* a display capture the GPU has not given back yet, put into its VRAM bank now (the GPU is waited for): before
    anything reads the bank */
 void nds_vk_capture_land(NdsBoard* board);
+/* A save state's side of it (runtime/state.c): the capture made and not landed yet, its bytes (0 for none) with its
+   bank, offset and pixels, once the GPU has made it; and one put back as not landed yet, 0 bytes for none. pend is
+   false where no device holds one: the caller lands it itself */
+uint32_t nds_vk_capture_pending(unsigned* bank, uint32_t* offset, const unsigned char** data);
+bool nds_vk_capture_pend(unsigned bank, uint32_t offset, const unsigned char* data, uint32_t bytes);
 /* the frame's pixels read back, RGBA, 256 by 384: waits for the GPU. False when it cannot */
 bool nds_vk_frame_read(unsigned char* rgba);
 
@@ -102,6 +107,10 @@ NdsVkImage* nds_vk_render3d_image(void);
 /* ---- present.c ---- */
 bool nds_vk_present_init(char* error, size_t error_size);
 void nds_vk_present_free(void);
-/* the frame image to the window, both screens, and the submission sent */
+/* the frame image to the window, both screens, the notice and the on-screen controls over it, and the submission sent */
 void nds_vk_present(void);
+/* a line over the game for a few seconds, as a Switch game shows one (common/gpu/vk/notice.h); the one showing, "" for
+   none */
+void nds_vk_notice(const char* text);
+const char* nds_vk_notice_text(void);
 #endif

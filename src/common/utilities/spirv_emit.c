@@ -1684,6 +1684,18 @@ uint32_t spv_emit_type_struct(SpvEmitter* e, const uint32_t* members, const uint
     return id;
 }
 
+uint32_t spv_emit_type_builtin_block(SpvEmitter* e, const uint32_t* members, const uint32_t* builtins, size_t count) {
+    uint32_t id = spv_emit_id(e);
+    assert(count <= UINT16_MAX - 2);
+    instruction(&e->types, SPV_OP_TYPE_STRUCT, (uint32_t)(count + 2));
+    put(&e->types, id);
+    put_n(&e->types, members, count);
+    for (size_t i = 0; i < count; i++)
+        spv_emit_member_decorate(e, id, (uint32_t)i, SPV_DECORATION_BUILT_IN, &builtins[i], 1);
+    spv_emit_decorate(e, id, SPV_DECORATION_BLOCK, NULL, 0);
+    return id;
+}
+
 uint32_t spv_emit_const_u32(SpvEmitter* e, uint32_t value) {
     uint32_t operands[2] = {spv_emit_type_int(e, 32, 0), value};
     return known(e, SPV_OP_CONSTANT, 2, operands, 2);

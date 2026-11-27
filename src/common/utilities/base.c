@@ -23,6 +23,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -112,6 +113,19 @@ void snx_path_native(char* path) {
 static struct {
     void (*error_sink)(const char* line);
 } g_base;
+void snx_capture_path(char* out, size_t size, const char* prefix) {
+    time_t now = time(NULL);
+    struct tm t;
+#ifdef _WIN32
+    localtime_s(&t, &now);
+#else
+    localtime_r(&now, &t);
+#endif
+    snprintf(out, size, "%scaptures", prefix);
+    (void)snx_mkdirs(out);
+    snprintf(out, size, "%scaptures/screenshot_%04d%02d%02d_%02d%02d%02d", prefix, t.tm_year + 1900, t.tm_mon + 1,
+             t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+}
 void snx_error_sink(void (*sink)(const char* line)) {
     g_base.error_sink = sink;
 }

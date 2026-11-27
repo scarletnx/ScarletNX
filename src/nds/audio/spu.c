@@ -5,7 +5,11 @@
    formats, the ADPCM tables, the pan and volume arithmetic, the master volume. A channel reads its samples from main
    memory where they lie. The capture units keep their registers and capture nothing yet. */
 #include "nds/audio/spu.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -284,4 +288,32 @@ void nds_spu_write(NdsBoard* board, uint32_t address, unsigned bytes, uint32_t v
         case 0x51C: s->capture_length[(offset >> 3) & 1] = value & 0xFFFF; break;
         default: break;
     }
+}
+
+/* ---- save states (runtime/state.c): the hardware's bytes as they are, the samples mixed and not taken too ---- */
+uint64_t nds_spu_state_schema(const NdsBoard* board) {
+    const NdsSpu* s = spu_of((NdsBoard*)board);
+    uint64_t h = SNX_FNV_BASIS ^ sizeof *s;
+    __builtin_dump_struct(s, snx_state_schema_out, &h);
+    __builtin_dump_struct(&s->channel[0], snx_state_schema_out, &h);
+    return h;
+}
+int nds_spu_state_save(const NdsBoard* board, StateIo* io) { return io_put(io, board->spu, sizeof(NdsSpu)); }
+void* nds_spu_state_parse(StateIo* io, char* why, size_t whysize) {
+    NdsSpu* s = malloc(sizeof *s);
+    if (!s)
+        snprintf(why, whysize, "out of memory for the state's sound hardware (%zu bytes)", sizeof *s);
+    else if (io_get(io, s, sizeof *s))
+        snprintf(why, whysize, "its sound hardware's section is damaged or cut short");
+    else if (s->kept_at >= KEPT || s->kept_count > KEPT)
+        snprintf(why, whysize, "its sound hardware keeps %u samples from %u, past the %u it holds", s->kept_count,
+                 s->kept_at, KEPT);
+    else
+        return s;
+    free(s);
+    return NULL;
+}
+void nds_spu_state_install(NdsBoard* board, void* staged) {
+    memcpy(board->spu, staged, sizeof(NdsSpu));
+    free(staged);
 }

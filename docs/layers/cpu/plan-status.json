@@ -2,256 +2,309 @@
   "SPDX-License-Identifier": "GPL-3.0-or-later",
   "copyright": "2026 the ScarletNX contributors",
   "schema": 1,
-  "reviewed_base": "34c0be36",
+  "reviewed_base": "18dcae3ebd",
   "items": {
     "A1": {
-      "status": "unverified",
-      "evidence": []
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/codegen.c",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc",
+        "src/common/cpu/recompiler/x64/x64_codegen.c",
+        "src/common/cpu/recompiler/arm64/arm64_codegen.c",
+        "tests/codegen_test.c",
+        "tests/recompiler_library.c"
+      ],
+      "note": "Done. Discovery matches the ADRP/ADD base, the scaled entry load and the bound (codegen.c:511 jump_table_shape, :617 compare_bound, :756 snx_codegen_jump_table) and adds the cases to the flow (codegen.c:851). x86-64 and arm64 jump through a table of the case labels (mach_codegen.inc:1506-1539 jtab_new; x64_codegen.c:96-98, :462; arm64_codegen.c:91-93, :360) when the function has more than 24 leaders; the RISC back ends define no MG_JTAB and reach the cases through the dispatch block. Tests: codegen_test.c:238-452, recompiler_library.c:144."
     },
     "A2": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/codegen.c",
+        "src/nx/loader/loader.c"
+      ],
+      "note": "Missing. The seeds are the symbols, relative relocations (loader.c:393-401: vtables and callbacks), the text start, hints, .eh_frame ranges and taken addresses (codegen.c:1440-1530). No RTTI or method-table pass and no gap sweep."
     },
     "A3": {
       "status": "unverified",
-      "evidence": []
-    },
-    "A4": {
-      "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/loader/module_a64.c",
+        "src/common/cpu/recompiler/x64/x64_cache.c"
+      ],
+      "note": "Missing. Units are consecutive functions up to unit_instructions (module_a64.c:352-360), so a new function moves later boundaries; the x86-64 unit cache is in memory only (x64_cache.c). The ThinLTO and IR-merge paths of this item went with LLVM. This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "A5": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/runtime/ini.c",
+        "src/nx/loader/module_a64.c",
+        "src/nx/runtime/driver/recompile.c"
+      ],
+      "note": "Missing. ir_branch_profile went with LLVM (ini.c:511) and the native back ends read no profile; --layout is said and has no effect yet, the native back end ordering no functions (recompile.c:859, module_a64.c:321-323), while the linker orders .text.snx_hot.N sections (link_elf.c) and tools/layout.py makes an order."
     },
     "L1": {
       "status": "retired",
-      "evidence": []
+      "evidence": [],
+      "note": "Retired in favor of the hook system, as before."
     },
     "L2": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [],
+      "note": "Missing, and blocked by A5: there is no profile of BLR targets to read. This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "L3": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/x64/x64_codegen.c",
+        "src/nx/loader/module_x64.c"
+      ],
+      "note": "Missing. A dynamic call still loads code_lo, code_hi and disp from CPU before the slot (x64_codegen.c:375-395 calldyn; module_x64.c:344-396 snx_import_dyn). This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "L4": {
-      "status": "unverified",
-      "evidence": []
-    },
-    "J1": {
-      "status": "deferred",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "src/nx/loader/nro_slots.h",
+        "src/nx/hle/services/ldr.c",
+        "src/nx/runtime/guest_jit.c"
+      ],
+      "note": "Partial. An NRO the recompiler found in the RomFS is made ahead of time for a fixed slot, and CPU.disp covers [code_lo, hi) up to the slots (nro_slots.h:3-10; ldr.c:5-9, :130-150; guest_jit.c:617). An NRO mapped anywhere else, or found at run time only, is the JIT's, outside CPU.disp, and a call into it still goes through RtAPI.miss. This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "J2": {
-      "status": "unverified",
-      "evidence": []
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/jit/jit_service.c"
+      ],
+      "note": "Done. A miss thread at the guest thread's priority takes only the pcs a thread waits on; the compile threads go to nice 10, or below normal on Windows (jit_service.c:1360-1384 thread_priority, :1388-1400 worker). This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "J3": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/loader/code_loader.c"
+      ],
+      "note": "Missing. HOST_MACHINE is 0 on RISC-V, LoongArch, MIPS64 and s390x (code_loader.c:68-90). This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "J4": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/loader/module_a64.c",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc",
+        "src/common/cpu/recompiler/x64/x64_codegen.c"
+      ],
+      "note": "Missing. Every AOT unit is made with stale checks (module_a64.c:139), at the entry and after each call (mach_codegen.inc:197-209; x64_codegen.c:425-439). This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "I1": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/runtime/crash.c"
+      ],
+      "note": "Missing. A crash names the recompiled function nearest below the host pc and the offset in it (crash.c:76-99), not the guest instruction; the native objects carry no line table."
     },
     "I2": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/runtime/ini.c",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
+      ],
+      "note": "Missing in the native back ends. abi_contract went with LLVM (ini.c:506). Pinned registers are stored before every call and reloaded after it (mach_codegen.inc:1501-1504 after_call, :2175-2180)."
     },
     "I3": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/aarch64/cpu.h",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
+      ],
+      "note": "Missing. Guest registers stay in host registers inside a function (mach_codegen.inc:2173-2178 choose_pins), but a guest function is still void(CPU*, u64) (cpu.h:96) and every call passes them through CPU."
     },
     "I4": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/aarch64/cpu.h",
+        "src/common/cpu/recompiler/x64/x64_codegen.c"
+      ],
+      "note": "Missing. GuestFn returns nothing (cpu.h:96); the caller compares CPU.pc in memory with pc+4 (x64_codegen.c:425-433 check_return)."
     },
     "I5": {
       "status": "research",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/x64/x64_codegen.c",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
+      ],
+      "note": "Not done: every backward branch still reads CPU.poll, laid out with one taken jump and the slow call out of line (x64_codegen.c:441-450; mach_codegen.inc:181-184, :1631-1659)."
     },
     "I6": {
       "status": "unverified",
-      "evidence": []
-    },
-    "I7": {
-      "status": "implemented",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
-        "tests/llvm_fp_helper_effects.c"
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
       ],
-      "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across one batched vector helper call with zero reloads and checks static synchronization counts. O0 does not use register promotion."
+      "note": "Missing. Flags are reused inside a block's region only; the guest state is in CPU or its pins at every block's start and end (mach_codegen.inc:19-23)."
     },
     "I15": {
       "status": "implemented",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
-        "tests/llvm_vfp_residual.c",
-        "tests/llvm_recpe.c",
-        "tests/llvm_estimates.c",
-        "tests/llvm_unsigned_estimates.c",
-        "tests/llvm_round.c",
-        "tests/llvm_half.c",
-        "tests/llvm_fma_residual.c",
-        "tests/llvm_perf/recpe_candidates.json",
-        "tests/llvm_vfp_compare.c",
-        "tools/profile_cpu.py",
-        "tests/llvm_vfp_batch.c",
-        "tests/llvm_perf/half_widen_math.py",
-        "tests/llvm_vfp_minmax.c",
-        "tests/llvm_perf/half_order_math.py",
-        "tests/llvm_perf/half_round_math.py",
-        "tests/llvm_fp_pointer_chain.c",
-        "tests/llvm_fp_helper_effects.c",
-        "tests/llvm_promote_edges.c",
-        "tests/llvm_fp_cold.c",
-        "docs/history/cpu-translator-progress.md"
+        "src/common/cpu/recompiler/x64/x64_vec.c",
+        "src/common/cpu/recompiler/arm64/arm64_vec.c",
+        "src/common/cpu/recompiler/mach/risc_codegen.inc",
+        "tests/CMakeLists.txt"
       ],
-      "note": "The tested I15 scope is complete on 2026-11-05. Exact vector comparisons, half conversions and estimates, min-max fixups and rounding preserve CPU results and FPSR. Wide exceptional fixups share internal value-only vector functions. O0 and short x86 forms retain original fallbacks where candidates regressed. Batched arithmetic and pure conversion helpers remain wherever no faster exact replacement passed the fixed gate. Source 9485ad5b passes 53 local CPU/tool/document checks and native Linux x86-64, AArch64 and Windows CI, with full suites of 694, 696 and 606 entries and 5, 6 and 11 skipped entries respectively. Baseline-x86 QEMU passes the sharing fixture, 30,112,768 min-max cases and 19,970,048 rounding cases. The final two-warmup/five-pair game comparison passes the unchanged 2-percent CPU-time and FPS non-regression bounds. All twelve runs render without crashes. FPS improvement is unproven, and the full module grows 5.65 percent. Earlier failed gates and rejected candidates remain documented. This does not make all AdvSIMD paths helper-free or establish weak-host performance. macOS CI never acquired a runner. The subsequent upstream integration through b0b0ea5c changes no CPU emitters, passes all 86 selected integration checks including the QEMU sweep and fuzzer, and renders two additional 100-second scene checks without crashes. Those last two runs establish integration, not a new performance comparison."
+      "note": "Done on x86-64 and arm64. x86-64: whole-vector FP with lane guards and one cold helper call per guest instruction, snx_x64_fp_vec (x64_vec.c:446-499, :685-721). arm64: the guest's own SIMD&FP words (arm64_vec.c:71-82). The RISC back ends have no vector values and make AdvSIMD from the Sail's scalar code (risc_codegen.inc:279-282). Tests: native_vfp_* (tests/CMakeLists.txt:1264-1298)."
     },
     "I8": {
       "status": "implemented",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
-        "tests/llvm_recpe.c",
-        "tests/llvm_recpx.c",
-        "tests/llvm_rsqrte.c",
-        "tests/llvm_estimates.c",
-        "tests/llvm_unsigned_estimates.c",
-        "tests/llvm_perf/recpe_candidates.json"
+        "src/common/cpu/recompiler/x64/x64_vec.c",
+        "src/common/cpu/recompiler/arm64/arm64_vec.c",
+        "tests/CMakeLists.txt"
       ],
-      "note": "Exact scalar/vector FRECPE and FRSQRTE cover little-endian x86, including baseline hosts without AVX2, and AArch64 emitter paths. Ordinary reciprocal inputs without AVX2 retain the faster division sequence, while exceptional inputs and square-root estimates use exact table fixups. FRECPX uses integer exponent operations, and half estimates use exact little-endian integer paths. Unsigned AVX2 estimates remain unchanged. Other unproven host lowerings retain exact helpers. Native Linux AArch64 CI at 3b9ffab5 passed the full QEMU sweep and all estimate tests. The local x86-64 sweep and 40,225,792 estimate cases under qemu64 passed. The hybrid passed its fixed synthetic regression gate. No physical old-x86 or native AArch64 performance claim is made."
+      "note": "Done. x86-64 computes FRECPE and FRSQRTE inline for every lane at once where all lanes are normal, the rest in one cold call (x64_vec.c:622-651, :1346-1354); arm64 runs the guest's own word. FRECPX is the Sail's code. Tests: native_recpe, native_recpx, native_rsqrte, native_estimates (tests/CMakeLists.txt:1270-1292)."
     },
     "I9": {
       "status": "implemented",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir_vec.c",
-        "tests/llvm_simd_shift.c"
+        "src/common/cpu/recompiler/x64/x64_vec.c",
+        "tests/CMakeLists.txt"
       ],
-      "note": "Bounded whole-vector rounding/saturating shifts now cover x86 and AArch64 IR. x86 without AVX2 uses constant-stage barrel shifts. All signed-byte counts, widths, aliases and loaders pass the exact tests on x86-64. Native AArch64 and weak-host performance remain unmeasured."
-    },
-    "I10": {
-      "status": "implemented",
-      "evidence": [
-        "src/common/cpu/recompiler/llvm/ir.c",
-        "tests/llvm_fp_env.c"
-      ],
-      "note": "Selectively imports the audited FP-environment leaf from embedded runtime bitcode only in functions with host FP operations. Larger arithmetic and callback helpers remain out of line. The selective import passed 19 paired rounds over six FP kernels with about a 13-percent geometric gain. The checked integer-shift object remains byte-identical. The environment fixture passed native Linux x86-64 and AArch64 CI at 72deb357. A broader import failed its performance gate and was removed. Object cache version 5 invalidates the old pipeline, while ABI 17 remains compatible."
+      "note": "Done. x86-64 makes shifts by register as whole vectors (bytes and halves by products, words by AVX2), lane by lane in general-purpose code where no form exists, with QC (x64_vec.c:1029-1141, :1525). Test: native_simd_shift (tests/CMakeLists.txt:1284)."
     },
     "I11": {
-      "status": "implemented",
+      "status": "in_progress",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir_fp.h",
-        "src/common/cpu/recompiler/llvm/ir_fpu.c",
-        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
-        "tests/llvm_round.c",
-        "tests/llvm_half.c",
-        "tests/llvm_fma_residual.c"
+        "src/common/cpu/recompiler/x64/x64_vec.c",
+        "tools/sailgen/x64_a64.h",
+        "tests/CMakeLists.txt"
       ],
-      "note": "Guarded scalar/dynamic rounding, F16C half conversions and exact FMA residuals preserve values and FPSR. Scalar O0 FMA retains the original sequence because its candidate failed the regression gate. Vector O0/O2 and scalar O2 residuals passed that gate. Native Linux AArch64 CI at 9a7cfd0d passed the full QEMU sweep plus rounding, half conversions and scalar/vector residual tests. Linux x86-64 passed the local full sweep. The I15 continuation completed its separate whole-vector conversion integration checks on 2026-11-05."
+      "note": "Partial. Done: F16C for half conversions (x64_vec.c:789-801) and ROUNDSx for scalar FRINT (sailgen x64_a64.h:257-273). Missing: the residual proof of an FMA's inexact flag; the x86-64 fast paths still wait until FPSR.IXC is set (x64_a64.h:68-80). Test: native_fma_residual (tests/CMakeLists.txt:1296)."
     },
     "I12": {
-      "status": "unverified",
-      "evidence": []
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/arm64/arm64_vec.c",
+        "tools/sailgen/arm64_a64.h",
+        "tests/arm64_fpenv_code.c"
+      ],
+      "note": "Done. arm64 runs the guest's SIMD&FP words as its own under the guest's FPCR, the host FPSR ORed into the guest's after (arm64_vec.c:71-82, :150-170; sailgen arm64_a64.h:373-384). Test: tests/arm64_fpenv_code.c."
     },
     "I13": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "tools/sailgen/mach_a64.h",
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
+      ],
+      "note": "Missing. Each LDXR and STXR is made alone with the monitor (sailgen mach_a64.h:817-845; mach_codegen.inc:1600); no loop becomes one atomic."
     },
     "I14": {
-      "status": "unverified",
-      "evidence": []
+      "status": "implemented",
+      "evidence": [
+        "src/nx/nn/hooks.hook",
+        "src/nx/runtime/settings.txt"
+      ],
+      "note": "Done through the hook system: memcpy, memmove and memset (pure, checkable against the game's code), memcmp and strlen have native handlers (hooks.hook:37-48; settings.txt:1648-1686)."
     },
     "M1": {
-      "status": "unverified",
+      "status": "in_progress",
       "evidence": [
-        "tests/gnuabi/litmus.c",
         "tests/gnuabi_litmus.py",
-        "tests/litmus/README.md"
+        "tests/litmus/README.md",
+        "tools/sailgen/arm64_a64.h"
       ],
-      "note": "The fixture and the driver cover store buffering, message passing with DMB ISH, message passing with STLR and LDAR, message passing with the split barrier DMB ISHST and DMB ISHLD, weak read coherence on three threads, and a plain load in a spin loop; tests/litmus/ states the same tests for herd7. Three CTest entries carry it: gnuabi_litmus, which probes the build's C compiler and then clang for one that emits an AArch64 object and mold and then LLD by linking, rather than looking a name up, gnuabi_litmus_lld, which forces LLD so both linkers are covered where both are installed, and gnuabi_litmus_self, which checks the driver's own decisions and needs no toolchain, so it runs on every host. The Linux x86-64 and AArch64 jobs install Clang, LLD and mold and run the first two. The guest fixtures are registered under if (NOT WIN32), so Windows x86-64 or ARM64 does not run the guest half yet, and it has not run on any such host so far, so no outcome of a translated program is recorded here. Load buffering, IRIW, message passing with an address dependency, and the dmb ishst and STLR fixes are open."
+      "note": "Partial. Done: store buffering, message passing (DMB, STLR/LDAR, split barrier), WRC and the spin load (gnuabi_litmus.py:50-81; tests/litmus/, five herd7 tests), and DMB ISHST as dmb ishst on arm64 (sailgen arm64_a64.h:371). Missing: load buffering, IRIW, message passing with an address dependency."
     },
     "M2": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/memory/mem.c"
+      ],
+      "note": "Missing. The reservation is the largest tier the host gives (mem.c:1048-1084) with no guard past it, and there is no masking setting."
     },
     "M3": {
       "status": "research",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/mach/mach_codegen.inc",
+        "src/nx/memory/mem.c"
+      ],
+      "note": "Not done for recompiled code: it keeps the guest memory base in a register (mach_codegen.inc:85 mempin). The identity reservation exists for NCE only (mem.c:1087-1119)."
     },
     "S1": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/common/cpu/recompiler/mach/mach_codegen.inc"
+      ],
+      "note": "Missing. An SVC syncs the pins as a call does (mach_codegen.inc:2107, :2137, :2174)."
     },
     "R1": {
-      "status": "unverified",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "src/gnuabi/kernel/signals.c",
+        "tests/gnuabi/signals.c",
+        "tests/gnuabi_threads.py"
+      ],
+      "note": "Partial. Asynchronous signals have frames, masks, sigaltstack, SA_RESTORER and rt_sigreturn (signals.c:1-8; test tests/gnuabi/signals.c through gnuabi_threads.py). A fault in guest code reaches gnu_signal_fault only from src/android/bridge/hle_signal.c:333, and needs I1 for its pc."
     },
     "R2": {
-      "status": "research",
-      "evidence": []
+      "status": "implemented",
+      "evidence": [
+        "src/nx/runtime/nce/nce.h",
+        "src/nx/runtime/nce/nce.c",
+        "tests/nce_patch.c",
+        "tests/nce_module.c",
+        "tests/nce_host.c"
+      ],
+      "note": "Done as NCE on AArch64 Linux and Android: the game's code runs at its own addresses, patched words call the runtime, and a signal stops it for CPU.poll (nce.h:3-11; nce.c:246-262). Tests: nce_patch.c, nce_module.c, nce_host.c."
     },
     "D1": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "src/nx/runtime/driver/recompile.c"
+      ],
+      "note": "Missing. Hints are read at the next recompile (recompile.c:194-231); the launcher offers none. This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "T1": {
       "status": "unverified",
-      "evidence": []
+      "evidence": [
+        "tests/native_bench.c"
+      ],
+      "note": "Missing. native_bench times the native back end's code (native_bench.c:3-5) and has no native baseline."
     },
     "T2": {
-      "status": "unverified",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "src/nx/runtime/guest_stats.h",
+        "src/common/cpu/recompiler/jit/jit_service.h",
+        "src/nx/runtime/guest_jit.c"
+      ],
+      "note": "Partial. Done: misses, SVCs, hook calls and thread time in log lines every 600 presents (guest_stats.h:20-27, :66) and the JIT batch statistics (jit_service.h:159-166). Missing: the wait per miss outside Tracy (guest_jit.c:407-410), calls into NRO code, and counters compiled into the module."
     },
     "T3": {
-      "status": "implemented",
+      "status": "unverified",
       "evidence": [
-        "src/common/cpu/recompiler/llvm/ir.h",
-        "src/common/cpu/recompiler/llvm/ir_promote.c",
-        "src/common/cpu/recompiler/llvm/ir_emit.c",
-        "src/common/cpu/recompiler/llvm/ir_codegen.c",
-        "src/common/cpu/recompiler/llvm/ir_state.c",
-        "src/nx/loader/module_llvm.c",
-        "tests/llvm_fp_helper_effects.c",
-        "tests/llvm_module.c"
+        "src/nx/runtime/ini.c"
       ],
-      "note": "The CLI emits per-unit counts and one-function dumps. Two integer-only whole-module fixtures check all 19 counter fields against hand counts, both in one unit and split at function boundaries. The CLI test verifies leaders, flag origins, promoted registers and IR before and after promotion. Directed helper fixtures separately check FP/vector/guest/indirect call classification. These checks passed in native Linux x86-64 and AArch64 CI at 72deb357."
+      "note": "Missing in the native back ends: ir_stats and ir_dump_pc went with LLVM's IR (ini.c:509-510), and the native recompile prints no per-unit counts."
     },
     "T4": {
-      "status": "unverified",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/loader/gdb_jit.c",
+        "src/nx/runtime/settings.txt"
+      ],
+      "note": "Partial. With perf_map, each JIT load gets one line, jit_<address>, for its whole text (gdb_jit.c:104-149; settings.txt:2234-2241). Guest functions inside a JIT unit are not named."
     },
     "T5": {
       "status": "implemented",
       "evidence": [
-        "tests/llvm_block_fuzz.c",
-        "tests/CMakeLists.txt",
-        "tests/llvm_block_fuzz_matrix.py"
+        "tests/native_block_fuzz.c",
+        "tests/CMakeLists.txt"
       ],
-      "note": "The generated-decoder-row grammar covers 81 safe integer/SIMD/FP families with varied branches, bounded loops, direct/indirect/tail calls, memory order and aligned exclusive retries. O0/O2, AOT/JIT, portable, hooks and volatile configurations compare complete states against QEMU. Two planted flag-origin and exclusive-update defects are detected. The four-seed matrix checks 10,240 states in 20 configurations. All these tests passed in native Linux x86-64 and AArch64 CI at 72deb357. The grammar is bounded and is not exhaustive sequence coverage."
+      "note": "Done on the native back ends: native_block_fuzz and its modes (tests/CMakeLists.txt:3841-3862)."
     },
     "T6": {
-      "status": "implemented",
+      "status": "in_progress",
       "evidence": [
-        "docs/dev/architecture.md",
-        "docs/history/divergences.md",
-        "docs/dev/roadmap.md",
-        "docs/hosts/riscv-loongarch.md",
-        "docs/platforms/nx/nro.md",
-        "docs/platforms/nx/nro.md",
-        "docs/user/aot-packs.md",
-        "src/common/cpu/recompiler/rtlib/rtlib.c",
-        "src/common/cpu/recompiler/jit/jit_cache.h",
-        "src/common/cpu/recompiler/llvm/ir_profile.c",
-        "src/common/cpu/recompiler/llvm/ir_ldst.c"
+        "src/common/cpu/aarch64/cpu.h",
+        "tools/sailgen/mach_a32.h",
+        "tests/arm_x64.c",
+        "tests/recompiler_backends.c",
+        "tests/CMakeLists.txt"
       ],
-      "note": "The listed documentation claims were checked against current source. No runtime semantics changed by these documentation corrections."
+      "note": "Partial. The docs, and the comments of the CPU, sailgen, the harnesses' messages and the tests' CMake, describe the native back ends. A grep still finds LLVM in 131 files of src/, tests/ and tools/sailgen beyond its recorded ends, TableGen records, llvm-mc and the deprecated keys, many of them the old caches' cleanup: not read one by one. arm_x64.c and recompiler_backends.c keep a side 0, LLVM's, that runs nothing."
     }
   }
 }

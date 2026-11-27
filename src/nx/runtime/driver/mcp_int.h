@@ -1,11 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the MCP server's files share (mcp.c, mcp_edenprobe.c, mcp_gdb.c): a growing text, the edenprobe tools and the GDB
+/* What the MCP server's files share (mcp.c, mcp_amberlith.c, mcp_gdb.c): a growing text, the Amberlith tools and the GDB
    tools */
 #ifndef SNX_MCP_INT_H
 #define SNX_MCP_INT_H
 #include "common/utilities/common.h" /* SnxU64 */
 #include <stddef.h>
+#include <string.h>
+
+/* the folder of the card the probe's NRO reads its mode from: "amberlith" (sdmc:/amberlith) for Amberlith, from 1.0.0,
+   whose NRO names it, else "edenprobe" (sdmc:/edenprobe), the one card a build from before 1.0.0 knows. As
+   scripts/amberlith.py picks it */
+static inline const char* mcp_probe_card(const unsigned char* nro, size_t size) {
+    static const char amberlith[] = "sdmc:/amberlith";
+    for (size_t i = 0; size >= sizeof amberlith - 1 && i <= size - (sizeof amberlith - 1); i++)
+        if (!memcmp(nro + i, amberlith, sizeof amberlith - 1)) return "amberlith";
+    return "edenprobe";
+}
 
 /* text grown as it is written, p NULL until then; lines counts what a tool chose to count */
 typedef struct {
@@ -18,24 +29,24 @@ void mcp_put(Text* t, const char* p);
 void mcp_put_num(Text* t, unsigned long v);
 void mcp_put_hex(Text* t, SnxU64 v); /* lower case, no prefix */
 
-/* The edenprobe tools (mcp_edenprobe.c): each returns its answer, malloc'd, or NULL with why in err */
+/* The Amberlith tools (mcp_amberlith.c): each returns its answer, malloc'd, or NULL with why in err */
 
-/* A service case's mechanical parts written into the edenprobe checkout, every file or none: the case's enum entry
+/* A service case's mechanical parts written into the Amberlith checkout, every file or none: the case's enum entry
    and row, its judge and the judge's reference check (both to be filled in), the device side asking nothing yet, and
    its suite's row in ui.c when the suite is new. The answer lists what was written and what is left to write */
-char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char* id, const char* name,
+char* mcp_amberlith_scaffold(const char* checkout, const char* suite, const char* id, const char* name,
                              const char* tier, long issue, Text* err);
 /* make -f host.mk host-run in the checkout: the judges and their reference checks, on the host compiler. The
    answer: the lines about suite, the failures and the end */
-char* mcp_edenprobe_check(const char* checkout, const char* suite, Text* err);
+char* mcp_amberlith_check(const char* checkout, const char* suite, Text* err);
 /* The NRO recompiled by self (this program) into cache (once while the NRO is unchanged) and run headless with the
    mode words until its summary, relaunched after a crash: the report's lines for filter ("suite" or "suite: name"),
    and its summary */
-char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, const char* mode, const char* filter,
+char* mcp_amberlith_run(const char* self, const char* cache, const char* nro, const char* mode, const char* filter,
                         Text* err);
-/* The case's lines in ScarletNX's report and the reference's (another emulator's, a console's), and the edenprobe pull
+/* The case's lines in ScarletNX's report and the reference's (another emulator's, a console's), and the Amberlith pull
    request's text: from which issue, what each machine answered, the tests run, and what a case may not hold */
-char* mcp_edenprobe_finding(long issue, const char* suite, const char* name, const char* ours, const char* theirs,
+char* mcp_amberlith_finding(long issue, const char* suite, const char* name, const char* ours, const char* theirs,
                             const char* source, Text* err);
 
 /* The GDB tools (mcp_gdb.c, UNIX only): one GDB connected to a game's GDB stub, each returning its answer, malloc'd,

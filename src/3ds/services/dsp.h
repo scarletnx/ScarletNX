@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_CTR_DSP_SERVICE_H
 #define SNX_CTR_DSP_SERVICE_H
+#include "3ds/audio/dsp.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include <stddef.h>
 #include <stdint.h>
 struct SnxCtrProcess;
 /* Before the first dsp::DSP session: makes the HLE DSP, whose frames run from then on */
@@ -14,4 +16,7 @@ void snx_ctr_dsp_frame(struct SnxCtrProcess* p, uint64_t now_ns);
    SD has none (the HLE DSP never runs the component) */
 void snx_ctr_dsp_component_file(struct SnxCtrProcess* p);
 void snx_ctr_dsp_close(struct SnxCtrProcess* p);
+/* the DSP of a save state, read into a core of its own that raises p's interrupts (audio/dsp.h's state parse) */
+struct StateIo;
+SnxCtrDsp* snx_ctr_dsp_state_open(struct SnxCtrProcess* p, struct StateIo* io, char* why, size_t whysize);
 #endif

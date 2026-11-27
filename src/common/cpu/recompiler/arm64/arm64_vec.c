@@ -76,9 +76,9 @@ static int vdup(SgCtx* g, unsigned size, int a, int e) {
    rest of the register it leaves as the architecture says. Under the guest's FPCR in the host's, the host's FPSR
    ORed into the guest's after it (SGX_M_FPENTER, SGX_M_FPLEAVE), it computes what the guest's would, its exceptions'
    flags and QC included; FCMP's and FCCMP's flags the guest's NZCV, and FCCMP's and FCSEL's conditions on the guest's
-   flags in the host's (flags_into_host). Not taken: a clause of a general-purpose register (UMOV, INS, FMOV, the conversions to and
-   from one), or of a feature
-   the host lacks (g_host_a64) */
+   flags in the host's (flags_into_host); a clause whose Sail code neither reads FPCR nor writes FPSR (sailgen's fp)
+   runs with no switch. Not taken: a clause of a general-purpose register (UMOV, INS, FMOV, the conversions to and from
+   one), or of a feature the host lacks (g_host_a64) */
 
 /* the clause of word: the first of the table whose fixed bits it has, -1 for none */
 static int vclause(SnxU32 word) {
@@ -86,6 +86,14 @@ static int vclause(SnxU32 word) {
     for (k = 0; k < sge_a64_count; ++k)
         if ((word & sge_a64_table[k].mask) == sge_a64_table[k].value) return (int)k;
     return -1;
+}
+/* whether the Sail's code of word may read FPCR or write FPSR: that of a clause whose fixed bits it has (sailgen's fp),
+   the first one's or a later one's, which the first's decode may send it to (SEE: an FCVTZS of immh 0 is an FMOV) */
+static int vfp(SnxU32 word) {
+    unsigned k;
+    for (k = 0; k < sge_a64_count; ++k)
+        if ((word & sge_a64_table[k].mask) == sge_a64_table[k].value && sge_a64_table[k].fp) return 1;
+    return 0;
 }
 /* the word with its fields Rd, Rn, Rm, Ra the registers r[0..3] (imm: the word, bit 32 + k where field k is one, and
    bit 35 where Rm is a by-element form's of 4 bits, which V7 stands for) */
@@ -167,7 +175,11 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     long long imm = word;
     const char* name;
     SgXIns* i;
-    if (k < 0 || strcmp(sge_a64_table[k].family, "DataProcFPSIMD") || (insn->feature & ~g_host_a64)) return 0;
+    if (k < 0 || strcmp(sge_a64_table[k].family, "DataProcFPSIMD") || (insn->feature & ~g_host_a64) ||
+        u->options->sail_alone)
+        return 0;
+    /* FMOV (vector, immediate) of halves, whose words the table has first as FCVTZS of a fixed point with immh 0 */
+    if (insn->op == SNX_A64_OP_FMOVI_v_h) return 0;
     name = sge_a64_table[k].name;
     if ((!strcmp(name, "tbl_advsimd") || !strcmp(name, "tbx_advsimd")) && (word >> 13 & 3)) {
         /* a table of len + 1 registers from Rn, which the host's need not hold in a row: TBL (or TBX, of Vd) of the
@@ -255,6 +267,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             unsigned lo = sge_a64_table[k].fields[f].lo, width = sge_a64_table[k].fields[f].width;
             /* TBL's and TBX's table of len + 1 registers from Rn: consecutive ones, which the host's need not be */
             if (!strcmp(fn, "len") && (word >> lo & 3)) return 0;
+            if (!strcmp(fn, "sf")) return 0; /* a conversion's general-purpose register: Rd or Rn is none of the host's */
             if (!strcmp(fn, "M")) has_m = 1;
             if (!strcmp(fn, "sz") || (!strcmp(fn, "size") && (word >> lo & 3) >= 2)) wide = 1;
             if (strcmp(fn, "Rd") && strcmp(fn, "Rn") && strcmp(fn, "Rm") && strcmp(fn, "Ra")) {
@@ -286,6 +299,14 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (!strcmp(name, "fcsel_float")) {
         flags_into_host(g); /* its condition the guest's flags' */
         flags = X->flags_ins;
+    }
+    if (!vfp(word)) {
+        /* the Sail's code reads no FPCR and writes no FPSR: the host's FPCR as it is, and nothing of it kept but its
+           value */
+        r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        X->ins[X->v[r].def].flags_from = flags; /* FCSEL's, as below */
+        sg__V_write(g, rd, sgx_xval(128, r));
+        return 1;
     }
     fp_enter(g);
     r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);

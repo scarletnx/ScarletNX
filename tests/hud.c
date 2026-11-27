@@ -6,7 +6,7 @@
    counted in one */
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "common/utilities/slide.h"
 #include "gui_theme_colors.h"
 #include <assert.h>

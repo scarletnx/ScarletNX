@@ -7,6 +7,7 @@
 #include "android/bridge/hle.h"
 #include "android/bridge/linker.h"
 #include "common/utilities/common.h"
+#include "common/utilities/old_llvm_caches.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,14 @@ bool android_native_start(const char* library_dir, char* error, size_t error_siz
     char* cache_root = snx_user_dir(SNX_USER_CACHE);
     char* cache = cache_root ? snx_path_join(cache_root, "android-jit") : NULL;
     free(cache_root);
+    if (cache) { /* what LLVM left there: said with where it is deleted, never deleted here */
+        SnxLlvmCaches old = {0};
+        char said[1400];
+        if (!snx_llvm_caches_library(cache, &old) &&
+            snx_llvm_caches_said(&old, cache, SNX_LLVM_CACHES_WHERE, said, sizeof said))
+            fprintf(stderr, "scarletnx-android: %s\n", said);
+        snx_llvm_caches_free(&old);
+    }
     bool ok = bridge_init(cache, error, error_size);
     free(cache);
     if (!ok) return false;

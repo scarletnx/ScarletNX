@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # settingsgen (tools/settingsgen/settingsgen.c) generates the settings from src/nx/runtime/settings.txt: snx_settings.h
-# (struct Settings, g_settings), their tables and LLVM's (its pipelines' passes, read from what the LLVM install's opt
-# prints for -O0 to -Oz, and the options its C API sets, read from its headers) and the Vulkan extensions' (checked
-# against the Khronos registry, vk.xml of the Vulkan-Headers the renderer builds with). It runs during the build, so a
+# (struct Settings, g_settings), their tables and the Vulkan extensions' (checked against the Khronos registry, vk.xml of
+# the Vulkan-Headers the renderer builds with). It runs during the build, so a
 # cross build also builds it for the machine doing the build (SNX_HOST_CC), as svcgen.cmake does for svcgen.
 #
 #   snx_settings          g_settings, the launcher's and the recompiler's tables, ini.c: the launcher, the driver;
 #                         and settings_args.c, the settings' names on a command line (settings_arg): every driver
 #   snx_settings_runtime  the game's .ini's tables, a file each, and its sections: the set functions are the runtime's
-#   SNX_SETTINGS_LLVM     settings_llvm.c, for the LLVM backend's side of the driver
 include_guard(GLOBAL)
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
@@ -58,58 +56,6 @@ if(ANDROID OR IOS)
 endif()
 set(snx_settings_args "")
 
-# LLVM's: the headers of the LLVM the backend links, and the pipelines its opt prints (llvm_opt.cmake). An opt of
-# another version, even in its last number, prints pipelines that are not this LLVM's: it is refused, said, and gives
-# no pass toggles (the passes are LLVM's own then), as none does (a cross build's target opt cannot run here)
-if(SNX_BUILD_NX)
-    include("${CMAKE_CURRENT_LIST_DIR}/llvm.cmake")
-    list(APPEND snx_settings_args --llvm-include "${SNX_LLVM_INCLUDE_DIR}")
-    string(REGEX MATCH "^[0-9]+" snx_llvm_major "${SNX_LLVM_VERSION}")
-    set(snx_opt_hints "")
-    if(SNX_LLVM_CONFIG)
-        execute_process(COMMAND "${SNX_LLVM_CONFIG}" --bindir OUTPUT_VARIABLE snx_llvm_bindir
-                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-        list(APPEND snx_opt_hints "${snx_llvm_bindir}")
-    endif()
-    if(LLVM_TOOLS_BINARY_DIR)
-        list(APPEND snx_opt_hints "${LLVM_TOOLS_BINARY_DIR}")
-    endif()
-    find_program(SNX_LLVM_OPT NAMES opt opt-${snx_llvm_major} HINTS ${snx_opt_hints}
-                 DOC "opt of the LLVM the backend links, which prints its pipelines for the LLVM settings")
-    # the target the backend makes code for, LLVMGetDefaultTargetTriple of the LLVM it links (ir.c): the pipelines
-    # carry the passes a target adds (AArch64's loop-idiom-vectorize), which the host's opt would not print on its own
-    set(snx_llvm_triple "")
-    if(SNX_LLVM_CONFIG)
-        execute_process(COMMAND "${SNX_LLVM_CONFIG}" --host-target OUTPUT_VARIABLE snx_llvm_triple
-                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    elseif(LLVM_TARGET_TRIPLE)
-        set(snx_llvm_triple "${LLVM_TARGET_TRIPLE}")
-    elseif(LLVM_HOST_TRIPLE)
-        set(snx_llvm_triple "${LLVM_HOST_TRIPLE}")
-    endif()
-    set(snx_pipelines "${snx_settings_out}/pipelines.txt")
-    set(snx_pipelines_text "")
-    if(SNX_LLVM_OPT AND snx_llvm_triple STREQUAL "")
-        message(WARNING "LLVM settings: the LLVM's target triple is unknown (no llvm-config --host-target, no "
-                        "LLVM_TARGET_TRIPLE), so LLVM Internals has no pass toggles")
-    elseif(SNX_LLVM_OPT)
-        include("${CMAKE_CURRENT_LIST_DIR}/llvm_opt.cmake")
-        snx_llvm_pipelines("${SNX_LLVM_OPT}" "${SNX_LLVM_VERSION}" "${snx_llvm_triple}" "${snx_settings_out}"
-                           snx_pipelines_text snx_opt_why)
-        if(NOT snx_opt_why STREQUAL "")
-            message(WARNING "LLVM settings: ${snx_opt_why}")
-        endif()
-    endif()
-    if(snx_pipelines_text STREQUAL "")
-        message(STATUS "LLVM settings: no opt of LLVM ${SNX_LLVM_VERSION} runs here, so LLVM Internals has no pass "
-                       "toggles")
-    else()
-        message(STATUS "LLVM settings: the passes of ${SNX_LLVM_OPT}'s pipelines")
-    endif()
-    file(CONFIGURE OUTPUT "${snx_pipelines}" CONTENT "${snx_pipelines_text}")
-    list(APPEND snx_settings_args --pipelines "${snx_pipelines}")
-endif()
-
 # the Vulkan extensions' settings checked against the Khronos registry, which gives their help. A build without the
 # Vulkan-Headers (the tools alone) makes the same settings, unchecked and with less help
 set(snx_vk_registry "")
@@ -145,12 +91,12 @@ foreach(line IN LISTS snx_settings_tables)
     endif()
 endforeach()
 list(TRANSFORM snx_settings_runtime_files PREPEND "${snx_settings_out}/")
-set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_llvm.c settings_args.c)
+set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_args.c)
 list(TRANSFORM snx_settings_files PREPEND "${snx_settings_out}/" OUTPUT_VARIABLE snx_settings_outputs)
 list(APPEND snx_settings_outputs ${snx_settings_runtime_files})
 add_custom_command(OUTPUT ${snx_settings_outputs}
     COMMAND snx-settingsgen --out "${snx_settings_out}" ${snx_settings_args} "${snx_settings_spec}"
-    DEPENDS snx-settingsgen "${snx_settings_spec}" $<$<BOOL:${SNX_BUILD_NX}>:${snx_pipelines}> ${snx_vk_registry}
+    DEPENDS snx-settingsgen "${snx_settings_spec}" ${snx_vk_registry}
             "${snx_settings_bans}" "${snx_settings_hooks}"
     COMMENT "Generating the settings" VERBATIM)
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
@@ -181,4 +127,3 @@ if(SNX_VITA_LOCKSTEP)
     target_compile_definitions(snx_settings_runtime PRIVATE SNX_VITA_LOCKSTEP=1)
 endif()
 target_link_libraries(snx_settings_runtime PUBLIC snx_settings)
-set(SNX_SETTINGS_LLVM "${snx_settings_out}/settings_llvm.c")

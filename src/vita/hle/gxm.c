@@ -11,6 +11,9 @@
 #include "vita/gpu/gxp.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/usse.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <math.h>
@@ -1392,4 +1395,105 @@ uint32_t vita_gxm_render_target_get_driver_mem_block(VitaProcess* p, VitaThread*
     (void)t, (void)target;
     if (out) vita_write32(p, out, 0);
     return 0;
+}
+
+/* ---- save states (vita/runtime/state.c) ----
+   sceGxm's state as it is, but for the renderer's (its shaders and objects, which a load makes again from the GXPs in
+   guest memory, and its device's serials: a save waits for the GPU, so what it notes is written and its display queue
+   drawn). A scene being drawn is held by the GPU's recording, which a state can't hold: the save is refused then */
+uint64_t vita_gxm_state_schema(void) {
+    static const VitaGxm g; /* only walked */
+    uint64_t h = SNX_FNV_BASIS ^ sizeof g;
+    __builtin_dump_struct(&g, snx_state_schema_out, &h);
+    __builtin_dump_struct(&g.vertex[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&g.fragment[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&g.targets[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&g.context.textures[0], snx_state_schema_out, &h);
+    return h;
+}
+int vita_gxm_state_save(VitaProcess* p, StateIo* io, char* why, size_t whysize) {
+    VitaGxm* g = p->gxm;
+    uint8_t present = g != NULL;
+    if (g && g->context.used && g->context.in_scene) {
+        snprintf(why, whysize,
+                 "the game is drawing a scene (sceGxmBeginScene with no sceGxmEndScene yet), which the GPU "
+                 "holds: a frame later it can be saved");
+        return -1;
+    }
+    if (g) {
+        vita_render_finish(p);
+        if (!vita_render_idle(p, true)) {
+            snprintf(why, whysize, "the GPU didn't finish the game's work (its device was lost)");
+            return -1;
+        }
+        notifications_poll(p);
+    }
+    VitaGxm* c = g ? malloc(sizeof *c) : NULL;
+    if (g && !c) {
+        snprintf(why, whysize, "out of memory for a copy of sceGxm's state (%zu bytes)", sizeof *c);
+        return -1;
+    }
+    if (c) {
+        memcpy(c, g, sizeof *c); /* its padding too, which goes in the file */
+        for (unsigned i = 0; i < GXM_PROGRAMS; ++i) c->vertex[i].shader = NULL;
+        for (unsigned i = 0; i < GXM_FRAGMENT_PROGRAMS; ++i) c->fragment[i].shader = NULL;
+        for (unsigned i = 0; i < GXM_NOTES; ++i) c->notes[i].serial = 0;
+        for (unsigned i = 0; i < GXM_DISPLAY_QUEUE; ++i) c->queue[i].serial = 0;
+        c->render = NULL;
+    }
+    int r = io_put(io, &present, 1) || (c && io_put(io, c, sizeof *c)) ? -1 : 0;
+    if (r) snprintf(why, whysize, "sceGxm's state couldn't be written");
+    free(c);
+    return r;
+}
+/* a state's sceGxm, in an allocation of its own, which a process without one takes: NULL when the state has none */
+typedef struct {
+    VitaGxm* gxm;
+} GxmStaged;
+void* vita_gxm_state_parse(StateIo* io, char* why, size_t whysize) {
+    GxmStaged* s = calloc(1, sizeof *s);
+    uint8_t present = 0;
+    if (!s || io_get(io, &present, 1) || (present && !(s->gxm = malloc(sizeof *s->gxm)))) {
+        snprintf(why, whysize,
+                 s ? "its sceGxm section is damaged, or no memory is left for it (%zu bytes)"
+                   : "out of memory for the state's sceGxm (%zu bytes)",
+                 sizeof(VitaGxm));
+        free(s);
+        return NULL;
+    }
+    const VitaGxm* g = s->gxm;
+    if (g && io_get(io, s->gxm, sizeof *s->gxm))
+        snprintf(why, whysize, "its sceGxm section is damaged or cut short");
+    else if (g &&
+             (g->note_count > GXM_NOTES || g->queue_count > GXM_DISPLAY_QUEUE || g->queue_head >= GXM_DISPLAY_QUEUE))
+        snprintf(why, whysize, "its sceGxm state is damaged: %u notes (%u at most), %u queued from %u (%u at most)",
+                 g->note_count, GXM_NOTES, g->queue_count, g->queue_head, GXM_DISPLAY_QUEUE);
+    else
+        return s;
+    vita_gxm_state_drop(s);
+    return NULL;
+}
+void vita_gxm_state_drop(void* staged) {
+    GxmStaged* s = staged;
+    if (s) free(s->gxm);
+    free(s);
+}
+void vita_gxm_state_install(VitaProcess* p, void* staged) {
+    GxmStaged* s = staged;
+    vita_render_free(p); /* the running game's shaders and objects, its device idle */
+    if (!s->gxm) {
+        vita_gxm_free(p);
+        vita_gxm_state_drop(s);
+        return;
+    }
+    if (p->gxm) {
+        memcpy(p->gxm, s->gxm, sizeof *p->gxm);
+        free(s->gxm);
+    } else
+        p->gxm = s->gxm;
+    free(s);
+    p->gxm->render = NULL;
+    if (!p->gxm->initialized || !vita_render_init(p)) return;
+    for (unsigned i = 0; i < GXM_MAPPINGS; ++i)
+        if (p->gxm->mappings[i].size) vita_render_map(p, p->gxm->mappings[i].address, p->gxm->mappings[i].size);
 }

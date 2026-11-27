@@ -18,4 +18,12 @@ const struct NdsGpu3D* nds_gpu3d_state(const NdsBoard* board);
 void nds_gpu3d_vblank(NdsBoard* board);
 /* line 215: the frame's polygons are drawn, with the textures memory holds now */
 void nds_gpu3d_render(NdsBoard* board);
+/* Save states (runtime/state.c): the engine into io, 0 or -1 with why; its layout's hash; a state's engine read and
+   checked into a copy (NULL with why), which install puts in the running engine's place and drop frees unused */
+struct StateIo;
+uint64_t nds_gpu3d_state_schema(const NdsBoard* board);
+int nds_gpu3d_state_save(const NdsBoard* board, struct StateIo* io, char* why, size_t whysize);
+void* nds_gpu3d_state_parse(struct StateIo* io, char* why, size_t whysize);
+void nds_gpu3d_state_install(NdsBoard* board, void* staged);
+void nds_gpu3d_state_drop(void* staged);
 #endif

@@ -494,6 +494,11 @@
         "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_version.h",
         "version": "v2.14.16"
     },
+    "test-references": {
+        "hash": "5176c266053950b9fcc5c11e23172f42020b3941e61b471577600afed50c76cb0371573ccf5fd6b19ad77a26d0d3f8c31abe2430db6ebd12a5f9a9977ce2e62d",
+        "repo": "scarletnx/test-references",
+        "version": "052bd88a1d3cb57ce344147938ef09a7ec4a974d"
+    },
     "tracy": {
         "hash": "a274fbb62ec25ab9b6025eeeb6e0458ba282fe61509dcd0daf824bdbcf3215c25eb992271d33cc88544068f83e00d791833e980eed7c8f4a1cd3ef71841cf38e",
         "repo": "wolfpld/tracy",

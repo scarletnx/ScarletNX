@@ -2432,7 +2432,7 @@ static char* recompile_settings(void) {
     return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
                       "Graphics\tresolution\t1\tfloat\t0.25\t16\tInternal 3D resolution\t\t\n"
                       "Performance\tnce\t1\tint\t0\t1\tThe game's code runs natively\tNCE\t0=Off|1=On\n"
-                      "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n");
+                      "Debug\tcpu_extensions\t0\tint\t0\t1\tNewer CPU extensions\tCPU extensions\t0=Off|1=On\n");
 }
 static int SDLCALL hang(void* unused) {
     (void)unused;
@@ -4775,6 +4775,263 @@ static void download_driver(App* app, const char* temporary) {
     free(zip);
     app->https_get = NULL;
 }
+/* Settings > App's Check for updates: the test's GitHub, its answer as each check sets it, its asks counted */
+static struct {
+    int asked;
+    int status;
+    const char* body;
+    bool fails;
+} g_nightly_net;
+static int nightly_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    memset(out, 0, sizeof *out);
+    ++g_nightly_net.asked;
+    assert(!strcmp(url, GUI_NIGHTLY_LATEST) && o && o->accept && strstr(o->accept, "github"));
+    if (g_nightly_net.fails) {
+        snprintf(why, size, "Could not resolve host: api.github.com (after 30 s)");
+        return -1;
+    }
+    out->status = g_nightly_net.status;
+    out->body = snx_strdup(g_nightly_net.body);
+    out->size = strlen(out->body);
+    return 0;
+}
+/* app.ini holds line, and no other check_updates: a key app.ini reads is written once, never also kept as one it does
+   not */
+static bool app_ini_has(const App* app, const char* line) {
+    size_t size;
+    char *kept = (char*)snx_read_file(app->app_file, &size), *first = kept ? strstr(kept, "\ncheck_updates =") : NULL;
+    bool has = first && strstr(kept, line) && !strstr(first + 1, "\ncheck_updates =");
+    free(kept);
+    return has;
+}
+/* the question shown whole as a computer's window and a phone's show it, in the middle and at the foot (YoRHa's
+   dialog): its rows in the box, the last that fits sliding what is left, and every choice under them; at a computer's
+   1280x720 (2x), a 1080x2340 phone's as the launcher turns it (2340x1080, landscape only) and held upright, each at the
+   scale a start gives it (Android's 2.75 density). The theme's own, each a picture NAME-WxH.bmp in SNX_GUI_SHOTS, a
+   folder, when it is set */
+static void ask_shown(App* app, const char* name) {
+    static const struct {
+        int w, h;
+        float density;
+        int rows;
+    } sizes[] = {{1280, 720, 1.0f, GUI_AUTO_ROWS},
+                 {2340, 1080, 2.75f, GUI_AUTO_ROWS_PHONE},
+                 {1080, 2340, 2.75f, GUI_AUTO_ROWS_PHONE}};
+    const char* dir = getenv("SNX_GUI_SHOTS");
+    int w, h, size = app->menu.text_size, dialog = app->theme.dialog;
+    assert(SDL_GetWindowSize(app->window, &w, &h) && dialog != GUI_DIALOG_YORHA);
+    for (size_t i = 0; i < SDL_arraysize(sizes); ++i) {
+        assert(SDL_SetWindowSize(app->window, sizes[i].w, sizes[i].h));
+        SDL_SyncWindow(app->window);
+        app->menu.text_size = pick_auto_scale(sizes[i].density, sizes[i].h, sizes[i].rows);
+        for (int yorha = 0; yorha < 2; ++yorha) {
+            GuiChoices c;
+            GuiRect rects[UI_CHOICES_ITEMS];
+            GuiRect over;
+            int count;
+            app->theme.dialog = yorha ? GUI_DIALOG_YORHA : dialog;
+            render(app);
+            if (dir && !yorha) {
+                char file[1024];
+                SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+                snprintf(file, sizeof file, "%s/%s-%dx%d.bmp", dir, name, sizes[i].w, sizes[i].h);
+                assert(image && SDL_SaveBMP(image, file));
+                SDL_DestroySurface(image);
+            }
+            over = choices_over(app);
+            count = ask_place(app, &c);
+            assert(count >= 2 && c.box.y >= over.y && c.box.y + c.box.h <= over.y + over.h && c.at.y >= over.y &&
+                   c.at.h == rows_h(ui_choices_layout, ui_choices_row, rects, UI_CHOICES_ROWS, app->scale, count));
+        }
+    }
+    app->theme.dialog = dialog;
+    app->menu.text_size = size;
+    assert(SDL_SetWindowSize(app->window, w, h));
+    SDL_SyncWindow(app->window);
+}
+/* a start's look, the menu free */
+static void start_look(App* app) {
+    app->updates_due = true;
+    updates_begin(app);
+}
+/* the row: Ask by default, going round On and Off, kept in app.ini; Ask's question before any look, its three
+   answers, Back as No; On's look: a newer nightly's box with its changes and its page, one not newer said in the log
+   alone, and a look that fails said with why; Off never looks */
+static void check_updates(App* app) {
+    GuiHttpsGet was = app->https_get;
+    bool editing = app->editing;
+    int asked;
+    char line[600];
+    memset(&g_nightly_net, 0, sizeof g_nightly_net);
+    app->https_get = nightly_get;
+    assert(app->updates == GUI_UPDATES_ASK && app->form == GUI_FORM_APP);
+    app->editor.row = GUI_APP_UPDATES;
+    app_values(app);
+    assert(!strcmp(app->app_form.updates, "Ask"));
+    key(app, SDLK_RIGHT);
+    assert(app->updates == GUI_UPDATES_ON && app_ini_has(app, "\ncheck_updates = on\n"));
+    key(app, SDLK_RIGHT);
+    assert(app->updates == GUI_UPDATES_OFF && app_ini_has(app, "\ncheck_updates = off\n"));
+    key(app, SDLK_RIGHT);
+    assert(app->updates == GUI_UPDATES_ASK && app_ini_has(app, "\ncheck_updates = ask\n"));
+    key(app, SDLK_LEFT);
+    assert(app->updates == GUI_UPDATES_OFF);
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(app->app_form.updates, "Ask"));
+    /* a form over the menu: no question yet, still due */
+    app->updates_due = true;
+    updates_begin(app);
+    assert(!app->confirm.shown && app->updates_due);
+    app->editing = false;
+    /* Ask: the question, its three choices, nothing asked of the network; Back and No leave it Ask */
+    start_look(app);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_UPDATES && !app->updates_due);
+    assert(!strcmp(ask_question(app), "Check for new nightlies?"));
+    assert(!strcmp(choice_text(app, GUI_CHOICES_ASK, 0, line, sizeof line), "Yes") &&
+           !strcmp(choice_text(app, GUI_CHOICES_ASK, 1, line, sizeof line), "No") &&
+           !strcmp(choice_text(app, GUI_CHOICES_ASK, 2, line, sizeof line), "Don't Ask Again") &&
+           !choice_text(app, GUI_CHOICES_ASK, 3, line, sizeof line));
+    ask_shown(app, "check-updates");
+    key(app, SDLK_ESCAPE);
+    assert(!app->confirm.shown && app->updates == GUI_UPDATES_ASK && !g_nightly_net.asked);
+    start_look(app);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->updates == GUI_UPDATES_ASK && !g_nightly_net.asked);
+    /* Don't Ask Again: Off, kept, and a start then looks at nothing */
+    start_look(app);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->updates == GUI_UPDATES_OFF && app_ini_has(app, "\ncheck_updates = off\n") && !g_nightly_net.asked);
+    start_look(app);
+    assert(!app->confirm.shown && !app->nightly_asking && !g_nightly_net.asked);
+    /* Yes: On, kept, and the look now: a newer nightly's box, what changed and its page */
+    app->updates = GUI_UPDATES_ASK;
+    g_nightly_net.status = 200;
+    g_nightly_net.body =
+        "{\"tag_name\": \"nightly-2099-01-01-abc1234\", \"name\": \"Nightly 2099-01-01 (abc1234)\","
+        " \"html_url\": \"https://github.com/scarletnx/nightly/releases/tag/nightly-2099-01-01-abc1234\","
+        " \"body\": \"x\\n## Changes since the previous nightly\\n\\n**gpu**\\n\\n- A fix ([#1](https://x/1), 1 commit, by a)\\n"
+        "\\nAnd [5 more](https://x).\\n\\n<details>\\n\"}";
+    start_look(app);
+    key(app, SDLK_RETURN);
+    assert(app->updates == GUI_UPDATES_ON && app_ini_has(app, "\ncheck_updates = on\n") && app->nightly_asking);
+    pump_until(app, &app->nightly_asking);
+    assert(g_nightly_net.asked == 1 && !app->nightly_thread);
+    if (strcmp(snx_build_committed(), "unknown")) {
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_NIGHTLY);
+        snprintf(
+            line, sizeof line,
+            "Nightly 2099-01-01 (abc1234) is out; this build is %s %s. What changed:\n- [gpu] A fix (#1, 1 commit, "
+            "by a)\nand 5 more",
+            snx_build_branch(), snx_build_commit());
+        assert(!strcmp(app->ask_line, line));
+        assert(
+            !strcmp(app->nightly_url, "https://github.com/scarletnx/nightly/releases/tag/nightly-2099-01-01-abc1234"));
+        assert(!strcmp(choice_text(app, GUI_CHOICES_ASK, 0, line, sizeof line), "Close") &&
+               !strcmp(choice_text(app, GUI_CHOICES_ASK, 1, line, sizeof line), "Open Page"));
+        render(app);
+        key(app, SDLK_ESCAPE); /* Close */
+        assert(!app->confirm.shown);
+        /* the most a box says: GUI_NIGHTLY_CHANGES long titles and how many more, shown whole at every size */
+        {
+            static const char* const titles[GUI_NIGHTLY_CHANGES] = {
+                "Keep the pipeline cache between runs while the driver and its version stay the same",
+                "Draw a render target's first use from its clear colour instead of the old frame's pixels",
+                "Say which controller a player's slot took when two of the same kind connect at once",
+                "Read a save's files through the host's own folder so a crash never leaves half a file",
+                "Take the audio renderer's mix off the game's thread when its buffer is already full",
+                "Give the recompile queue's progress per game and its time left in the Compile tab",
+                "Stop a shader's translation from reading past its constant buffer's declared size",
+                "Pace a game that runs unlocked by the display's own refresh when the limit is off"};
+            static const char* const areas[GUI_NIGHTLY_CHANGES] = {"vk",    "gpu", "hid",    "fs",
+                                                                   "audio", "gui", "shader", "runtime"};
+            char* body = (char*)malloc(8192);
+            char expected[4400];
+            int at, said;
+            assert(body);
+            at = snprintf(
+                body, 8192,
+                "{\"tag_name\": \"nightly-2099-01-02-def5678\", \"name\": \"Nightly 2099-01-02 (def5678)\","
+                " \"html_url\": \"https://github.com/scarletnx/nightly/releases/tag/nightly-2099-01-02-def5678\","
+                " \"body\": \"x\\n## Changes since the previous nightly\\n");
+            said =
+                snprintf(expected, sizeof expected,
+                         "Nightly 2099-01-02 (def5678) is out; this build is %s %s. What changed:", snx_build_branch(),
+                         snx_build_commit());
+            for (int i = 0; i < GUI_NIGHTLY_CHANGES; ++i) {
+                at += snprintf(body + at, 8192 - (size_t)at,
+                               "\\n**%s**\\n\\n- %s ([#%d](https://github.com/o/r/pull/%d), %d commits, by "
+                               "someone)\\n",
+                               areas[i], titles[i], 3001 + i, 3001 + i, 2 + i);
+                said += snprintf(expected + said, sizeof expected - (size_t)said,
+                                 "\n- [%s] %s (#%d, %d commits, by someone)", areas[i], titles[i], 3001 + i, 2 + i);
+            }
+            snprintf(body + at, 8192 - (size_t)at, "\\nAnd [12 more](https://x).\\n\\n<details>\\n\"}");
+            snprintf(expected + said, sizeof expected - (size_t)said, "\nand 12 more");
+            g_nightly_net.body = body;
+            start_look(app);
+            pump_until(app, &app->nightly_asking);
+            assert(app->confirm.shown && app->confirm.ask == GUI_ASK_NIGHTLY && !strcmp(app->ask_line, expected));
+            ask_shown(app, "nightly-out");
+            /* a line break ends a row, two a blank row between; drawn on one row (a theme that slides its text, the
+               last row a box has room for) it is a space */
+            assert(app->theme.text != GUI_TEXT_SLIDE && wrap_at("ab\ncd", 10, 0) == 2 &&
+                   wrap_rows(app, "ab\ncd", 10, 0) == 2 && wrap_rows(app, "ab\n\ncd", 10, 0) == 3 &&
+                   wrap_rows(app, "ab cd\n", 10, 0) == 1);
+            {
+                SDL_Color mark = {0x12, 0x34, 0x56, 0xff};
+                int width, height;
+                render(app);
+                area(app, &width, &height);
+                text_from(app, gui_rect(0, 0, width, height), 0, height - 16 * app->scale, "Q\nZ", 0, mark);
+                shows(app, "Q Z", mark);
+            }
+            key(app, SDLK_ESCAPE);
+            g_nightly_net.body = NULL;
+            free(body);
+        }
+    } else /* a tree git cannot read: no day to compare, said so */
+        assert(strstr(app->message, "has no day to compare") && !app->confirm.shown);
+    /* On: a nightly not newer than this build, nothing over the menu */
+    g_nightly_net.body = "{\"tag_name\": \"nightly-2000-01-01-abc1234\", \"name\": \"Nightly 2000-01-01 (abc1234)\"}";
+    app->message[0] = 0;
+    asked = g_nightly_net.asked;
+    start_look(app);
+    pump_until(app, &app->nightly_asking);
+    assert(g_nightly_net.asked == asked + 1 && !app->confirm.shown && !app->message[0]);
+    /* a look that fails: why, in the message line; GitHub's own refusal, with its status and its words */
+    g_nightly_net.fails = true;
+    start_look(app);
+    pump_until(app, &app->nightly_asking);
+    assert(!strcmp(app->message, "Check for updates: Could not resolve host: api.github.com (after 30 s)"));
+    g_nightly_net.fails = false;
+    g_nightly_net.status = 403;
+    g_nightly_net.body = "{\"message\": \"API rate limit exceeded for 1.2.3.4.\"}";
+    start_look(app);
+    pump_until(app, &app->nightly_asking);
+    assert(strstr(app->message, "Check for updates: HTTP 403: ") && strstr(app->message, "API rate limit exceeded") &&
+           !app->confirm.shown);
+    /* a latest release of another shape: its tag said, nothing compared */
+    g_nightly_net.status = 200;
+    g_nightly_net.body = "{\"tag_name\": \"nightly\", \"name\": \"Nightly\"}";
+    start_look(app);
+    pump_until(app, &app->nightly_asking);
+    assert(!strcmp(app->message, "Check for updates: the newest nightly is tagged nightly, not "
+                                 "nightly-YYYY-MM-DD-<commit>") &&
+           !app->confirm.shown);
+    /* a build with no HTTPS client: said, nothing started */
+    app->https_get = NULL;
+    start_look(app);
+    assert(!strcmp(app->message, "Check for updates: this build of the launcher has no HTTPS client") &&
+           !app->nightly_asking);
+    app->https_get = was;
+    app->editing = editing;
+    app->updates = GUI_UPDATES_ASK;
+    app_save(app);
+    app->editor.row = GUI_APP_THEME;
+}
 /* Run Amberlith's launches through the fake driver, each let end as it starts (its .go), until the box */
 static void probe_ran(App* app, const char* argv_file) {
     char* go = snx_format("%s.go", argv_file);
@@ -6009,6 +6266,22 @@ static void wait_played(App* app, int line) {
 /* a game opened that no game of the library was made from: its first compile in the queue, the Compile tab showing it.
    It plays once it ended while the tab still shows it; sent away from the tab first, the tips say it is ready instead
    (DraVee's pick, 2026-10-24) */
+/* text drawn in color in the letters half a step under the text's, on the line as it slides: one too long for its row
+   rests 8 steps at each end (common/utilities/slide.h), so a look every 8 steps meets both */
+static void slid_half(App* app, const char* text, SDL_Color color) {
+    int x, y, found = 0;
+    for (int step = 0; !found && step < 2 * (200 + 8); step += 8) {
+        app->clock = SDL_GetTicks() + 60000 + (Uint64)step * app->theme.scroll_ms; /* every line typed */
+        render(app);
+        int half = text_half(app);
+        found = find_text(app, text, color, 1, &x, &y);
+        app->half = half;
+    }
+    if (!found)
+        fprintf(stderr, "gui_sdl: \"%s\" is not drawn in %02x%02x%02x by the %s theme at %d columns\n", text, color.r,
+                color.g, color.b, app->theme.id, app->cols);
+    assert(found);
+}
 static void compile_first(App* app, const char* dir) {
     char *dump = snx_path_join(dir, "first compile.nsp"), *got = snx_path_join(dir, "driver argv"), *made, *argv_got;
     Uint64 until;
@@ -6029,6 +6302,50 @@ static void compile_first(App* app, const char* dir) {
     queue_drop(app, 0);
     assert(!snx_remove_tree(made));
     free(made);
+    { /* refused, the host below its back end's floor: a test's, without SSE2
+         (recompiler/x64/x64_codegen.c). What the host lacks follows how the recompile ended, and the panel shows the
+         driver's line: YoRHa's as the failed step's, the classic theme's in its output */
+        static const char lacks[] = "cpu: needs SSE2, this host has none";
+        char *say = snx_format("Recompiling first compile (1 modules)\nscarletnx: %s", lacks),
+             *said = snx_format("Compile failed (status 1). %s", lacks), *line = snx_format("first compile: %s", said);
+        GuiTheme theme = app->theme;
+        bool due = app->log_due;
+        driver_will(got, 1, say);
+        launch(app, snx_strdup(dump), false);
+        for (until = SDL_GetTicks() + 10000; app->queue.job[0].state < GUI_JOB_OK && SDL_GetTicks() < until;
+             SDL_Delay(2))
+            pump(app);
+        assert(app->queue.job[0].state == GUI_JOB_FAILED && !app->menu.running && app->log_due);
+        assert(!strcmp(app->queue.job[0].said, said) && !strcmp(app->message, line));
+        {
+            /* YoRHa, the look of every platform's first start, at 80 columns and 50; the classic theme, which cuts a
+               line and slides none, at 80 */
+            static const struct {
+                const char* id;
+                int w, h;
+            } looks[] = {{"yorha", 1280, 800}, {"yorha", 800, 512}, {"default", 1280, 800}};
+            int w, h;
+            assert(app->menu.view == GUI_LOAD_RECOMPILE && SDL_GetWindowSize(app->window, &w, &h));
+            for (size_t k = 0; k < SDL_arraysize(looks); ++k) {
+                app->theme = *gui_theme_builtin(looks[k].id);
+                assert(SDL_SetWindowSize(app->window, looks[k].w, looks[k].h));
+                const SDL_Color color =
+                    rgb(app->theme.run == GUI_RUN_STEPS ? app->theme.run_colors.failure : app->theme.ink);
+                slid_half(app, "cpu: needs SSE2", color);
+                slid_half(app, "this host has none", color);
+            }
+            app->clock = 0;
+            assert(SDL_SetWindowSize(app->window, w, h));
+        }
+        app->theme = theme;
+        remove(got);
+        queue_drop(app, 0);
+        app->log_due = due;
+        driver_will(got, 0, "Recompiling first compile");
+        go_tab(app, GUI_TAB_MENU);
+        app->menu.selected = GUI_SWITCH;
+        free(say), free(said), free(line);
+    }
     /* away from the tab before it ended: nothing plays, the tips say it is ready, Enter then plays it */
     launch(app, snx_strdup(dump), false);
     assert(app->queue.job[0].kind == GUI_JOB_COMPILE && app->menu.view == GUI_LOAD_RECOMPILE);
@@ -6698,6 +7015,26 @@ static void missing_file(App* app, const char* dir) {
     assert(!app->picks_shown && app->menu.running);
     argv_got = ran(app, 0); /* back on the menu */
     free(argv_got);
+    { /* a run refused, the host below its back end's floor: what it lacks follows how it ended */
+        char* go = snx_format("%s.go", got);
+        bool due = app->log_due;
+        driver_will(got, 1, "scarletnx: cpu: needs SSE4.1, this host has SSE3");
+        go_tab(app, GUI_TAB_GAMES);
+        focus_game(app, "extracted game");
+        key(app, SDLK_RETURN);
+        assert(app->menu.running && !snx_write_file(go, "", 0));
+        for (Uint64 until = SDL_GetTicks() + 10000; app->menu.running && SDL_GetTicks() < until; SDL_Delay(5))
+            pump(app);
+        assert(!app->menu.running && app->finished && app->abnormal_exit);
+        assert(!strcmp(app->message, "Program ended abnormally (status 1). cpu: needs SSE4.1, this host has SSE3"));
+        key(app, SDLK_ESCAPE);
+        assert(!app->finished && !app->message[0]);
+        app->log_due = due;
+        driver_will(got, 0, "ScarletNX - extracted game");
+        remove(got);
+        remove(go);
+        free(go);
+    }
     /* Locate...: a file of another kind refused, the dump it keeps said; a dump taken, its row saying nothing more */
     go_tab(app, GUI_TAB_GAMES);
     focus_game(app, "lost game");
@@ -6934,7 +7271,12 @@ static char* ctr_settings(void) {
                       "3DS\tctr_model\tauto\ttext\t\t\tThe console the game runs on\tConsole\t"
                       "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
                       "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
-                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n");
+                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n"
+                      "On-screen controls\tcontrols\t2\tint\t0\t2\tShown\tShow controls\t0=Off|1=On|2=Auto\n"
+                      "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t"
+                      "0=Off|1=Fingers|2=Fingers and mouse\n"
+                      "On-screen controls/Buttons\tcontrols_zl_shown\t1\tint\t0\t1\tDrawn\tZL\t0=Hidden|1=Shown\n"
+                      "On-screen controls/Buttons\tcontrols_plus_shown\t1\tint\t0\t1\tDrawn\t+\t0=Hidden|1=Shown\n");
 }
 /* the file at path holding text */
 static void fixture_text(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
@@ -6951,7 +7293,8 @@ static int game_settings_row(App* app) {
    kept in its picks beside its .ini at once, and Reset to Global; nothing of the Switch's nor another console's, as a
    Switch game's has none of the 3DS's. M (L3, the foot's Settings on a phone) opens it on a listed and a recent game,
    and so does its box's Settings, after Recompile; Back goes to Games, its row and the side panel saying its own. A
-   3DS dump and a Vita game have none, said; the launcher's Console goes to a run of the game under its own. Clean Old
+   Vita, a GBA and a DS game's own are its on-screen controls. A 3DS dump and a file have none, said; the launcher's
+   Console goes to a run of the game under its own. Clean Old
    Settings takes out of a 3DS game's picks what its rows do not take, and keeps its console */
 static void ctr_own_console(App* app, const char* dir) {
     static const char* const name = "0004000000040000";
@@ -7059,37 +7402,122 @@ static void ctr_own_console(App* app, const char* dir) {
         char *switch_folder = made_game(app, "unused", "a switch game"),
              *played = program_in(switch_folder, "a switch game");
         open_game_settings(app, played, "a switch game", false);
-        assert(app->editing && app->own_picks && app->groups == 3 && !strcmp(app->group_keys[0].key, "Display") &&
-               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Reset to Global"));
+        assert(app->editing && app->own_picks && app->groups == 4 && !strcmp(app->group_keys[0].key, "Display") &&
+               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Overlay") &&
+               !strcmp(app->group_keys[3].key, "Reset to Global"));
         key(app, SDLK_ESCAPE);
         assert(!app->editing);
         made_gone(app, switch_folder);
         free(played);
     }
-    /* a Vita game and a file that is no game have none: said with what does */
+    /* a Vita, a GBA and a DS game's own, by M on it and by its box: its on-screen controls alone, the touch screen
+       where it has one, each control by its name there, kept in its picks; and the launcher's for its run, marked as
+       such: Show controls' always, as the Switch's runs have it */
     {
-        char *vita_folder, *played;
-        played = console_game(app, "PCSE00099", "[Game]\nsystem=vita\n", &vita_folder);
-        for (i = 0; i < 2; ++i) {
-            open_game_settings(app, i ? cia : played, i ? "a file" : "a vita game", false);
-            snprintf(value, sizeof value,
-                     "%s is no recompiled Switch or 3DS game: only they have settings of their own",
-                     i ? "a file" : "a vita game");
-            assert(!app->editing && !app->own_picks && !strcmp(app->message, value) && app->confirm.shown &&
-                   app->confirm.ask == GUI_ASK_ERROR);
+        static const struct {
+            int item;
+            const char *name, *ini;
+            int touch;
+        } consoles[] = {{GUI_VITA, "PCSE00099", "[Game]\nsystem=vita\n", 1},
+                        {GUI_GBA, "a gba game", "[Game]\nsystem=gba\nsource=/nonexistent/a gba game.gba\n", 0},
+                        {GUI_NDS, "a ds game", "[Game]\nsystem=nds\nsource=/nonexistent/a ds game.nds\n", 1}};
+        for (size_t c = 0; c < sizeof consoles / sizeof *consoles; ++c) {
+            char *made, *played = console_game(app, consoles[c].name, consoles[c].ini, &made), *beside, *own;
+            go_tab(app, GUI_TAB_GAMES);
+            list_games(app);
+            layout(app);
+            focus_game(app, consoles[c].name);
+            assert(strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+            row = game_settings_row(app);
+            assert(row > 0);
             key(app, SDLK_ESCAPE);
-            assert(!app->confirm.shown);
+            assert(!app->picks_shown);
+            beside = game_ini_of(played);
+            own = snx_game_picks(beside);
+            key(app, SDLK_M);
+            assert(app->editing && app->own_picks && same_path(app->own_picks, own));
+            assert(app->groups == 2 && !strcmp(app->group_keys[0].key, "Overlay") &&
+                   !strcmp(app->group_keys[1].key, "Reset to Global"));
+            assert(gui_settings_value(&app->game_settings, "controls") == NULL);
+            key(app, SDLK_RETURN); /* Overlay */
+            assert(app->form == GUI_FORM_GROUP);
+            snprintf(said, sizeof said, "%s own controls", consoles[c].name);
+            foot_shot(app, said);
+            key(app, SDLK_ESCAPE);
+            assert(app->editing && app->form == GUI_FORM_SETTINGS);
+            assert(!gui_settings_set(&app->game_settings, "fullscreen", "1") &&
+                   !gui_settings_set(&app->game_settings, "controls_zl_shown", "0"));
+            assert(gui_settings_set(&app->game_settings, "touch", "1") == consoles[c].touch);
+            assert(gui_settings_set(&app->game_settings, "controls_plus_shown", "0") &&
+                   gui_settings_set(&app->game_settings, "controls", "1"));
+            for (i = 0; i < app->game_settings.count; ++i)
+                if (app->game_settings.values[i].key &&
+                    !strcmp(app->game_settings.values[i].key, "controls_plus_shown"))
+                    assert(!strcmp(app->game_settings.keys[i].key, "Start"));
+            write_settings(app);
+            assert((text = (char*)snx_read_file(own, &size)) && strstr(text, "[On-screen controls]\ncontrols=1\n") &&
+                   strstr(text, "controls_plus_shown=0\n") && (strstr(text, "touch=1\n") != NULL) == consoles[c].touch);
+            free(text);
+            key(app, SDLK_ESCAPE);
+            assert(!app->editing && game_own(played, value, sizeof value) == 2 + consoles[c].touch);
+            assert(!remove(own));
+            driver_will(argv_file, 0, "own controls");
+            assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+            for (way = 0; way < 2; ++way) {
+                char* argv_got;
+                assert(gui_settings_set(&app->settings, "controls", way ? "1" : "2") &&
+                       gui_settings_set(&app->settings, "touch", way ? "1" : "2"));
+                app->menu.selected = consoles[c].item;
+                launch(app, snx_strdup(played), true);
+                argv_got = ran(app, 0);
+                assert(has_arg(argv_got, way ? "--controls=1" : "--controls=2", NULL) &&
+                       has_arg(argv_got, "--launcher-picks=1", NULL));
+                assert(has_arg(argv_got, "--touch=1", NULL) == way);
+                free(argv_got);
+                leave_run(app);
+            }
+            driver_will(NULL, 0, NULL);
+            assert(gui_settings_set(&app->settings, "controls", "2") && gui_settings_set(&app->settings, "touch", "2"));
+            /* a GBA or DS game's save states: S lists them from its folder, as a Switch game's, and Enter plays it from
+               one through its driver, --state-load= naming the file */
+            if (consoles[c].item != GUI_VITA) {
+                char *dir = snx_path_join(made, "states"), *leaf = snx_format("%s.1.snxstate", consoles[c].name);
+                char *file = snx_path_join(dir, leaf), *option = snx_format("--state-load=0:%s", file);
+                uint8_t bytes[SNX_STATE_HEADER] = {0};
+                SnxStateHeader h = {.format = SNX_STATE_FORMAT, .abi = 1, .title_id = 0x1234, .created = 1000};
+                snx_state_header_write(bytes, &h, 0, 0);
+                assert(dir && !snx_mkdirs(dir) && file && !snx_write_file(file, bytes, sizeof bytes));
+                go_tab(app, GUI_TAB_GAMES);
+                list_games(app);
+                layout(app);
+                focus_game(app, consoles[c].name);
+                key(app, SDLK_S);
+                assert(app->states_shown && app->states_count == 1 && strstr(app->states[0].label, "Slot 1 ") &&
+                       !app->states[0].why[0]);
+                driver_will(argv_file, 0, "from a state");
+                key(app, SDLK_RETURN);
+                char* argv_got = ran(app, 0);
+                assert(!app->states_shown && has_arg(argv_got, option, NULL));
+                free(argv_got);
+                leave_run(app);
+                driver_will(NULL, 0, NULL);
+                assert(!remove(file));
+                free(option), free(file), free(leaf), free(dir);
+            }
+            free(own);
+            free(beside);
+            made_gone(app, made);
+            free(played);
         }
-        focus_game(app, "PCSE00099");
-        row = game_settings_row(app);
-        assert(row < 0);
-        key(app, SDLK_ESCAPE);
-        assert(!app->picks_shown);
-        app->message[0] = 0;
-        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
-        made_gone(app, vita_folder);
-        free(played);
         list_games(app);
+        /* a file that is no game has none: said with what does */
+        open_game_settings(app, cia, "a file", false);
+        assert(!app->editing && !app->own_picks && app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR &&
+               !strcmp(app->message, "a file is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have "
+                                     "settings of their own"));
+        key(app, SDLK_ESCAPE);
+        assert(!app->confirm.shown);
+        app->message[0] = 0;
     }
     /* a 3DS dump in focus on Games: M says whose box it opens */
     {
@@ -7335,6 +7763,22 @@ static void check_play_args(App* app, const char* root) {
         assert(!gba);
         play_args_free(&own);
         (void)gui_settings_set(settings_of(app), "vsync", "1");
+    }
+    /* the on-screen controls' go to the consoles whose windows have them, the launcher's picks under the game's own */
+    if (gui_settings_set(settings_of(app), "controls", "1")) {
+        static const int items[] = {GUI_VITA, GUI_GBA, GUI_NDS, GUI_3DS};
+        for (size_t k = 0; k < sizeof items / sizeof *items; ++k) {
+            int shown = 0, picks = 0;
+            app->menu.selected = items[k];
+            (void)play_args(app, items[k], dir, argv, 512, &own);
+            for (size_t i = 0; argv[i]; i++) {
+                shown += !strcmp(argv[i], "--controls=1");
+                picks += !strcmp(argv[i], "--launcher-picks=1");
+            }
+            assert(shown == (items[k] != GUI_3DS) && picks == shown);
+            play_args_free(&own);
+        }
+        (void)gui_settings_set(settings_of(app), "controls", "2");
     }
     free(argv);
     free(prog);
@@ -7796,7 +8240,22 @@ int main(int argc, char** argv) {
         said = whole;
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, said));
         render(&app);
-        shows(&app, said, rgb(app.theme.warning));
+        { /* row by row as the box breaks it at its width (wrap_in's wrap_at): one row or more, as long as the
+             temporary folder this host gives makes it */
+            GuiChoices c;
+            const char* s = said;
+            char row[1100];
+            int width;
+            ask_place(&app, &c);
+            width = (c.box.w - cell_w(&app)) / cell_w(&app);
+            assert(width > 0);
+            while (*s) {
+                size_t n = wrap_at(s, width, 0);
+                snprintf(row, sizeof row, "%.*s", (int)n, s);
+                shows(&app, row, rgb(app.theme.warning));
+                for (s += n + (s[n] == '\n'); *s == ' ';) ++s;
+            }
+        }
         free(app.data_dir), free(app.games_dir), free(app.themes_dirs[0]), free(app.work_dir), free(app.keys_path);
         free(app.home_dir);
         app.data_dir = data, app.games_dir = games, app.themes_dirs[0] = themes, app.work_dir = work;
@@ -8501,18 +8960,19 @@ int main(int argc, char** argv) {
     assert(app.form == GUI_FORM_SETTINGS);
     key(&app, SDLK_RETURN);
     /* a group's settings on the right, a row each with its help in the tips; the group named over them */
-    /* gdbstub, Extract to tmpfs, Extract dump, Java home, Optimization level, LLVM batch, AOT threads, AOT threads at
-       most, Unit size, Unit cache limit and the LLVM Internals page: the profiler's rows are the game's Debug
-       section's, not the launcher's own */
-    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 11);
+    /* gdbstub, Extract to tmpfs, Extract dump, Java home, AOT threads, AOT threads at most, Unit size and Unit cache
+       limit: the profiler's rows are the game's Debug section's, not the launcher's own */
+    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 8);
     render(&app);
     shows(&app, "Launch", normal);
     shows_half(&app, "Enables gdbstub", normal); /* in the tips */
-    shows(&app, "-    GDB stub ", yellow); /* its value in the column after the longest name, AOT threads at most's */
-    shows(&app, "-    Extract to tmpfs ", normal);
+    /* no row has an icon (a page's), so none has their columns; its value in the column after the longest name, AOT
+       threads at most's */
+    shows(&app, "- GDB stub ", yellow);
+    shows(&app, "- Extract to tmpfs ", normal);
     {
         char row[64];
-        snprintf(row, sizeof row, "-    %-*s off", (int)strlen("AOT threads at most"), "Extract dump");
+        snprintf(row, sizeof row, "- %-*s off", (int)strlen("AOT threads at most"), "Extract dump");
         shows(&app, row, normal);
     }
     { /* Del is said where it does something: on a setting away from its default */
@@ -8838,10 +9298,11 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
-    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
+    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 14);
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
     app.editor.row = GUI_APP_THEME;
     download_driver(&app, temporary);
+    check_updates(&app);
     run_amberlith(&app, temporary);
     app.editor.row = GUI_APP_THEME;
     {
@@ -8878,6 +9339,26 @@ int main(int argc, char** argv) {
             app.games_dir = games;
             app.work_dir = work;
             app_values(&app);
+        }
+        { /* folders longer than the note's row, as a Windows profile's or a runner's temporary folder makes them: a row
+             each, cut around "...", and every row of App's still on the screen, its last ones too */
+            char *data = app.data_dir, *work = app.work_dir;
+            app.data_dir = snx_path_join(temporary, "a folder named as long as the ones a Windows runner's temporary "
+                                                    "folder and a deep profile make, and longer still");
+            app.work_dir = snx_path_join(app.data_dir, "extractions");
+            app_values(&app);
+            render(&app);
+            assert(strchr(app.places_shown, '\n') && strstr(app.places_shown, "...") &&
+                   !strncmp(app.places_shown, "Data: ", 6));
+            shows(&app, "- " ICON_PAINTBRUSH " Theme Editor", normal);
+            shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.soft));
+            shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.soft));
+            free(app.data_dir);
+            free(app.work_dir);
+            app.data_dir = data;
+            app.work_dir = work;
+            app_values(&app);
+            render(&app);
         }
         /* nothing to clean here: greyed (#614) */
         shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.soft));
@@ -9202,7 +9683,7 @@ int main(int argc, char** argv) {
     /* the App's picks kept at once in app.ini, which the next start reads back */
     {
         size_t size = 0;
-        char *kept, expected[512], id[64], first_id[64];
+        char *kept, expected[sizeof app.message], id[64], first_id[64]; /* a message whole, long folders in it */
         const char* broken = "[app]\ntheme = gone\ntext_size = 9\nlayout = boxes\ncolour = red\ntext_size = 2x\n"
                              "[other]\nlayout = panels\n";
         char* blocker = snx_path_join(temporary, "not a folder");
@@ -9213,11 +9694,13 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RIGHT); /* the next theme */
         snprintf(id, sizeof id, "%s", app.theme.id);
         assert(strcmp(id, first_id));
-        snprintf(expected, sizeof expected,
-                 APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
-                              "animations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
-                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
-                 id);
+        snprintf(
+            expected, sizeof expected,
+            APP_INI_HEAD
+            "theme = %s\nui_scale = 1\nlanguage = auto\n"
+            "animations = 0\nside_box = auto\nbackground_recompile = auto\ncheck_updates = ask\ndumps_subfolders = on\n"
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
+            id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
         free(kept);
@@ -9261,7 +9744,7 @@ int main(int argc, char** argv) {
             expected, sizeof expected,
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
-            "language = auto\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
+            "language = auto\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ncheck_updates = ask\ndumps_subfolders = on\n"
             "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
@@ -9344,12 +9827,13 @@ int main(int argc, char** argv) {
         assert(app.language == 1 && snx_tr_language() == 0 && !strcmp(app.app_form.language, "English"));
         key(&app, SDLK_RETURN); /* Enter goes round too */
         assert(app.language == 2 && snx_tr_language() == 1 && !strcmp(app.app_form.language, "Test\303\252s"));
-        snprintf(expected, sizeof expected,
-                 APP_INI_HEAD
-                 "theme = %s\nui_scale = 2\n"
-                 "language = xx\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ndumps_subfolders = on\n"
-                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
-                 app.theme.id);
+        snprintf(
+            expected, sizeof expected,
+            APP_INI_HEAD
+            "theme = %s\nui_scale = 2\n"
+            "language = xx\nanimations = 0\nside_box = auto\nbackground_recompile = auto\ncheck_updates = ask\ndumps_subfolders = on\n"
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS PROBE_DEFAULTS,
+            app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
         free(kept);
@@ -10101,6 +10585,15 @@ int main(int argc, char** argv) {
         snprintf(said, sizeof said, "Not used from %s: background_recompile = slow (it keeps gentle)", app.app_file);
         assert(app.background_mode == GUI_BACKGROUND_GENTLE && strstr(app.message, said));
         free(text);
+        /* Check for updates' word it does not know: named, with the one it keeps */
+        text = snx_format("%scheck_updates = off\ncheck_updates = yes\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: check_updates = yes (it keeps off)", app.app_file);
+        assert(app.updates == GUI_UPDATES_OFF && strstr(app.message, said));
+        app.updates = GUI_UPDATES_ASK;
+        free(text);
         for (int old = 0; old < 2; ++old) {
             char* again;
             text = snx_format(APP_INI_HEAD "theme = %s\nrecompile_background = %s\n", app.theme.id,
@@ -10170,6 +10663,8 @@ int main(int argc, char** argv) {
         free(text);
         free(kept);
     }
+    key(&app, SDLK_DOWN);
+    assert(app.editor.row == GUI_APP_UPDATES);
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RIGHT); /* the editor opens with Enter only */
     assert(app.form == GUI_FORM_APP);
@@ -10264,8 +10759,19 @@ int main(int argc, char** argv) {
             SDL_Color dim = rgb(app.theme.dim);
             assert(!app.theme.grid && !same_colour(dim, rgb(app.theme.page)));
             assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
-            r = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 9 + GUI_FOLDER_GROUPS + 2);
-            assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
+            { /* Reset to Defaults, the last row, in focus as a person brings it there: the rows scroll to it where the
+                 note of a long folder leaves room for fewer of them */
+                const int last = 9 + GUI_FOLDER_GROUPS + 2, was = app.editor.row;
+                app.editor.row = last;
+                render(&app);
+                form_boxes(&app, &f);
+                assert((size_t)last >= form_first(&f, true));
+                r = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, (size_t)last - form_first(&f, true));
+                assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
+                app.editor.row = was;
+                render(&app);
+                form_boxes(&app, &f);
+            }
         }
         { /* a title on a band of ink in a theme of filled boxes, its text in the page's colour; over a rule in dim in
              one of outlined boxes, in ink */
@@ -10674,8 +11180,13 @@ int main(int argc, char** argv) {
             /* folders.txt as an older version wrote it, a path a line: each folder in the library of what it holds,
                both for both, none or gone the dumps'; written again with them, said once naming each */
             {
-                char *ready = snx_path_join(temporary, "old ready"), *dumped = snx_path_join(temporary, "old dumps"),
-                     *both = snx_path_join(temporary, "old both"), *empty = snx_path_join(temporary, "old empty");
+                /* folders named long, as a deep profile's are: the message says each whole, past 512 bytes */
+#define LONG_NAME ", a folder named as long as a deep profile's are, and as a runner's temporary folder makes them"
+                char *ready = snx_path_join(temporary, "old ready" LONG_NAME),
+                     *dumped = snx_path_join(temporary, "old dumps" LONG_NAME),
+                     *both = snx_path_join(temporary, "old both" LONG_NAME),
+                     *empty = snx_path_join(temporary, "old empty" LONG_NAME);
+#undef LONG_NAME
                 char *game = snx_path_join(ready, GAME("Ready")), *nsp = snx_path_join(dumped, "a.nsp"),
                      *both_game = snx_path_join(both, GAME("Ready")), *both_nsp = snx_path_join(both, "b.xci");
                 char *old_text, *want, *read;
@@ -10778,7 +11289,7 @@ int main(int argc, char** argv) {
         char* games_default = snx_recompiled_dir(data); /* the test's own games/ is elsewhere, set by hand */
         char *keys = snx_strdup(app.keys_path), *themes = snx_strdup(app.themes_dirs[0]); /* so are these */
         char *picked = snx_path_join(temporary, "picked games"), *file = snx_path_join(temporary, "not a folder.txt");
-        char *kept, line[512];
+        char *kept, line[sizeof app.message];
         size_t size;
         assert(app.editor.row == GUI_APP_PLACES && !strcmp(app.app_form.places, "Defaults, 1 Extra(s)"));
         key(&app, SDLK_RETURN);
@@ -10800,12 +11311,27 @@ int main(int argc, char** argv) {
             snprintf(line, sizeof line, "%s%s", app.theme.marker, drawn.label);
             shows(&app, line, yellow);
         }
-        /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does) */
-        snprintf(line, sizeof line, "%.24s", data);
-        shows_half(&app, line, rgb(app.theme.soft));
+        { /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does): the first row
+             as the note breaks it at its width, which a long first folder ends early */
+            GuiFormBoxes note;
+            GuiRect text;
+            size_t n;
+            form_boxes(&app, &note);
+            text = inner(&app, note.info);
+            n = wrap_at(data, text.w / cell_w(&app), 0);
+            snprintf(line, sizeof line, "%.*s", (int)SDL_min(n, 24), data);
+            shows_half(&app, line, rgb(app.theme.soft));
+        }
         shows(&app, "- Extractions", normal);
-        /* every folder its default: greyed (#614) */
-        shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults", rgb(app.theme.soft));
+        { /* every folder its default: greyed (#614); in focus as a person brings it, the rows scrolling to it where the
+             note of a long folder leaves room for fewer of them, still greyed there */
+            const int was = app.editor.row;
+            app.editor.row = 9 + GUI_FOLDER_GROUPS + 2;
+            render(&app);
+            shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults", rgb(app.theme.soft));
+            app.editor.row = was;
+            render(&app);
+        }
         assert(!strcmp(app.place_line[GUI_PLACE_GAMES], app.games_dir) &&
                !strcmp(app.app_form.folder[FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_GAMES)], "default"));
         assert(strstr(app.place_about[GUI_PLACE_GAMES], "The recompiled games, ") &&
@@ -11034,8 +11560,8 @@ int main(int argc, char** argv) {
             snprintf(
                 line, sizeof line,
                 "%sNot used from %s: [folders] work = relative/work (it keeps none) %s: this version does not read "
-                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 21 and "
-                "work=relative/work on line 25: the last line's is taken",
+                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 22 and "
+                "work=relative/work on line 26: the last line's is taken",
                 unmade, app.app_file, app.app_file);
             free(unmade);
             free(dumps);
@@ -11553,7 +12079,7 @@ int main(int argc, char** argv) {
         free(work);
         free(games);
     }
-    /* NCE Off and Debug's SLP vectorizer on in Settings, two of the game's settings the recompile takes too: a first
+    /* NCE Off and Debug's CPU extensions on in Settings, two of the game's settings the recompile takes too: a first
        compile and R's recompile pass them, as -r reads them from its options alone; a setting of the run alone, never */
     {
         char *nro = snx_path_join(temporary, "recompile settings.nro"), *got = snx_path_join(temporary, "driver argv");
@@ -11563,7 +12089,7 @@ int main(int argc, char** argv) {
         snx_menu_settings = recompile_settings;
         settings_forget(&app);
         assert(settings_of(&app) && gui_settings_set(&app.settings, "nce", "0") &&
-               gui_settings_set(&app.settings, "slp_vectorizer", "1") &&
+               gui_settings_set(&app.settings, "cpu_extensions", "1") &&
                gui_settings_set(&app.settings, "resolution", "2"));
         app.menu.selected = GUI_SWITCH;
         driver_will(got, 0, "Recompiling recompile settings");
@@ -11573,7 +12099,7 @@ int main(int argc, char** argv) {
             app.recompile = false;
             argv_got = ran(&app, 0);
             assert(has_arg(argv_got, "-r", nro) && has_arg(argv_got, "--nce=0", NULL) &&
-                   has_arg(argv_got, "--slp-vectorizer=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
+                   has_arg(argv_got, "--cpu-extensions=1", NULL) && !has_arg(argv_got, "--resolution=2", NULL));
             free(argv_got);
         }
         driver_will(NULL, 0, NULL);
@@ -14790,6 +15316,39 @@ int main(int argc, char** argv) {
                     free(idx);
                     app.addons_focus = 17;
                 }
+                { /* a code cache LLVM made (SNXJIT01, its key naming llvm=): an old cache too, said with its size and
+                     place; Back keeps it, Delete takes it and nothing else; this version's code cache is none */
+                    static const char key_text[] = "abi=19 obj=5 llvm=22.1.8 triple=x86_64-pc-linux-gnu cpu=znver4";
+                    unsigned char jit[256] = "SNXJIT01";
+                    const size_t key_n = sizeof key_text - 1, jit_n = 12 + key_n + 7;
+                    char old[32];
+                    const int rows = addons_rows(&app);
+                    jit[8] = (unsigned char)key_n;
+                    memcpy(jit + 12, key_text, key_n);
+                    memcpy(jit + 12 + key_n, "records", 7);
+                    assert(!app.addons_old_caches && !snx_write_file(caches[1], jit, jit_n));
+                    old_caches_refresh(&app);
+                    assert(app.addons_old_caches == jit_n && addons_rows(&app) == rows + 1 &&
+                           addons_row(&app, 18) == ROW_OLD_CACHES);
+                    app.addons_focus = 18;
+                    key(&app, SDLK_RETURN);
+                    gui_size_text(old, sizeof old, jit_n);
+                    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CACHE && strstr(app.ask_line, old) &&
+                           strstr(app.ask_line, "a code cache LLVM made") && strstr(app.ask_line, caches[1]) &&
+                           !strstr(app.ask_line, ".vkbc7"));
+                    key(&app, SDLK_ESCAPE);
+                    assert(!app.confirm.shown && snx_is_file(caches[1]));
+                    key(&app, SDLK_RETURN);
+                    key(&app, SDLK_DOWN);
+                    key(&app, SDLK_RETURN);
+                    snprintf(want, sizeof want, "Deleted the old caches of %s: %s", app.addons_title, old);
+                    assert(!app.confirm.shown && !strcmp(app.message, want) && !snx_path_exists(caches[1]) &&
+                           snx_is_file(shader) && addons_rows(&app) == rows);
+                    assert(!snx_write_file(caches[1], bytes, 100)); /* this version's again, for Clean Cache below */
+                    old_caches_refresh(&app);
+                    assert(!app.addons_old_caches);
+                    app.addons_focus = 17;
+                }
                 key(&app, SDLK_RETURN);
                 key(&app, SDLK_DOWN);
                 key(&app, SDLK_RETURN);
@@ -16391,7 +16950,7 @@ int main(int argc, char** argv) {
             form_boxes(&app, &f);
             text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "Launch", normal, black);
             b = form_row_box(&app, &f, true, 0);
-            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "-    GDB stub", normal, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- GDB stub", normal, black); /* no icons' columns */
             /* a click on one of those rows opens the group on it */
             b = form_row_box(&app, &f, true, 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
@@ -16406,7 +16965,7 @@ int main(int argc, char** argv) {
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_ROCKET " Launch", yellow,
                        black); /* the group open */
             b = form_row_box(&app, &f, true, 0);
-            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "-    GDB stub", yellow, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- GDB stub", yellow, black);
             {
                 char start[16]; /* in the tips, its first row, under the head */
                 snprintf(start, sizeof start, "%s", app.settings.keys[0].about);

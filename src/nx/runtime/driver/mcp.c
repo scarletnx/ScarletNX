@@ -12,15 +12,16 @@
      was saved, the play time then, the runtime and stamp that saved it, and whether this build can load it.
    - symbolize: game addresses (a backtrace's, a crash report's) named by the game's symbols, as tools/symbols.py does.
    - disassemble: a game function, by name or address range, with its branches named (disasm.h), as tools/disasm.py
-     does, where this build has an A64 disassembler.
-   - edenprobe_scaffold, edenprobe_check, edenprobe_run, edenprobe_finding (mcp_edenprobe.c): a confirmed failure as a
-     new edenprobe case, written into a local checkout, checked on the host, run on this build, and written up.
+     does, each instruction as the A64 decoder's op and arguments.
+   - amberlith_scaffold, amberlith_check, amberlith_run, amberlith_finding (mcp_amberlith.c; edenprobe_* before
+     Amberlith's 1.0.0, still answered): a confirmed failure as a new Amberlith case, written into a local checkout,
+     checked on the host, run on this build, and written up.
    - gdb_attach, gdb_command, gdb_threads, gdb_guest, gdb_memory, gdb_detach (mcp_gdb.c, UNIX only): GDB on a game
      started with the GDB stub, the runtime's process read and driven through it.
 
    scan_log, read_log, symbolize and disassemble read only under the data folder (DIR, else snx_data_dir's) and its
    state, cache and settings folders: what a tool answers with is a log's text or a game's code, and those are where
-   ScarletNX keeps them. The edenprobe tools work in the clone and on the NRO the person names, and answer only their
+   ScarletNX keeps them. The Amberlith tools work in the clone and on the NRO the person names, and answer only their
    own results. The GDB tools reach the game's process only, on this machine's loopback: gdb_command runs a list of
    GDB's reading, breakpoint and execution commands, none that runs a shell or a script or writes a file, though
    print and call evaluate the game's own functions.
@@ -65,14 +66,15 @@ typedef struct {
     char* data;             /* the data folder */
     char* roots[MAX_ROOTS]; /* the folders read_log reads under */
     char* works[2];         /* the extractions: the cache's work/, then an older version's in the data folder */
-    char* self;             /* this program, which edenprobe_run recompiles and runs edenprobe with */
-    char* cache;            /* the data folder's cache folder, where edenprobe_run keeps its recompile */
+    char* self;             /* this program, which amberlith_run recompiles and runs Amberlith with */
+    char* cache;            /* the data folder's cache folder, where amberlith_run keeps its recompile */
     int nroots;
     /* the last game symbolize or disassemble loaded, kept for the next call: an agent asks about one game many times,
        and loading one takes a second or more. game_folder NULL for none */
     char* game_folder;
     Game game;
     char* gdb_game; /* the game folder gdb_attach named guest addresses by, or NULL */
+    unsigned told_old; /* the edenprobe_ names whose first answer said the new one, a bit each (call) */
 } Mcp;
 
 /* ============================================================ text (mcp_int.h) */
@@ -607,7 +609,7 @@ typedef struct {
     Text* t;
     const Game* g;
 } Listing;
-static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text, SnxU64 target) {
+static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text) {
     Listing* l = (Listing*)ctx;
     char w[9];
     if (l->t->lines >= MAX_LINES) return;
@@ -618,6 +620,7 @@ static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text, Snx
     mcp_put(l->t, w);
     mcp_put(l->t, "  ");
     mcp_put(l->t, text);
+    SnxU64 target = snx_disasm_a64_target(word, address);
     if (target) {
         mcp_put(l->t, "  ; ");
         mcp_put_hex(l->t, target);
@@ -683,10 +686,7 @@ static char* disassemble(Mcp* m, const char* game, const char* function, const c
     if (to - mi->base > mi->image_size) to = mi->base + mi->image_size;
     l.t = &t;
     l.g = g;
-    if (snx_disasm_a64(mi->image + (from - mi->base), (size_t)(to - from), from, listed, &l)) {
-        mcp_put(err, "this build has no A64 disassembler (its LLVM has no AArch64 target): tools/disasm.py has one");
-        goto done;
-    }
+    snx_disasm_a64(mi->image + (from - mi->base), (size_t)(to - from), from, listed, &l);
     if (t.lines >= MAX_LINES) mcp_put(&t, "... (cut at 400 instructions: give a range for the rest)\n");
     if (found > 1) {
         mcp_put(&t, "(");
@@ -710,7 +710,7 @@ static const char instructions[] =
     "For a game started with the GDB stub (-S, or -s to wait before the runtime starts), gdb_attach connects GDB; "
     "gdb_command, gdb_threads, gdb_guest and gdb_memory then read the runtime and the guest, and gdb_detach lets the "
     "game run on. "
-    "Nothing of a game (code, files) goes into an issue, a pull request or an edenprobe case: a case asks the "
+    "Nothing of a game (code, files) goes into an issue, a pull request or an Amberlith case: a case asks the "
     "hardware a question the failure narrowed down to.";
 
 /* the names and texts below are static: d keeps pointers to them, not copies */
@@ -777,7 +777,9 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "and offset. game is a folder, a game folder of work/, or a title ID.";
     static const char dis_says[] =
         "Disassembles a game function named by a part of its symbol (demangled or not), or the range start to end "
-        "(hexadecimal), with each branch's target named. 400 instructions at most. game as for symbolize.";
+        "(hexadecimal), with each branch's target named. 400 instructions at most. game as for symbolize. Each "
+        "instruction is ScarletNX's A64 decoder's: its name in a64.decode, then its arguments as name=value, in "
+        "decimal.";
     static const char* const scaffold_names[] = {"checkout", "suite", "id", "name", "tier", "issue", "family"};
     static const char* const scaffold_types[] = {"string", "string", "string", "string", "string", "integer", "string"};
     static const char* const check_names[] = {"checkout", "suite"};
@@ -788,8 +790,8 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
                                                 "source"};
     static const char* const finding_types[] = {"integer", "string", "string", "string", "string", "string"};
     static const char scaffold_says[] =
-        "For a confirmed game report (the `status: confirmed` label): writes a new edenprobe service case's "
-        "mechanical parts into a local edenprobe checkout (git clone of scarletnx/edenprobe), every file or none: "
+        "For a confirmed game report (the `status: confirmed` label): writes a new Amberlith service case's "
+        "mechanical parts into a local Amberlith checkout (git clone of scarletnx/amberlith), every file or none: "
         "the case's enum entry and CASES[] row (suite, name), a judge and its reference check to fill in, the device "
         "side asking nothing yet, and a new suite's ui.c row. family is service (the only one it writes yet); id is "
         "the enum name without SERVICE_ (HID_HOLD_TYPE); "
@@ -797,19 +799,19 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "the ScarletNX issue. It answers what is left to write: the service call, the judge, the expected answer's "
         "source, the docs. Nothing of the game goes into a case.";
     static const char check_says[] =
-        "Runs edenprobe's host check in a checkout (make -f host.mk host-run: every judge and its reference check, "
+        "Runs Amberlith's host check in a checkout (make -f host.mk host-run: every judge and its reference check, "
         "with the host's compiler, no Switch toolchain): its lines about suite, its failures and its end.";
     static const char run_says[] =
-        "Recompiles an edenprobe NRO (built from the checkout with devkitPro's image, or a pull request's CI "
+        "Recompiles an Amberlith NRO (built from the checkout with devkitPro's image, or a pull request's CI "
         "artifact) with this program, runs it headless in the mode's words (\"quick notime service hooks\", plus "
         "\"fatal\" for a case that may crash; without hooks the probe opens fsp-srv and time:u, which this program "
         "refuses) until its summary, "
         "relaunching after a crash, and answers the report's build, the cases filter names (\"suite\" or \"suite: "
         "name\") and its summary. The recompile is kept while the NRO is unchanged; nothing of the person's "
-        "ScarletNX folders is touched. The report stays in the cache for edenprobe_finding.";
+        "ScarletNX folders is touched. The report stays in the cache for amberlith_finding.";
     static const char finding_says[] =
         "The case's lines in ScarletNX's report.jsonl and the reference's (Eden's run, or a console's), checked "
-        "(it should fail on ScarletNX and pass on the reference), and the edenprobe pull request's text: "
+        "(it should fail on ScarletNX and pass on the reference), and the Amberlith pull request's text: "
         "the commit subject, the issue it comes from, what each machine answered, source (where the expected answer "
         "comes from), the tests, and what a case may not hold.";
     static const char* const attach_names[] = {"port", "game"};
@@ -859,10 +861,10 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     tool(d, list, "state_info", states_says, schema(d, find_names, s1, 1, find_names, 1));
     tool(d, list, "symbolize", sym_says, schema(d, sym_names, sym_types, 2, sym_names, 2));
     tool(d, list, "disassemble", dis_says, schema(d, dis_names, dis_types, 4, game, 1));
-    tool(d, list, "edenprobe_scaffold", scaffold_says, schema(d, scaffold_names, scaffold_types, 7, scaffold_names, 7));
-    tool(d, list, "edenprobe_check", check_says, schema(d, check_names, s2, 2, check_names, 1));
-    tool(d, list, "edenprobe_run", run_says, schema(d, run_names, s3, 3, run_names, 3));
-    tool(d, list, "edenprobe_finding", finding_says, schema(d, finding_names, finding_types, 6, finding_names, 4));
+    tool(d, list, "amberlith_scaffold", scaffold_says, schema(d, scaffold_names, scaffold_types, 7, scaffold_names, 7));
+    tool(d, list, "amberlith_check", check_says, schema(d, check_names, s2, 2, check_names, 1));
+    tool(d, list, "amberlith_run", run_says, schema(d, run_names, s3, 3, run_names, 3));
+    tool(d, list, "amberlith_finding", finding_says, schema(d, finding_names, finding_types, 6, finding_names, 4));
     tool(d, list, "gdb_attach", attach_says, schema(d, attach_names, attach_types, 2, NULL, 0));
     tool(d, list, "gdb_command", command_says, schema(d, command_names, command_types, 2, command_names, 1));
     tool(d, list, "gdb_threads", threads_says, schema(d, NULL, NULL, 0, NULL, 0));
@@ -947,6 +949,17 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
     yyjson_mut_val *result = yyjson_mut_obj(d), *item;
     Text err = {0};
     char* text = NULL;
+    /* the probe's tools went by edenprobe_ before it became Amberlith (1.0.0): an old name still answers as the new
+       one, and its first answer says the new name */
+    static const char* const renamed[] = {"scaffold", "check", "run", "finding"};
+    char new_name[32];
+    const char* old_name = NULL;
+    unsigned old_bit = 0;
+    for (unsigned i = 0; i < sizeof renamed / sizeof *renamed; i++)
+        if (!strncmp(name, "edenprobe_", 10) && !strcmp(name + 10, renamed[i])) {
+            snprintf(new_name, sizeof new_name, "amberlith_%s", renamed[i]);
+            old_name = name, name = new_name, old_bit = 1u << i;
+        }
     const char* path = arg_string(args, "path");
     if (!strcmp(name, "scan_log")) {
         if (!path)
@@ -999,7 +1012,7 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
         else
             text = disassemble(m, game, arg_string(args, "function"), arg_string(args, "start"),
                                arg_string(args, "end"), &err);
-    } else if (!strcmp(name, "edenprobe_scaffold")) {
+    } else if (!strcmp(name, "amberlith_scaffold")) {
         const char *checkout = arg_string(args, "checkout"), *suite = arg_string(args, "suite"),
                    *id = arg_string(args, "id"), *what = arg_string(args, "name"), *family = arg_string(args, "family");
         if (!checkout || !suite || !id || !what || !family)
@@ -1008,15 +1021,15 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
             mcp_put(&err, "family: the scaffold writes service cases only yet; a cpu case goes in "
                           "source/tests/t_cpu.c by hand (a name, an inline-asm helper, CHECK_TRUE)");
         else
-            text = mcp_edenprobe_scaffold(checkout, suite, id, what, arg_string(args, "tier"),
+            text = mcp_amberlith_scaffold(checkout, suite, id, what, arg_string(args, "tier"),
                                           arg_number(args, "issue", 0), &err);
-    } else if (!strcmp(name, "edenprobe_check")) {
+    } else if (!strcmp(name, "amberlith_check")) {
         const char* checkout = arg_string(args, "checkout");
         if (!checkout)
-            mcp_put(&err, "checkout: the edenprobe checkout");
+            mcp_put(&err, "checkout: the Amberlith checkout");
         else
-            text = mcp_edenprobe_check(checkout, arg_string(args, "suite"), &err);
-    } else if (!strcmp(name, "edenprobe_run")) {
+            text = mcp_amberlith_check(checkout, arg_string(args, "suite"), &err);
+    } else if (!strcmp(name, "amberlith_run")) {
         const char *nro = arg_string(args, "nro"), *mode = arg_string(args, "mode"),
                    *filter = arg_string(args, "filter");
         if (!nro || !mode || !filter)
@@ -1024,9 +1037,9 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
         else if (!m->self || !m->cache)
             mcp_put(&err, "this program's path or its cache folder is unknown");
         else
-            text = mcp_edenprobe_run(m->self, m->cache, nro, mode, filter, &err);
-    } else if (!strcmp(name, "edenprobe_finding")) {
-        text = mcp_edenprobe_finding(arg_number(args, "issue", 0), arg_string(args, "suite"), arg_string(args, "name"),
+            text = mcp_amberlith_run(m->self, m->cache, nro, mode, filter, &err);
+    } else if (!strcmp(name, "amberlith_finding")) {
+        text = mcp_amberlith_finding(arg_number(args, "issue", 0), arg_string(args, "suite"), arg_string(args, "name"),
                                      arg_string(args, "scarletnx_report"), arg_string(args, "reference_report"),
                                      arg_string(args, "source"), &err);
     } else if (!strncmp(name, "gdb_", 4)) {
@@ -1034,6 +1047,22 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
     } else {
         mcp_put(&err, "no tool ");
         mcp_put(&err, name);
+    }
+    /* the note goes before the answer, a result's or an error's, which stays what it was */
+    if (old_name && !(m->told_old & old_bit)) {
+        Text noted = {0};
+        char* note = snx_format("%s is the old name of %s: it answered as that; call %s\n\n", old_name, name, name);
+        mcp_put(&noted, note ? note : "");
+        mcp_put(&noted, text ? text : err.p ? err.p : "failed");
+        free(note);
+        if (text) {
+            free(text);
+            text = noted.p;
+        } else {
+            free(err.p);
+            err = noted;
+        }
+        m->told_old |= old_bit;
     }
     item = yyjson_mut_arr_add_obj(d, yyjson_mut_obj_add_arr(d, result, "content"));
     yyjson_mut_obj_add_str(d, item, "type", "text");

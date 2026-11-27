@@ -1,19 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The native back ends' guest functions, what any machine's shares: what ir_codegen.c's snx_ir_emit makes of a
-   function, without LLVM. Included by a machine's code generator (x64/x64_codegen.c, arm64/arm64_codegen.c) after
-   sailgen's emitters of that machine (a64_<machine>.inc), and followed by the machine's glue, which it declares
-   below: the bytes of the ABI and the flow (the prologue, the jumps and their fixups, the calls, the entry's checks,
-   the dispatch block, SVC, BRK and UNDEF, the pins' loads and stores) and the relocations of its objects. The
-   machine also gives its AdvSIMD instructions (vec() and the vector helpers the structures' loads and stores take:
-   vread, vwrite, vzero, lane_get, lane_put, vdup), and these constants: MG_EM (its ELF machine; MG_ELF_FLAGS, its
-   objects' e_flags, LLVM's for the host's ABI, 0 by default), MG_R_ABS64 (an
-   absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry are in),
-   the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32 takes the
-   last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
-   the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's). MG_FAR_JUMPS where its
-   jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of a literal before the
-   literals are put in it (mg_pool_island).
+/* The native back ends' guest functions, what any machine's shares: a guest function's code. Included by a machine's
+   code generator (x64/x64_codegen.c, arm64/arm64_codegen.c) after sailgen's emitters of that machine
+   (a64_<machine>.inc), and followed by the machine's glue, which it declares below: the bytes of the ABI and the flow
+   (the prologue, the jumps and their fixups, the calls, the entry's checks, the dispatch block, SVC, BRK and UNDEF, the
+   pins' loads and stores) and the relocations of its objects. The machine also gives its AdvSIMD instructions (vec()
+   and the vector helpers the structures' loads and stores take: vread, vwrite, vzero, lane_get, lane_put, vdup), and
+   these constants: MG_EM (its ELF machine; MG_ELF_FLAGS, its objects' e_flags, the host ABI's, 0 by default),
+   MG_R_ABS64 (an absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry
+   are in), the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32
+   takes the last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins'
+   (MG_VPIN(k), the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's).
+   MG_FAR_JUMPS where its jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of
+   a literal before the literals are put in it (mg_pool_island), MG_DIRECT_ENTRY where a function's entry checks its
+   target before the frame, so that a call of its start comes in past the check (mg_direct): how far back a call reaches
+   one so with no relocation's help.
 
    Each basic block's instructions are sailgen's emitters', appended to one SSA region (registers read once, flags
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
@@ -49,6 +50,7 @@ typedef struct {
 typedef struct {
     char* name;
     size_t at, size;
+    size_t entry; /* a call of the function's start comes in this far past at, its entry's check behind it */
 } Sym;
 
 typedef struct {
@@ -95,11 +97,20 @@ typedef struct {
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
     int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
-    /* the addresses of the function's instructions there is no code for (options.alone), undefined where they run */
+    /* the addresses of the function's instructions there is no code for, undefined where they run */
     SnxU64* none;
     size_t nnone, cap_none;
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
+    /* the function calls a helper that computes with the host's floating point (MG_HOST_FP_HELPER names them), so its
+       entry puts the host's FP environment back: fp_entry, which the machine's mg_finish sets where the function it
+       made has host_fp and no check, to make it again with one (the function with no floating point has none) */
+    int host_fp, fp_entry;
     int dispatch, d_label, mismatch_label;
+    int start_label; /* the function's first word, its entry for any target */
+#ifdef MG_DIRECT_ENTRY
+    size_t first;   /* the unit's first function in the codegen */
+    size_t* sym_of; /* each function of the unit's made already: its symbol's index + 1, 0 where none */
+#endif
     int nstubs, cap_stubs;
     /* the function's BRs through a recovered jump table (MG_JTAB): each one's table, its label, the guest address of its
        first slot and its slots (a word each), whose labels are jslots[first...] (the dispatch block's where no case) */
@@ -186,12 +197,23 @@ static void mg_brk(Unit* u, SnxU64 address, unsigned imm);
 /* the function's entry, after the prologue: its stale check (options->stale), then e != start going to
    u->mismatch_label */
 static void mg_entry(Unit* u, size_t index, SnxU64 start);
+#ifdef MG_DIRECT_ENTRY
+/* the unit's functions check their target before the frame (mg_check), and a call of one's start comes in past it,
+   with no target in SGX_FN_TARGET: 1, 0 where the entry is mg_entry's */
+static int mg_direct(const Unit* u);
+/* if (e != start) goto label, before the prologue */
+static void mg_check(Unit* u, SnxU64 start, int label);
+/* after the prologue: if (snx_stale[index]) { c->pc = given ? e : start; return; }, where options->stale */
+static void mg_stale(Unit* u, size_t index, int given, SnxU64 start);
+#endif
 /* at u->mismatch_label: c->pc = e and the dispatch block (several leaders), else CALLDYN(e) */
 static void mg_dispatch(Unit* u, int lab0);
 /* the frame's size in the prologue and every epilogue, and the labels' jumps since fixup fix0: 1, 0 where one isn't
    bound or out of reach */
 static int mg_finish(Unit* u, size_t fix0);
-/* a relocation of the unit's to one of its own functions (at target_at), resolved in place: 1, 0 where it stays one */
+/* a relocation of the unit's to one of its own functions, resolved in place: 1, 0 where it stays one. target_at is
+   the entry of a call of the function's start, past its check where it has one (Sym.entry): every call of one of the
+   codegen's functions is of its start (call_target), and a function's jump to its own entry a label's */
 static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at);
 #ifdef MG_POOL_REACH
 /* the literals so far, here, a jump over them */
@@ -246,20 +268,89 @@ static void pins_flush(void* machine) { pins_all((Unit*)machine, ((Unit*)machine
 /* the region assembler's: into the buffer it writes (the cold one on a cold path) */
 static void pins_cs(void* machine, int store) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
+/* the names of the machine's registers, for fixed_fault's line */
+#ifndef MG_GPR_NAME
+#define MG_GPR_NAME(r, buf) (snprintf((buf), sizeof(buf), "r%d", (r)), (buf))
+#endif
+#ifndef MG_VREG_PREFIX
+#define MG_VREG_PREFIX "v"
+#endif
+/* SgXAsm's fixed_fault: instruction at of the region (the guest word it was made for, SgXIns' src) writes host register
+   reg for itself, where a pin keeps a guest register for the whole function, or its machine sequence writes reg
+   without declaring it (undeclared). The function's code would lose that register, or a value the allocator left in
+   reg: a defect of the back end, which stops the recompile rather than make wrong code */
+static void fixed_fault(void* machine, int at, int reg, int xmm, int undeclared) {
+    Unit* u = (Unit*)machine;
+    const SnxFunction* f = u->f;
+    int src = at >= 0 && at < u->g->x.n ? u->g->x.ins[at].src : -1, r;
+    char name[16], gpr[16], held[48] = "no guest register", where[96];
+    if (xmm)
+        snprintf(name, sizeof name, "%s%d", MG_VREG_PREFIX, reg);
+    else
+        snprintf(name, sizeof name, "%s", MG_GPR_NAME(reg, gpr));
+    for (r = 0; r < 32 && !undeclared; ++r)
+        if (xmm ? u->vpin[r] == reg : u->pin[r] == reg)
+            snprintf(held, sizeof held, "the guest's %s%d", xmm ? "V" : "X", r);
+    if (!xmm && !undeclared && u->mempin == reg) snprintf(held, sizeof held, "the guest memory's base");
+    if (src >= 0 && (size_t)src < f->count) {
+        SnxU64 pc = snx_function_address(f, (size_t)src);
+        SnxU32 word = 0;
+        (void)snx_codegen_word((SnxCodegen*)u->codegen, pc, &word);
+        snprintf(where, sizeof where, "the word %08x at %llx", (unsigned)word, (unsigned long long)pc);
+    } else
+        snprintf(where, sizeof where, "its entry, its dispatch or a stub (no word of its own)");
+    if (undeclared)
+        fprintf(stderr,
+                "native back end: function %llx, %s: its machine sequence writes %s, which its instruction does not "
+                "declare (a value may be left there): nothing of it is made\n",
+                (unsigned long long)f->start, where, name);
+    else
+        fprintf(stderr,
+                "native back end: function %llx, %s: writes %s for itself, which keeps %s for the whole function (its "
+                "pin): nothing of it is made\n",
+                (unsigned long long)f->start, where, name, held);
+    abort();
+}
+
 /* a function's symbol */
 static void fname(char* out, size_t size, const char* prefix, SnxU64 address) {
     snprintf(out, size, "%s%llX", prefix, (unsigned long long)address);
 }
 
+#ifdef MG_DIRECT_ENTRY
+/* a call of callee's start comes in past its check, no target given, where callee is this function or one the unit
+   made before it, within MG_DIRECT_ENTRY of here: the call is resolved in the unit then. One made later may be
+   another back end's yet, whose entry reads the target */
+static int past_check(const Unit* u, const SnxFunction* callee) {
+    size_t i = (size_t)(callee - u->codegen->functions);
+    const Sym* s;
+    if (!mg_direct(u)) return 0;
+    if (i == u->index)
+        s = &u->syms[u->nsyms - 1];
+    else if (i >= u->first && i < u->index && u->sym_of[i - u->first])
+        s = &u->syms[u->sym_of[i - u->first] - 1];
+    else
+        return 0;
+    return u->b.n - (s->at + s->entry) < MG_DIRECT_ENTRY;
+}
+#endif
 /* call(): F_target directly where the target is one of the codegen's functions (not routed through its slot),
    snx_aot_<target> where options->direct names it (the AOT module's function in a JIT unit, another module's an AOT
    module imports), CALLDYN otherwise; tail: then return */
 static void call_target(Unit* u, SnxU64 target, int tail) {
     const SnxCodegen* c = u->codegen;
     int through_slot = c->hook_direct_calls || snx_codegen_routed(c, target);
+    const SnxFunction* callee = through_slot ? NULL : snx_codegen_function(c, target);
     char sym[40];
+#ifdef MG_DIRECT_ENTRY
+    if (callee && past_check(u, callee)) {
+        fname(sym, sizeof sym, "F_", target);
+        call_sym(u, sym, tail);
+        return;
+    }
+#endif
     set_target(u, target);
-    if (!through_slot && snx_codegen_function(c, target))
+    if (callee)
         fname(sym, sizeof sym, "F_", target);
     else if (!through_slot && u->options->direct && u->options->direct(u->options->direct_user, target))
         snprintf(sym, sizeof sym, "snx_aot_%llx", (unsigned long long)target);
@@ -329,6 +420,10 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     qc_pay(u);
+#ifdef MG_HOST_FP_HELPER
+    for (k = 0; k < g->x.n && !u->host_fp; ++k)
+        u->host_fp = MG_HOST_FP_HELPER(g->x.ins[k].sym); /* only a call keeps a symbol */
+#endif
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
@@ -413,7 +508,7 @@ static void jump_if_back(Unit* u, SgB taken, int header, int slow, SnxU64 target
 }
 #endif
 
-/* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
+/* ---- what the Sail roots don't have: loads and stores, vectors and system instructions, on the region's SSA ---- */
 
 /* Xn as an address: SP for 31 */
 static SgD base_of(SgCtx* g, unsigned rn) { return sg_GPR_read(g, rn); }
@@ -690,8 +785,8 @@ static int simd_copy(Unit* u, SnxU32 word) {
     return 0;
 }
 
-/* SYS, MRS and MSR as ir_int.c's sys(): what EL0 reads and writes on the Switch, the cache maintenance it does; 0
-   for the rest (UNDEF there, LLVM's) */
+/* SYS, MRS and MSR: what EL0 reads and writes on the Switch, the cache maintenance it does; 0 for the rest, which no
+   code is made for (undefined where it runs) */
 #define SYSREG(op1, crn, crm, op2) ((1u << 14) | ((op1) << 11) | ((crn) << 7) | ((crm) << 3) | (op2))
 static int sys(Unit* u, SnxU32 word) {
     SgCtx* g = u->g;
@@ -727,7 +822,7 @@ static int sys(Unit* u, SnxU32 word) {
                                              sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_C), sg_PSTATE_read(g, SG_PSTATE_V))), 64);
                 v = sg_d_lsl(g, v, 28);
                 break;
-            /* the constants ir_int.c's read_sysreg gives: CTR_EL0 (SCTLR_EL1.UCT), DCZID_EL0, CNTFRQ_EL0 */
+            /* the constants EL0 reads: CTR_EL0 (SCTLR_EL1.UCT), DCZID_EL0, CNTFRQ_EL0 */
             case SYSREG(3, 0, 0, 1): v = sgx_const(64, 0x8444C004u); break;
             case SYSREG(3, 0, 0, 7): v = sgx_const(64, 4); break;
             case SYSREG(3, 14, 0, 0): v = sgx_const(64, 19200000u); break;
@@ -738,7 +833,7 @@ static int sys(Unit* u, SnxU32 word) {
                 v = sgx_call(g, "snx_mrs", 0, 1, &k, 1, 64);
                 break;
             }
-            default: return -1; /* UNDEF at EL0 on the Switch, as ir_int.c's read_sysreg leaves it */
+            default: return -1; /* UNDEF at EL0 on the Switch */
             }
             if (rt != 31) sg_GPR_write(g, rt, v);
             return 1;
@@ -772,7 +867,7 @@ static int sys(Unit* u, SnxU32 word) {
             sg_PSTATE_write(g, SG_PSTATE_N, 4, sg_d_slice(g, xzr_or(g, rt), 31, 28));
             g->origin = -1;
             return 1;
-        default: return -1; /* read-only at EL0, or EL1's: UNDEF, as ir_int.c's write_sysreg leaves it */
+        default: return -1; /* read-only at EL0, or EL1's: UNDEF */
         }
     }
     if (op0 == 1 && !l && op1 == 3 && crn == 7 && op2 == 1) {
@@ -797,7 +892,7 @@ static int sys(Unit* u, SnxU32 word) {
         default: return -1;
         }
     }
-    return -1; /* the rest of SYS and SYSL: UNDEF, as ir_int.c's sys() */
+    return -1; /* the rest of SYS and SYSL: UNDEF */
 }
 #undef SYSREG
 
@@ -916,7 +1011,7 @@ static int struct_ldst(Unit* u, SnxU32 word) {
     return 1;
 }
 
-/* the instruction at address, word; 0 where the function goes to LLVM */
+/* the instruction at address, word; 0 where the back end has no code for it (undefined where it runs) */
 /* SBFM and UBFM (LSL, LSR, ASR, SBFX, UBFX, SBFIZ, UBFIZ, SXTB to SXTW, UXTB, UXTH): one or two shifts, a MOVSX or
    a mask, not the Sail's rotation, masks and Replicate of the sign. BFM, and reserved fields (the Sail's UNDEF), are
    the Sail's */
@@ -965,7 +1060,7 @@ static int reverse(Unit* u, SnxU32 word) {
     return 1;
 }
 
-/* ---- PLT stubs the program's linker binds (SnxBoundBranch), as ir_codegen.c lowers them ----
+/* ---- PLT stubs the program's linker binds (SnxBoundBranch) ----
    On a machine without MG_BOUND every call of a stub runs the stub */
 
 #ifdef MG_BOUND
@@ -1002,7 +1097,7 @@ static SnxU64 stub_function(Unit* u, SnxU64 target, SnxU32* w, int* guard) {
    F_bound. With guard, the stub's ADRP, LDR and ADD as at their own addresses, then if (x17 == bound) F_bound, else
    F_stub, whose own code takes whatever else the slot holds. A stub whose code the guest changed is stale: none of
    its instructions run here, and its function's entry leaves for the code there now. tail: each way returns.
-   0 where the back end can't make the stub's load (the function is LLVM's then) */
+   0 where the back end can't make the stub's load (no code for it then: undefined where it runs) */
 static int call_stub(Unit* u, SnxU64 stub, const SnxU32* w, SnxU64 bound, int guard, int tail) {
     SgCtx* g = u->g;
     const SnxCodegen* c = u->codegen;
@@ -1314,7 +1409,7 @@ static int memory_op(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 
 /* instructions past the guests' CPUs that are others', or nothing, where EL0 runs: 1 made, -1 UNDEF, 0 the Sail's (of
    g->word). No allocation tag is kept (FEAT_MTE): STG and ST2G only move their base, the zeroing forms clear their
-   16-byte granules too, LDG gives a tag of 0 and STGP stores its pair, as ir_ldst.c's; the forms of many tags are
+   16-byte granules too, LDG gives a tag of 0 and STGP stores its pair; the forms of many tags are
    EL1's */
 static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 address_of) {
     SgCtx* g = u->g;
@@ -1368,15 +1463,14 @@ static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 addr
    NULL): said, once a function, with what it becomes */
 static void no_code(Unit* u, const char* why) {
     const SnxFunction* f = u->f;
-    const char* becomes =
-        u->options->alone ? "it raises an undefined instruction where it runs" : "LLVM makes the function";
+    const char* becomes = "it raises an undefined instruction where it runs";
     SnxU64 address;
     SnxU32 word = 0;
     SnxA64Insn insn;
     if (u->options->refused) ++*u->options->refused;
     if (u->at >= f->count) {
-        snx_error("native back end: the function at 0x%llx: %s%s", (unsigned long long)f->start,
-                  why ? why : "longer than its branches reach", u->options->alone ? "" : ": LLVM makes the function");
+        snx_error("native back end: the function at 0x%llx: %s", (unsigned long long)f->start,
+                  why ? why : "longer than its branches reach");
         return;
     }
     address = snx_function_address(f, u->at);
@@ -2083,6 +2177,7 @@ static void pin_dirt(Unit* u, const SnxFunction* f, const int* succ, const unsig
    read the state (a system register's helper, WFE, SEV) */
 static void choose_pins(Unit* u, const SnxFunction* f) {
     SnxU64 weight[33], vweight[32]; /* weight[32]: the guest memory's base */
+    SnxU64 vuses[32];               /* each V register's instructions, weighted as vweight: its ties' breaker */
     unsigned k, best, nhosts;
     int fixed = 0; /* an exclusive, an atomic or CRC32: the last pins' registers may be their machine instructions' */
     unsigned char *loop, *sk;
@@ -2100,6 +2195,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
     memset(vweight, 0, sizeof vweight);
+    memset(vuses, 0, sizeof vuses);
     loop = (unsigned char*)calloc(2 * (f->count + 1), 1);
     sk = loop + f->count + 1; /* each instruction's kind for pin_dirt */
     succ = (int*)malloc(2 * f->count * sizeof *succ);
@@ -2252,6 +2348,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             vrd |= vuse & ~vwr;
             for (m = vdef & ~vwr; m; m &= m - 1) vweight[snx_ctz32(m)] += wt;
             vwr |= vdef;
+            for (m = vuse | vdef; m; m &= m - 1) vuses[snx_ctz32(m)] += wt;
             regs_of(w, &use, &def);
             if (use == LIVE_ALL) continue; /* a call, a return, what isn't classified: a flush anyway */
             for (r = 0; r < 32; ++r) {
@@ -2275,13 +2372,16 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         if (MG_PIN_RESERVED(mg_pin_hosts[k])) u->a.reserved |= 1u << mg_pin_hosts[k];
         u->pinned = 1;
     }
-    /* the V registers most used, in the machine's vector pins (x86-64's XMM15 down to XMM8) */
+    /* the V registers most used, in the machine's vector pins (x86-64's XMM15 down to XMM8); of two that save as many
+       loads and stores, the one more instructions read or write: a loop's accumulator, whose chain would otherwise go
+       through memory at each turn */
     for (k = 0; k < MG_NVPINS; ++k) {
         unsigned r;
-        SnxU64 top = 0;
+        SnxU64 top = 0, uses = 0;
         best = 32;
         for (r = 0; r < 32; ++r)
-            if (u->vpin[r] < 0 && vweight[r] > top) top = vweight[r], best = r;
+            if (u->vpin[r] < 0 && (vweight[r] > top || (vweight[r] == top && vuses[r] > uses)))
+                top = vweight[r], uses = vuses[r], best = r;
         if (best == 32 || top < 8u) break;
         u->vpin[best] = (signed char)MG_VPIN(k);
         u->a.xreserved |= 1u << MG_VPIN(k);
@@ -2297,6 +2397,11 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     int lab0 = u->nlabels, ok = 1;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
+#ifdef MG_DIRECT_ENTRY
+    int other = -1;
+    SnxU64 pin_sel;
+    SnxU32 vpin_sel;
+#endif
     jmp_buf jb;
     jmp_buf* saved = g_fail;
     char sym[40];
@@ -2308,6 +2413,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->a.ncjumps = u->a.nccalls = 0;
     u->a.npool = u->a.nrips = 0;
     u->a.slots_max = 0;
+    u->host_fp = 0;
     u->nstubs = 0;
     u->njtabs = 0;
     u->njslots = 0;
@@ -2322,11 +2428,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->dispatch = f->leader_count > 1;
     u->d_label = u->dispatch ? new_label(u) : -1;
     u->mismatch_label = new_label(u);
+    u->start_label = new_label(u);
     fname(sym, sizeof sym, "F_", f->start);
     u->syms = (Sym*)grow(u->syms, &u->cap_syms, u->nsyms + 1, sizeof *u->syms);
     u->syms[u->nsyms].name = strdup(sym);
     u->syms[u->nsyms].at = u->b.n;
+    u->syms[u->nsyms].entry = 0;
     u->nsyms++;
+    bind(u, u->start_label);
     flush(u); /* no block state of another function's */
     choose_pins(u, f);
     liveness(u, f);
@@ -2335,6 +2444,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     memcpy(u->g->vpin, u->vpin, sizeof u->vpin);
     u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
+    u->a.fixed_fault = fixed_fault;
+    u->a.pinned = u->a.xpinned = 0;
+    for (i = 0; i < 32; ++i) {
+        if (u->pin[i] >= 0) u->a.pinned |= 1u << u->pin[i];
+        if (u->vpin[i] >= 0) u->a.xpinned |= 1u << u->vpin[i];
+    }
+    if (u->mempin >= 0) u->a.pinned |= 1u << u->mempin;
+    u->g->x.src = -1;
     u->a.pin_flush = pins_flush;
     /* the prologue loads the pins live where the function starts; the mismatch's path (another entry) the others */
     if (u->pinned && u->live && f->count && snx_function_address(f, 0) == f->start) {
@@ -2342,11 +2459,25 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         u->vpin_sel = u->vlive ? u->vlive[0] : ~0u;
     }
     u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
+#ifdef MG_DIRECT_ENTRY
+    /* if (e != start) goto other, the frame past it: a call of the start comes in there */
+    if (mg_direct(u)) {
+        other = new_label(u);
+        mg_check(u, f->start, other);
+        u->syms[sym0].entry = u->b.n - u->syms[sym0].at;
+    }
+    pin_sel = u->pin_sel, vpin_sel = u->vpin_sel;
+#endif
     prologue(u);
     pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
     u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
     /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
-    mg_entry(u, index, f->start);
+#ifdef MG_DIRECT_ENTRY
+    if (other >= 0)
+        mg_stale(u, index, 0, f->start);
+    else
+#endif
+        mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
         volatile size_t vi = 0;
@@ -2363,6 +2494,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
+            u->g->x.src = (int)vi;
             if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
             if (!instruction(u, vi, address, word)) {
                 ok = 0;
@@ -2370,9 +2502,21 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
         }
     }
+    u->g->x.src = -1; /* what follows is no word's */
     flush(u);
     u->at = f->count;
     leave(u); /* off the end */
+#ifdef MG_DIRECT_ENTRY
+    if (other >= 0) {
+        /* the entry of another target: the start's frame and pins, its stale check, then the mismatch's way */
+        bind(u, other);
+        u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
+        u->pin_sel = pin_sel, u->vpin_sel = vpin_sel;
+        prologue(u);
+        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+        mg_stale(u, index, 1, f->start);
+    }
+#endif
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
     bind(u, u->mismatch_label);
@@ -2547,7 +2691,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             size_t h0 = name_hash(u->relocs[i].sym) & (hcap - 1), h = h0;
             for (; hsym[h]; h = (h + 1) & (hcap - 1))
                 if (!strcmp(u->relocs[i].sym, u->syms[hsym[h] - 1].name)) break;
-            if (hsym[h] && mg_resolve_local(u, &u->relocs[i], u->syms[hsym[h] - 1].at)) {
+            if (hsym[h] && mg_resolve_local(u, &u->relocs[i], u->syms[hsym[h] - 1].at + u->syms[hsym[h] - 1].entry)) {
                 free(u->relocs[i].sym);
                 u->relocs[i].sym = NULL;
                 continue;
@@ -2619,7 +2763,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             sym.st_name = str_add(&strtab, undef[i]);
             sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_NOTYPE);
             sym.st_shndx = SHN_UNDEF;
-            if (!strcmp(undef[i], "snx_stale")) sym.st_other = STV_HIDDEN; /* the module's own, as LLVM declares it */
+            if (!strcmp(undef[i], "snx_stale")) sym.st_other = STV_HIDDEN; /* the module's own */
             put(&symtab, &sym, sizeof sym);
         }
         for (i = 0; i < u->nrelocs; ++i) {
@@ -2708,11 +2852,22 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.b.p = (unsigned char*)malloc(u.b.cap);
     u.b.index = -1;
     u.b.disp = 0;
+    u.b.features = host;
 #ifdef MG_R_FAR
     u.b.absolute = options->jit;
 #endif
     u.codegen = codegen;
     u.options = options;
+#ifdef MG_DIRECT_ENTRY
+    u.first = first;
+    u.sym_of = (size_t*)calloc(last - first + 1, sizeof *u.sym_of);
+    if (!u.sym_of) {
+        free(u.g);
+        free(u.b.p);
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+#endif
     u.a.b = &u.b;
     u.a.machine = &u;
     u.a.reloc = unit_reloc;
@@ -2725,17 +2880,14 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.nb = 1;
     for (i = first; i < last; ++i) {
         size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
-        if (options->llvm_at && codegen->functions[i].start == options->llvm_at) {
-            if (options->jit) break; /* made[] stays 0: LLVM's, for the IR it prints */
-            continue;
-        }
         if (u.b.cap - u.b.n < codegen->functions[i].count * 400 + 4096) {
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
         }
-        u.again = 0;
+        u.again = u.fp_entry = 0;
         made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
-        if (!made[i - first] && u.again) made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
+        if (!made[i - first] && (u.again || u.fp_entry))
+            made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
         if (u.b.n > u.b.cap) {
             /* past the buffer: grown, and made again, its symbol and relocations too */
             for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);
@@ -2757,7 +2909,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
 #endif
         if (!made[i - first]) {
             if (!u.nnone) no_code(&u, g_why);
-            if (options->alone && u.at < codegen->functions[i].count) {
+            if (u.at < codegen->functions[i].count) {
                 SnxU64 address = snx_function_address(&codegen->functions[i], u.at);
                 if (!u.nnone || u.none[u.nnone - 1] != address) {
                     /* made again, that instruction undefined */
@@ -2773,6 +2925,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         }
         u.nnone = 0;
         count += made[i - first];
+#ifdef MG_DIRECT_ENTRY
+        if (made[i - first]) u.sym_of[i - first] = u.nsyms;
+#endif
         if (options->jit && !made[i - first]) break;
     }
     if (options->jit && count != last - first) count = 0;
@@ -2794,6 +2949,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     free(u.none);
     free(u.live_buf), free(u.exits_buf), free(u.vlive_buf), free(u.dsync), free(u.vdsync);
     free(u.jtabs), free(u.jslots);
+#ifdef MG_DIRECT_ENTRY
+    free(u.sym_of);
+#endif
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);

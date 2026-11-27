@@ -45,22 +45,36 @@ zero leaves that list, and fails the target from then on.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
 CI (`.github/workflows/build.yml`) has one job for each platform and architecture, which builds its package, then
-tests and checks it with the same tree and compiler cache: each Linux AppImage (x86-64 and AArch64) with ABI syntax,
-native tool/FS regressions, headless Vulkan on lavapipe and optional Python diagnostics, x86-64's also under ASan and
-UBSan and with [edenprobe](edenprobe.md)'s probes on lavapipe against the cases that passed before
-(`scripts/edenprobe.py`); the cross-built AppImages, the Windows zips (x86-64 and AArch64), the Android APK and the
-macOS and iOS apps. On `main` the AppImages and the zips also run as installed, at the end of their jobs. A push to
+tests it with the same tree and compiler cache and runs it as installed: each Linux AppImage (x86-64 and AArch64) with
+the ABI helpers' syntax, native tool and FS regressions, headless Vulkan on lavapipe and the optional Python
+diagnostics, x86-64's with [Amberlith](amberlith.md)'s probes on lavapipe against the cases that passed before
+(`scripts/amberlith.py`); the cross-built AppImages through qemu; the Windows zips (x86-64 and AArch64), the Android
+APK and the macOS and iOS apps. x86-64 under ASan and UBSan and the other machines' back ends under Unicorn have a job
+each. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
+nightly's schedule build every package, run the x86-64 and AArch64 AppImages and the Windows zips as a user would, the
+schedule publishing them, and test nothing else, so a merge that breaks a test shows on the next pull request's run. A push to
 `main` cancels the build of the one before it still running, as a push to a pull request does that pull request's.
+The steps' commands are in `scripts/ci/`, a file for each job and a function for each step (`scripts/ci/cross.sh
+build`), held to the workflow by `tests/ci_scripts_test.py`.
 `.github/workflows/publish.yml` publishes what builds everywhere, each said on Discord (`scripts/publish-builds.py`): a
 version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's release of it, the latest, its notes
-listing the changes since the version before;
-each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
-kept (this repository's `nightly` prerelease shows the latest's notes); each pull request as a prerelease there,
-`pr-<number>`. The notes and the messages link each download with its size and list what changed (a pull request's
-commits). A fork's pull request is published once someone of the team labels it `publish builds`, after each
-push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
-[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job
-of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
+listing the changes since the version before; the first scheduled run of `main` of each day (UTC) that builds
+everywhere, or a run of it by hand, as that day's nightly in
+[scarletnx/nightly](https://github.com/scarletnx/nightly/releases), `nightly-<day>-<commit>`, where every nightly stays
+(the nightly repository's README is `scripts/nightly-notes.py`'s, written at each nightly); a day whose runs failed says
+so, with the run, at the top of the newest nightly until the next one; each push to `main` as this repository's one
+prerelease of main, `main-<commit>`, a tag that never moves: each packaging job of `build.yml` starts `publish.yml` by
+hand with its run once its package is uploaded, so the package joins at once, and the run's end does it once more; the
+first package of a newer build replaces the prerelease and its tag, a build that ends with no package leaves none, and
+an older one changes nothing (`publish.yml`'s concurrency runs one at a time); each pull request as a prerelease there,
+`pr-<number>`, deleted when it closes without a merge, or, merged, by the first nightly that has its change, which also
+deletes any a close's run left behind. The notes and the messages link each download with its size and list what
+changed: a line for each pull request the commits came in by, grouped by the `[area]` of its title, with its commits
+counted, and one for each commit no pull request merged (a pull request's own builds list its commits). A fork's pull
+request is published once someone of the team labels it `publish builds`, after each push. The Discord cards of each
+pull request, each issue and each nightly are ReiWimsy's, the bot of
+[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job of
+this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
 `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
@@ -93,9 +107,10 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   (a log's lines holding a text, `|` between alternatives, with context, or a range, or its last lines, only under
   the data folder and its state, cache and settings folders), `find_game` (the extracted games in `work/` with their
   title IDs and versions), `state_info` (a recompiled game's save states: slot, program, when, play time, the build
-  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
-  LLVM's disassembler where LLVM has the AArch64 target). The last game loaded stays loaded for the next call. Its
-  edenprobe tools turn a confirmed report into an edenprobe case ([edenprobe](edenprobe.md)). Its GDB tools
+  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, each A64
+  instruction as the A64 decoder's op and arguments: `ADD_i rd=1 rn=2 imm=291 sf=1`, a64.decode's name and each
+  argument in decimal). The last game loaded stays loaded for the next call. Its
+  Amberlith tools turn a confirmed report into an Amberlith case ([Amberlith](amberlith.md)). Its GDB tools
   (`mcp_gdb.c`, [Usage](../user/usage.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
   resumes as `-exec-*` commands in the background). They find a guest thread's `KThread` through its host thread's
   `t_hle.thread.cur`, by the runtime's debug information, and guest memory at `g_mem`. The game reports
@@ -107,7 +122,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   what it would post, and `gh workflow run game-reports.yml -f issue=N` runs the workflow for that issue (one whose run
   failed), failing on a pull request or an issue without a log. `scripts/game-reports.py index [--title-id ID]
   [--signature TEXT]` lists the reports and their logs as JSON lines. A maintainer's `status: confirmed` label on a
-  report gets one comment: ready for an edenprobe case, with the steps. The ctest `game_reports_workflow` runs the
+  report gets one comment: ready for an Amberlith case, with the steps. The ctest `game_reports_workflow` runs the
   workflow's build step on the files its sparse checkout lists alone, so a file the log summary comes to include fails a
   pull request until the list has it.
 
@@ -491,7 +506,7 @@ itself: `scripts/check-docs.py --bans` writes those rows from the table after a 
 while they differ.
 `vulkan_ban_ignore` ([Settings](../user/settings.md#graphics)) goes over the bans of the keys it lists for one run, to test a
 driver again: `--vulkan-ban-ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
-`scripts/edenprobe.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
+`scripts/amberlith.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
 one holds; a key the table has not stops the game with the nearest ones it has. A case that passes with the ban gone
 over, held against the console's or Eden's, is what lifts it. To see which lines hold for this machine's drivers, or
 for a driver given by hand:

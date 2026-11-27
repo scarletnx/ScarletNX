@@ -16,6 +16,7 @@
 * [The HLE BIOS](#the-hle-bios)
 * [The display on the GPU](#the-display-on-the-gpu)
 * [Sound](#sound)
+* [Save states](#save-states)
 * [Known limits](#known-limits)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 
@@ -43,7 +44,7 @@ The driver uses melonDS as its reference and ports parts of it ([Source provenan
 | Kernel and HLE | the BIOS calls as board routines (`src/nds/bios/`), the ARM7's services (`src/nds/hle/`), the board's memory, registers, DMA, timers and card (`src/nds/board/`) | [The ARM7's services](#the-arm7s-services), [The HLE BIOS](#the-hle-bios), [The memory map](#the-memory-map) |
 | GPU | the geometry engine (`src/nds/gpu/gpu3d.c`), and on Vulkan the 3D engine's picture, the 2D engines' frame and the window (`src/nds/gpu/vk/`) | [The display on the GPU](#the-display-on-the-gpu) |
 | Audio | the sound driver (`src/nds/hle/sound.c`) and the sound hardware's channels (`src/nds/audio/`) | [Sound](#sound) |
-| Input | the keys, the gamepads and the pen from the window (`src/nds/runtime/host.c`) | [Playing](#playing) |
+| Input | the keys, the gamepads, the on-screen controls and the pen from the window (`src/nds/runtime/host.c`) | [Playing](#playing) |
 | Platform | the run (`src/nds/runtime/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Playing
@@ -54,8 +55,12 @@ The driver uses melonDS as its reference and ports parts of it ([Source provenan
 
 `scarletnx-nds Game.nds` plays the image in a window with both screens, the upper one above the lower one, scaled to
 the window at the console's shape. The keyboard is the other consoles': the arrows are the D-pad, X or Space A, Z B,
-S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. The pointer
-held on the lower screen is the pen. F11 switches fullscreen, and Esc twice within 3 seconds closes the window.
+S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. A finger or
+the mouse's left button held on the lower screen is the pen, the first one until it lifts (`--touch=1` the fingers
+alone, `--touch=0` neither). The twelve keys are on the screen too
+([On-screen controls](../../user/usage.md#on-screen-controls)): shown on a touch screen while no gamepad is connected,
+or as `--controls=` says, their layout edited with F2. F11 or Alt+Return switches fullscreen, and Esc twice within 3
+seconds closes the window: the runtime's keys, as a Switch game takes them.
 
 `scarletnx-nds` is also a menu entry of `scarletnx-gui` ("Load NDS ROM"), and an image in a games folder shows in
 Games.
@@ -161,7 +166,7 @@ The offline compiler (`src/nds/aot/`) discovers the code of each region from the
 initializers and the hints, along every direct branch and call. A function reached only through its address is found
 from the words that hold the address, where a function can start: at code that reads as code, right after the end of
 code already found or at a region's start. The blocks are compiled in chunks on the threads `--aot-threads` gives, by the
-host's native back end and LLVM for the ones it refuses (`src/common/cpu/arm/aot.h`, which the recompile says), and
+host's native back end (`src/common/cpu/arm/aot.h`, which the recompile says), and
 linked by the backend's own linker, with a table of blocks for each region and instruction set and each block's
 length.
 
@@ -309,6 +314,35 @@ every 5.2 ms of the board's time, as the driver's timer has it.
 `src/nds/audio/spu.c` is the sound hardware the driver plays through: sixteen channels (PCM, ADPCM, the square waves
 and the noise channels) mixed to stereo at the console's rate, 32728.5 Hz. SDK 2.0's sound library numbers its
 commands in two other ways (its early builds and its later ones), which the program's SDK version tells.
+
+## Save states
+
+A state is the whole console at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/nds/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| BOARD | the `NdsBoard`: the registers, the main memory display, DMA, timers, the FIFO, the card's transfer, CP15; not the lines' 2D registers, which each visible line records again before its frame is composed |
+| CPU | the `NdsCpu`: the ARM9's registers and their banks |
+| MEMORY | main memory, the shared work RAM, the ITCM, the DTCM, the palettes, the OAM and the nine VRAM banks |
+| GPU3D | the geometry engine, its vertex and polygon memory with their links as indices, and the commands queued after SWAP_BUFFERS (`gpu/gpu3d.c`) |
+| SPU | the sound hardware's channels and the samples mixed and not played yet (`audio/spu.c`) |
+| PXI | the ARM7's side and the firmware's flash (`hle/pxi.c`) |
+| SOUND | the sound driver: its channels, sequences, tracks and alarms with their links as indices (`hle/sound.c`) |
+| CAPTURE | a display capture the GPU made and the bank has not taken yet (`gpu/vk/frame.c`) |
+
+The card image (named by its identity, as the compiled module is), the window and the card's save memory stay the
+runner's: the save memory is the game's save file, `<name>.sav`, as a Switch game's save files are, so a load leaves
+it as it is. A load maps the VRAM banks and the DTCM where the state's registers put them. The compiled blocks are no
+part of a state: each dispatch compares the code memory holds.
+
+`snx_nds_state_save` and `snx_nds_state_load` (`src/nds/runtime/state.h`) take the board and the ARM9 between two
+frames. A load reads and checks every section before it changes anything, and refuses another card's state (both
+identities named), another `SNX_NDS_STATE_VERSION` (both versions named), a section of another layout (both hashes
+named), and a file that is damaged or cut short. The test's card makes a state of 232 KiB, 225 KiB of it the
+thumbnail, saved and loaded in a few milliseconds (`nds_state`, `tests/nds_state.c`: the 30 frames after a load give
+the run's pictures, sound and state word for word).
 
 ## Known limits
 

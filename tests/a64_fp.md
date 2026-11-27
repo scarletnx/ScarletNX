@@ -43,7 +43,7 @@ expected results are raw IEEE encodings. The checks include:
 Both tests run under all four host rounding modes. The arithmetic test also
 checks that operations leave host rounding and exception state unchanged.
 `native_codegen` checks selected scalar, vector and by-element witnesses, the vector ones of these tests among
-them, through the LLVM backend's steps, and the reserved encodings through the generated decoder.
+them, through the native back end's steps, and the reserved encodings through the generated decoder.
 
 References: ARM DDI0487A.k instruction and shared FP pseudocode (`FPUnpack`,
 `FPRound`, `FPProcessNaNs`, `FPProcessNaNs3`, arithmetic, conversions and estimates)
@@ -52,9 +52,9 @@ are RES0; later optional alternate-FP behavior is not part of this target.
 
 ## Against QEMU
 
-The Unicorn harness that compared these families with the C templates is retired with them. The LLVM emitters
-run against `qemu-aarch64` instead (`llvm_qemu_differential`, `tests/llvm_qemu_differential.c`): every row of the
-generated decoder, FP edge values, FPCR's RMode, FZ and DN varied, all 128 destination bits, FPSR and NZCV.
+The Unicorn harness that compared these families with the C templates is retired with them. The native back end's
+code runs against `qemu-aarch64` instead (`native_qemu_differential`, `tests/native_qemu_differential.c`): every row of
+the generated decoder, FP edge values, FPCR's RMode, FZ and DN varied, all 128 destination bits, FPSR and NZCV.
 
 These tests are regressions, not architectural certification, hardware
 measurements, full-runtime validation or gameplay/performance benchmarks.

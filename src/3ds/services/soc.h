@@ -11,6 +11,8 @@ void snx_ctr_soc_dispatch(SnxCtrIpc* c);
 void snx_ctr_soc_poll(struct SnxCtrProcess* p);
 /* whether a thread waits on a socket: the scheduler then wakes every millisecond to look again */
 bool snx_ctr_soc_waiting(const struct SnxCtrProcess* p);
+/* the sockets the game has open */
+unsigned snx_ctr_soc_open(const struct SnxCtrProcess* p);
 void snx_ctr_soc_close(struct SnxCtrProcess* p);
 /* The name a game resolves, as the console's service and its modules see it: Pretendo's rewrite of the NAT check hosts
    with ctr_online=pretendo, then NULL for the console maker's own domains, which resolve to nothing */

@@ -75,6 +75,10 @@ int g_lock_futex;
 static void futex_wake(u64 addr) {
     if (g_lock_futex) plat_wake_word_one(uword(addr));
 }
+/* every thread waiting on the word: the one a mutex was handed to finds it is the owner, the others wait again */
+static void futex_wake_all(u64 addr) {
+    if (g_lock_futex) plat_wake_word(uword(addr));
+}
 /* The words are little-endian, the guest's order: these take and give host numbers, and convert at the access (nothing
    on a little-endian host). A compare-and-swap's expected value is converted in and out, so a failed one gives the
    word's current value as a host number */
@@ -269,19 +273,31 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
 /* svcArbitrateUnlock (Eden's KConditionVariable::SignalToAddress): the owner unlocks a mutex with waiters, the best of
    which gets it */
 u32 svc_arbitrate_unlock(u64 addr) {
+    int handed;
+    return svc_arbitrate_unlock_to(addr, 0, &handed);
+}
+u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed) {
     KThread* n;
     int more, why = 0;
     u32 r;
+    *handed = 0;
     R_TRY(check_word(addr));
     r = check_mapped(addr, 4);
     pm_lock(&g_host.kernel.klock);
     n = mutex_next_nl(addr, &more, &why);
-    /* the next owner has the mutex whether the word can be written or not, as on the console */
-    if (!r) word_store(uword(addr), mutex_tag(n, more));
+    /* the next owner has the mutex whether the word can be written or not, as on the console. A waiter on the word
+       keeps the waiters bit: others may wait there too */
+    if (!r) {
+        *handed = !n && tag;
+        word_store(uword(addr), *handed ? tag | HANDLE_WAIT : mutex_tag(n, more));
+    }
     if (n) wake(n, 0);
     klock_unlock();
     mutex_handoff_flush(why);
-    if (!r) futex_wake(addr);
+    if (*handed)
+        futex_wake_all(addr);
+    else if (!r)
+        futex_wake(addr);
     return r;
 }
 

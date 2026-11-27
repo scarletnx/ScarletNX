@@ -100,8 +100,7 @@ loader, and a Mac without `VK_DRIVER_FILES` gives them MoltenVK. Their own setti
 The app carries KosmicKrisp when the build gets the SDK's macOS folder:
 
 ```sh
-cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm \
-    -DSNX_MOLTENVK=$HOME/moltenvk-macos -DSNX_KOSMICKRISP=$HOME/VulkanSDK/1.4.363.0/macOS
+cmake --preset macos -DSNX_MOLTENVK=$HOME/moltenvk-macos -DSNX_KOSMICKRISP=$HOME/VulkanSDK/1.4.363.0/macOS
 ```
 
 The app then carries both drivers. The build takes the SDK's `lib/libvulkan_kosmickrisp.dylib`, its
@@ -131,7 +130,7 @@ menu's driver:
   LiveContainer, enable its Fix File Picker for ScarletNX: without it, the picker shows the files, but Open gives none
   back. The banner says `host:` when another app runs ScarletNX. Preparing a dump
   runs the driver on a thread of the app, since an app may not start a process. A dump picked outside `dumps/` is
-  copied into it first. The thread has a 64 MiB stack, which LLVM's passes need.
+  copied into it first. The thread has a 64 MiB stack, where an iOS thread's default is 512 KiB.
 - **A game** runs in the app's process once the menu closes (`src/nx/runtime/entry.c`): the runtime starts once per
   process, so the app ends with the game.
 - **Share Log** asks how, then saves `scarletnx-logs-<date>.zip` or `scarletnx.log` in `logs/share/` of its Documents
@@ -169,15 +168,14 @@ framework.
 
 Code compiled while a game runs on macOS, 32-bit games' blocks and the runtime JIT's functions, goes through the
 runtime's own loader (`src/common/cpu/recompiler/loader/code_loader.c`). The arm64 back end
-(`src/common/cpu/recompiler/arm64`), and LLVM for what it leaves, write it as ELF objects with Darwin's calling
+(`src/common/cpu/recompiler/arm64`) writes it as ELF objects with Darwin's calling
 convention, and the loader places them in `MAP_JIT` memory, which each thread sees either writable or executable.
 The app is signed without the hardened runtime, so `MAP_JIT` needs no entitlement.
 
 ### Running a game on iOS
 
-The iPhone prepares the game itself: it extracts the dump and recompiles it, the arm64 back end making the code and
-the phone's own LLVM what that back end leaves. With LLVM making all of it, one game took about two minutes on an iPhone
-14 Pro, the app in the foreground and the screen on; the arm64 back end's time there is not measured.
+The iPhone prepares the game itself: it extracts the dump and recompiles it, the arm64 back end making the code. How
+long that takes there is not measured.
 
 You do not need to put files in the right folders. The app copies the `prod.keys` you pick into `keys/` and a dump you
 pick into `dumps/`, then makes the game in `recompiled/`. Pick them from wherever they are (Files, Downloads, iCloud).
@@ -243,8 +241,8 @@ PowerPC64 ([PowerPC64](./ppc64.md)), and views of memory are copies there, as Wi
 games from running:
 
 - **A game's frame on a Mac.** The recompiler links an arm64 Mach-O dylib
-  (`src/common/cpu/recompiler/object/link_macho.c`) from ELF objects, the arm64 back end's and the runtime library's, and
-  from LLVM's Mach-O ones, with the ad hoc signature ld64 gives one, which Apple silicon needs to run it. A Mac loads
+  (`src/common/cpu/recompiler/object/link_macho.c`) from ELF objects, the arm64 back end's and the runtime library's,
+  with the ad hoc signature ld64 gives one, which Apple silicon needs to run it. A Mac loads
   one and a game runs; MoltenVK still loses the GPU in some scenes (see
   [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)).
 - **Game modules on iOS, one game checked.** iOS loads no code it did not ship with, so a game's code is a pack of
@@ -254,8 +252,7 @@ games from running:
 - **32-bit games on iOS.** Their blocks are compiled at run time (`src/nx/runtime/arm.c`,
   `src/common/cpu/arm/exec.c`), which needs memory that becomes executable. iOS gives that only to an app that may JIT.
 - **Preparing on Windows.** The arm64 back end makes a pack's code on every host but Windows, whose build writes COFF
-  objects alone. The x86-64 build's LLVM carries x86's code generator alone, to keep its size: `--target ios` fails
-  there. The iPhone prepares games itself now.
+  objects alone: `--target ios` fails there. The iPhone prepares games itself.
 - **JIT without StikDebug.** The app still needs a debugger attached, which StikDebug gives ([#598](https://github.com/scarletnx/ScarletNX/issues/598)).
 - **The 3DS, Vita and Linux drivers** are not built for iOS (`SNX_BUILD_3DS`, `SNX_BUILD_VITA`, `SNX_BUILD_GNUABI`),
   nor the Linux one for macOS.
@@ -311,18 +308,10 @@ speed instead of showing the error. `vk_rec_sync` now returns on the recording t
 
 ## Building
 
-LLVM's libraries first, once for each system, with AArch64's code generator alone, the one the recompiler uses
-(about 10 minutes on an M1). `scripts/apple-llvm.sh` builds them, and the CI caches them:
-
-```sh
-scripts/apple-llvm.sh macos ~/apple-llvm/macos
-scripts/apple-llvm.sh ios ~/apple-llvm/ios
-```
-
 macOS, then the app:
 
 ```sh
-cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm -DSNX_MOLTENVK=$HOME/moltenvk-macos
+cmake --preset macos -DSNX_MOLTENVK=$HOME/moltenvk-macos
 cmake --build --preset macos
 cpack --config build/macos/CPackConfig.cmake -B out   # out/ScarletNX-macos-arm64.zip, ScarletNX.app in it
 ```
@@ -330,17 +319,15 @@ cpack --config build/macos/CPackConfig.cmake -B out   # out/ScarletNX-macos-arm6
 `SNX_MOLTENVK` is the release's `MoltenVK-macos.tar`, extracted (`MoltenVK-ios.tar` for iOS). CPack installs the app
 into its own folder, signs it ad hoc and zips it (`-G DragNDrop` makes a disk image instead).
 `cmake --install build/macos --prefix out/ScarletNX.app/Contents` makes the same app without the zip. The CI pins the release and
-its SHA-256 (`.github/workflows/build.yml`). Homebrew's LLVM works too, with every code generator:
-`-DSNX_LLVM_CONFIG="$(brew --prefix llvm)/bin/llvm-config"` in place of `LLVM_DIR`.
+its SHA-256 (`.github/workflows/build.yml`).
 
 iOS, then the IPA:
 
 ```sh
-cmake --preset ios -DLLVM_DIR=$HOME/apple-llvm/ios/lib/cmake/llvm -DSNX_MOLTENVK=$HOME/moltenvk-ios
+cmake --preset ios -DSNX_MOLTENVK=$HOME/moltenvk-ios
 cmake --build --preset ios
 cpack --config build/ios/CPackConfig.cmake -B out     # out/ScarletNX-ios-arm64.ipa
 ```
 
-`MACOS_VERSION` (default 13.0) and `IOS_VERSION` (default 16.0) are the oldest systems `apple-llvm.sh` builds for,
-as the presets' `CMAKE_OSX_DEPLOYMENT_TARGET` are the apps'. FFmpeg, OpenSSL and the recompiler's runtime library are built outside
+The presets' `CMAKE_OSX_DEPLOYMENT_TARGET` are the oldest systems the apps run on: macOS 13.0 and iOS 16.0. FFmpeg, OpenSSL and the recompiler's runtime library are built outside
 CMake's compiles and get the SDK, architecture and oldest version from `cmake/apple.cmake`.

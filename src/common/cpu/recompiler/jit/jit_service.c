@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (jit_service.h). ISO C in style; the target's GNU C23 is for the LLVM-C headers */
+/* The runtime JIT (jit_service.h). ISO C in style. The host's native back end makes every unit: an instruction it has
+   no code for raises an undefined instruction where it runs */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/jit/jit_service.h"
-#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/compile_thread.h"
@@ -15,7 +15,6 @@
 #include "common/utilities/endian.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -442,7 +441,7 @@ static SnxU64 direct(void* user, SnxU64 target) {
     return (SnxU64)(size_t)function;
 }
 
-/* the loader's resolver: snx_aot_<target>, the AOT module's function for target (ir_codegen.c's call) */
+/* the loader's resolver: snx_aot_<target>, the AOT module's function for target */
 static SnxU64 resolve_aot(void* user, const char* name) {
     SnxU64 target = 0;
     if (strncmp(name, "snx_aot_", 8) || !name[8]) return 0;
@@ -491,28 +490,36 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
 
 /* The unit's object: every function of codegen, internal to it, and table_name, an array of their addresses in
    codegen's order, its only global. Internal functions give two units the same F_<address> without a clash in the
-   loader's table, where every global stays */
+   loader's table, where every global stays. The native back end makes all of them or none (a unit's are its own
+   locals, so it isn't split between two objects): 0, or -1 with why in error */
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
-    SnxNativeOptions options = {
-        .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
+    SnxNativeOptions options = {.jit = 1, .table_name = table_name, .direct = direct, .direct_user = s};
     codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
     codegen->direct_svc = s->config.direct_svc;
-    if (snx_native_available() && codegen->function_count) {
-        /* the native back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
-           split between two objects): the fallback otherwise */
-        unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
-        if (made) {
-            int reused = 0;
-            int rc = snx_native_cached_object(codegen, 0, codegen->function_count, &options, made, object, size,
-                                              &reused, error, error_size);
-            free(made);
-            if (rc) return -1;
-            if (*object) return 0;
-        }
+    *object = NULL;
+    *size = 0;
+    if (!codegen->function_count) {
+        snprintf(error, error_size, "a unit of no function");
+        return -1;
     }
-    return snx_fallback_object(codegen, 0, codegen->function_count, &options, NULL, NULL, "jit", s->config.opt, object,
-                               size, error, error_size);
+    unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
+    if (!made) {
+        snprintf(error, error_size, "out of memory for a unit of %zu functions", codegen->function_count);
+        return -1;
+    }
+    int reused = 0;
+    int rc = snx_native_cached_object(codegen, 0, codegen->function_count, &options, made, object, size, &reused, error,
+                                      error_size);
+    size_t whole = 0;
+    while (whole < codegen->function_count && made[whole]) ++whole;
+    free(made);
+    if (rc) return -1;
+    if (*object) return 0;
+    snprintf(error, error_size, "the %s back end made %zu of the unit's %zu functions, not the one at 0x%llx",
+             snx_native_name(), whole, codegen->function_count,
+             (unsigned long long)codegen->functions[whole < codegen->function_count ? whole : 0].start);
+    return -1;
 }
 
 /* function i's code in a loaded unit's table */
@@ -691,10 +698,8 @@ static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* ge
     return image_generations_match(generations, count) || snx_codegen_words_current(codegen);
 }
 
-/* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
-   runtime library, the host CPU and its features (the code is compiled for them), the -O level, hooked direct calls,
-   direct SVCs, SLP vectorization, FPSR flag exactness, volatile guest accesses, the guest's A64 features and the
-   decoder */
+/* What the objects depend on beyond the code (jit_cache.h's snx_jit_cache_key): the ABI, the native back end, the
+   version of its code and the host's features it makes it for, the runtime library, the settings and the guest */
 static char* cache_key(const SnxJitService* s) {
     return snx_jit_cache_key(s->config.opt, s->config.hook_direct_calls, s->config.direct_svc, s->config.features);
 }
@@ -781,9 +786,9 @@ static int cache_index(Cache* c) {
 }
 
 /* Opens the cache: reads what an earlier run with the same key wrote, and starts the file over when there is none or
-   its key differs. A run that left a record unfinished, or a file past SNX_JIT_CACHE_MAX (an earlier build's appends
-   had no limit), is rewritten with the whole records the limit holds: refusing the file outright threw a full cache
-   away the run after it filled, so every other run started cold */
+   its key differs, said once with the field it differs in. A run that left a record unfinished, or a file past
+   SNX_JIT_CACHE_MAX (an earlier build's appends had no limit), is rewritten with the whole records the limit holds:
+   refusing the file outright threw a full cache away the run after it filled, so every other run started cold */
 static void cache_open(SnxJitService* s) {
     Cache* c = &s->cache;
     char* key = cache_key(s);
@@ -805,7 +810,14 @@ static void cache_open(SnxJitService* s) {
     if (f) fclose(f);
     if (c->buffer && (memcmp(c->buffer, SNX_JIT_CACHE_MAGIC, 8) || snx_ld_le32(c->buffer + 8) != key_length ||
                       memcmp(c->buffer + 12, key, key_length))) {
-        free(c->buffer); /* another build or host's: of no use here */
+        /* another build or host's: of no use here */
+        const size_t was = snx_ld_le32(c->buffer + 8);
+        if (!memcmp(c->buffer, SNX_JIT_CACHE_MAGIC, 8) && was <= size - 12) {
+            char change[512];
+            snx_jit_cache_key_change((const char*)c->buffer + 12, was, key, change, sizeof change);
+            fprintf(stderr, "JIT cache %s: %s: it starts over\n", s->config.cache_path, change);
+        }
+        free(c->buffer);
         c->buffer = NULL;
     }
     if (c->buffer) {
@@ -1068,7 +1080,7 @@ static void requeue(SnxJitService* s, Entry* e, SnxU64 pc, int queue) {
 
 /* Compiles the batch of pcs (count of them by address, each IN_FLIGHT, stamped by the take stamp from queue), publishes
    the code and ends their entries: DONE with the code that enters at each, or FAILED. A batch of several that fails to
-   emit or load is split, so one pc LLVM or the loader refuses fails alone */
+   emit or load is split, so one pc the back end or the loader refuses fails alone */
 /* Under lock: the images a batch reads, the config's and every added one, which stay readable until images_release
    (snx_jit_remove_image waits for it). NULL when memory runs out */
 static SnxCodeImage* images_take(SnxJitService* s, size_t* count, unsigned char* taken) {
@@ -1854,8 +1866,13 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
             snprintf(error, error_size, "the AOT entries are not in ascending order");
             return NULL;
         }
-    /* LLVM starts at the first unit it has to make, where the host has a native back end (emit_unit) */
-    if (!snx_native_available() && snx_ir_init(error, error_size)) return NULL;
+    if (!snx_native_available()) {
+        /* below its back end's floor the line says what the host lacks (mach/native.h) */
+        if (!snx_native_floor(error, error_size))
+            snprintf(error, error_size, "this host has no native back end (%s), which the JIT makes its code with",
+                     snx_native_name());
+        return NULL;
+    }
     SnxJitService* s = (SnxJitService*)calloc(1, sizeof(*s));
     if (!s) {
         snprintf(error, error_size, "out of memory");

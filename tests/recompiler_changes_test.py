@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/recompiler-changes.py's answers for the paths a change has, and that every path it names by its file is there"""
+"""scripts/recompiler-changes.py's answer for the paths a change has, the line that says why, and that every path it
+names by its file is there"""
 
 import importlib.util
 import subprocess
@@ -32,46 +33,39 @@ def answers(*paths):
     return done.returncode, done.stdout, done.stderr
 
 
-for paths, differential, unicorn, why in (
-    ((), False, False, 'no file'),
-    (('src/gui/main.c', 'docs/user/gui.md', 'tests/gui_steps.c'), False, False, 'the menu'),
-    (('src/common/cpu/recompiler/mach/mach_codegen.inc',), True, True, 'a back end'),
-    (('src/common/cpu/aarch64/cpu_helpers.c',), True, True, 'the helpers the code calls'),
-    (('tests/llvm_qemu_words.c',), True, True, 'the words both run'),
-    (('cmake/llvm.cmake',), True, True, 'the LLVM both compare with'),
-    (('.github/workflows/build.yml',), True, True, 'the workflow'),
-    (('tools/sailgen/mach_a32.h',), False, True, "what generates a back end's code"),
-    (('cmake/sailgen.cmake',), False, True, 'how it is generated'),
-    (('src/nx/loader/module_x64.c',), False, True, "a module's descriptor"),
-    (('tests/sail_mach.c',), False, True, 'a test of theirs'),
-    (('tests/support/host_unicorn.c',), False, True, 'their host'),
-    (('tests/arm_native_modes.cmake',), False, True, 'their modes'),
-    (('tests/arm_vector_test.py',), False, True, "their blocks' oracle"),
-    (('tests/thumb_test.py',), False, True, 'and its Thumb ones'),
-    (('tests/arm_vfp_cases.s',), False, True, 'the words it runs'),
-    (('scripts/unicorn-tests.py',), False, True, 'what counts them'),
-    (
-        ('src/nx/loader/module_llvm.c', 'tests/support/host_win64.c'),
-        False,
-        False,
-        "another module's and another host's",
-    ),
-    (('src/gui/main.c', 'tests/arm_x64.c'), False, True, 'one of two'),
+for paths, differential, why in (
+    ((), False, 'no file'),
+    (('src/gui/main.c', 'docs/user/gui.md', 'tests/gui_steps.c'), False, 'the menu'),
+    (('src/common/cpu/recompiler/mach/mach_codegen.inc',), True, 'a back end'),
+    (('src/common/cpu/aarch64/cpu_helpers.c',), True, 'the helpers the code calls'),
+    (('tests/native_qemu_words.c',), True, 'the words both run'),
+    (('tests/native_steps.c',), True, 'the native steps the differential runs'),
+    (('tests/sail_x64.c',), True, "sail_x64's words, whose QEMU ends the recording holds"),
+    (('tools/sailgen/mach_a32.h',), True, 'what generates them'),
+    (('scripts/ci/linux.sh',), True, 'the steps that build and record it'),
+    (('.github/workflows/build.yml',), True, 'the workflow'),
+    (('src/nx/loader/module_a64.c', 'tests/support/host_win64.c'), False, "another module's and another host's"),
+    (('src/gui/main.c', 'src/common/cpu/arm/aot.c'), True, 'one of two'),
 ):
     status, said, _ = answers(*paths)
-    check(
-        why,
-        status == 0 and said == f'differential={str(differential).lower()}\nunicorn={str(unicorn).lower()}\n',
-        (status, said),
-    )
+    check(why, status == 0 and said.startswith(f'differential={str(differential).lower()}\nwhy='), (status, said))
 status, said, why_said = answers('src/common/cpu/arm/aot.c', 'docs/a.md')
 check(
-    'it says which path calls for it, and how many do not',
-    'unicorn: 1 of the 2 files changed call for it:\n  src/common/cpu/arm/aot.c\n' in why_said,
+    'the line names how many call for it and the first',
+    said.endswith('why=1 of the 2 files changed call for it, src/common/cpu/arm/aot.c first\n'),
+    said,
+)
+check(
+    'it says on standard error which path calls for it',
+    'differential: 1 of the 2 files changed call for it:\n  src/common/cpu/arm/aot.c\n' in why_said,
     why_said,
 )
-check('none is said', 'unicorn: none of the 1 files changed calls for it' in answers('docs/a.md')[2])
-
+status, said, _ = answers('docs/a.md', 'src/gui/main.c')
+check(
+    'a skip says none calls for it, and the script that decided',
+    said.endswith('why=none of the 2 files changed calls for it (scripts/recompiler-changes.py)\n'),
+    said,
+)
 # every file or folder it names is there, so that one moved does not stop calling for its tests
 spec = importlib.util.spec_from_file_location('recompiler_changes', SCRIPT)
 module = importlib.util.module_from_spec(spec)
@@ -82,7 +76,7 @@ files = [
     for f in (ROOT / top).rglob('*')
     if f.is_file()
 ]
-for start in module.DIFFERENTIAL + module.UNICORN:
+for start in module.DIFFERENTIAL:
     check(f'{start} starts the path of a file of the checkout', any(f.startswith(start) for f in files))
 print('recompiler changes: ' + (f'{failures} failures' if failures else 'ok'))
 sys.exit(1 if failures else 0)

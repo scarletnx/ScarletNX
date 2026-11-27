@@ -102,7 +102,7 @@ int main(void) {
         SnxNotice n = {0};
         if (k == 6 && (!SDL_SetWindowSize(agb_vk_window(vk), 725, 483) || !SDL_SyncWindow(agb_vk_window(vk))))
             fprintf(stderr, "agb_host_vk: the window could not be resized: %s\n", SDL_GetError());
-        if (k % 6 >= 3) snx_notice_show(&n, "Press Esc again within 3 seconds to quit", SDL_GetTicksNS());
+        if (k % 6 >= 3) snx_notice_show(&n, "Press Escape again within 3 seconds to quit", SDL_GetTicksNS());
         if (!agb_vk_frame(vk, g_frame, &n)) {
             fprintf(stderr, "agb_host_vk: frame %d did not go on screen\n", k);
             ++bad;
@@ -113,7 +113,7 @@ int main(void) {
 
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
-    AgbHost* host = agb_host_open("agb_host_vk", false, error, sizeof error);
+    AgbHost* host = agb_host_open("agb_host_vk", NULL, false, error, sizeof error);
     if (!host) {
         fprintf(stderr, "agb_host_vk: opening the runner's window: %s\n", error);
         return 1;
@@ -127,7 +127,7 @@ int main(void) {
     }
     SDL_free(windows);
     if (!press(host, SDLK_ESCAPE, SDL_KMOD_NONE) ||
-        strcmp(agb_host_notice(host), "Press Esc again within 3 seconds to quit")) {
+        strcmp(agb_host_notice(host), "Press Escape again within 3 seconds to quit")) {
         fprintf(stderr, "agb_host_vk: Esc's first press says \"%s\"\n", agb_host_notice(host));
         ++bad;
     }

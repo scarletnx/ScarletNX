@@ -14,6 +14,7 @@
 #include "vita/hle/hle.hook.h"
 #include "vita/hle/psarc.h"
 #include "vita/runtime/watch.h"
+#include "common/utilities/state_io.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
@@ -63,6 +64,7 @@ typedef struct {
 static struct {
     VitaPsarc* archive;
     char point[256]; /* the mount point, without its device and leading slashes */
+    char* host;      /* the archive's host path, which a save state's load opens it again by */
 } archive_mounts[ARCHIVE_MOUNTS];
 static struct {
     VitaPsarc* archive;
@@ -170,13 +172,18 @@ static int file_index(VitaProcess* p, uint32_t fd, bool directory) {
     if (fd < 1 || fd > VITA_FILES || !p->files[fd - 1].host || p->files[fd - 1].directory != directory) return -1;
     return (int)fd - 1;
 }
-static uint32_t new_file(VitaProcess* p, void* host, int directory) {
+/* a descriptor for host, which takes path (a file's, NULL for a directory's) when it has room: 0 when it has none */
+static uint32_t new_file(VitaProcess* p, void* host, int directory, char* path, uint32_t flags) {
     for (unsigned i = 0; i < VITA_FILES; ++i)
         if (!p->files[i].host) {
-            p->files[i] = (VitaFile){host, directory};
+            p->files[i] = (VitaFile){host, directory, path, flags};
             return i + 1;
         }
     return 0;
+}
+static void file_free(VitaFile* f) {
+    free(f->path);
+    *f = (VitaFile){0};
 }
 static int io_seek(FILE* f, int64_t offset, int whence) {
 #ifdef _WIN32
@@ -220,11 +227,12 @@ static uint32_t open_host(VitaProcess* p, char* path, bool writable, uint32_t fl
                            : (flags & SCE_O_APPEND) ? "ab"
                                                     : "r+b";
         FILE* f = snx_fopen(path, mode);
-        result = !f ? SCE_ERRNO(ENOENT) : new_file(p, f, 0);
+        result = !f ? SCE_ERRNO(ENOENT) : new_file(p, f, 0, path, flags);
         if (f && !result) {
             fclose(f);
             result = SCE_ERRNO(EMFILE);
         }
+        if (f && !(result & 0x80000000u)) return result; /* the file keeps its path */
     }
     free(path);
     return result;
@@ -289,7 +297,7 @@ uint32_t vita_io_file_close(VitaProcess* p, uint32_t fd) {
     int i = file_index(p, fd, false);
     if (i < 0) return SCE_ERRNO(EBADF);
     fclose(p->files[i].host);
-    p->files[i] = (VitaFile){0};
+    file_free(&p->files[i]);
     return 0;
 }
 uint32_t vita_io_close(VitaProcess* p, VitaThread* t, uint32_t fd) {
@@ -573,7 +581,7 @@ uint32_t vita_io_dopen(VitaProcess* p, VitaThread* t, uint32_t dirname) {
         return SCE_ERRNO(ENOENT);
     }
     d->path = path;
-    uint32_t fd = new_file(p, d, 1);
+    uint32_t fd = new_file(p, d, 1, NULL, 0);
     if (!fd) {
         close_directory(d);
         return SCE_ERRNO(EMFILE);
@@ -603,7 +611,7 @@ uint32_t vita_io_dclose(VitaProcess* p, VitaThread* t, uint32_t fd) {
     int i = file_index(p, fd, true);
     if (i < 0) return SCE_ERRNO(EBADF);
     close_directory(p->files[i].host);
-    p->files[i] = (VitaFile){0};
+    file_free(&p->files[i]);
     return 0;
 }
 void vita_io_close_all(VitaProcess* p) {
@@ -613,7 +621,7 @@ void vita_io_close_all(VitaProcess* p) {
             close_directory(p->files[i].host);
         else
             fclose(p->files[i].host);
-        p->files[i] = (VitaFile){0};
+        file_free(&p->files[i]);
     }
 }
 
@@ -802,14 +810,19 @@ uint64_t vita_io_fios_fh_seek(VitaProcess* p, VitaThread* t, uint32_t fh, int64_
     return (uint64_t)io_tell(f);
 }
 /* an archive of the game's: its host path and the archive opened, NULL for neither */
-static VitaPsarc* fios_open_archive(VitaProcess* p, uint32_t address, char* label, size_t label_size) {
+/* the archive at the guest path at address, its host path in *host (the caller's to free) when host isn't NULL */
+static VitaPsarc* fios_open_archive(VitaProcess* p, uint32_t address, char* label, size_t label_size, char** host) {
     char name[1100];
     bool writable = false;
+    if (host) *host = NULL;
     if (!fios_name(p, address, name, sizeof name)) return NULL;
     snprintf(label, label_size, "%s", name);
     char* path = host_path_of(p, name, &writable);
     VitaPsarc* a = path ? vita_psarc_open(path) : NULL;
-    free(path);
+    if (a && host)
+        *host = path;
+    else
+        free(path);
     return a;
 }
 /* sceFiosArchiveGetMountBufferSizeSync(attr, path, params): the size of the buffer the mount is given, which the
@@ -819,7 +832,7 @@ uint64_t vita_io_fios_archive_buffer_size_sync(VitaProcess* p, VitaThread* t, ui
     (void)t, (void)attr, (void)params;
     static unsigned shown;
     char label[1100] = "";
-    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label);
+    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label, NULL);
     uint64_t size = a ? ((uint64_t)vita_psarc_toc_length(a) + 0xfffu & ~0xfffull) + 0x1000u : UINT64_MAX;
     if (shown < 8) printf("vita: sceFiosArchiveGetMountBufferSizeSync(\"%s\") -> %" PRId64 "\n", label, (int64_t)size), ++shown;
     vita_psarc_close(a);
@@ -834,7 +847,8 @@ uint32_t vita_io_fios_archive_mount_sync(VitaProcess* p, VitaThread* t, uint32_t
     static unsigned shown;
     char label[1100] = "", point[256] = "";
     if (point_address) vita_string(p, point_address, point, sizeof point);
-    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label);
+    char* host = NULL;
+    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label, &host);
     unsigned slot = 0;
     while (slot < ARCHIVE_MOUNTS && archive_mounts[slot].archive) ++slot;
     if (shown < 8)
@@ -842,9 +856,11 @@ uint32_t vita_io_fios_archive_mount_sync(VitaProcess* p, VitaThread* t, uint32_t
                buffer_size, params, a && slot < ARCHIVE_MOUNTS ? "mounted" : "failed"), ++shown;
     if (!a || slot == ARCHIVE_MOUNTS) {
         vita_psarc_close(a);
+        free(host);
         return FIOS_ERROR_NO_ENTRY;
     }
     archive_mounts[slot].archive = a;
+    archive_mounts[slot].host = host;
     snprintf(archive_mounts[slot].point, sizeof archive_mounts[slot].point, "%s", strip_device(point));
     if (out && vita_mapped(p, out, 4)) vita_write32(p, out, ARCHIVE_MOUNT_FH + slot);
     return 0;
@@ -858,6 +874,8 @@ uint32_t vita_io_fios_archive_unmount_sync(VitaProcess* p, VitaThread* t, uint32
             if (archive_files[i].archive == a) archive_files[i].archive = NULL;
         vita_psarc_close(a);
         archive_mounts[fh - ARCHIVE_MOUNT_FH].archive = NULL;
+        free(archive_mounts[fh - ARCHIVE_MOUNT_FH].host);
+        archive_mounts[fh - ARCHIVE_MOUNT_FH].host = NULL;
     }
     return 0;
 }
@@ -927,4 +945,188 @@ uint32_t vita_io_fios_overlay_get_list(VitaProcess* p, VitaThread* t, uint32_t p
 uint32_t vita_io_fios_overlay_scheduler(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
+}
+
+/* ---- save states (vita/runtime/state.c): what the game has open, as the paths and places a load opens again ----
+   Each file or folder: its slot, 1 for a folder, sceIoOpen's flags, its place (a file's byte, a folder's entry) and
+   its host path. Each mounted archive: its slot, its mount point and host path. Each file open in one: its slot, its
+   archive's slot, its entry and its place. A file is opened again for what the game opened it for, never truncated:
+   what was written to it since the state stays, as a Switch game's files do */
+typedef struct {
+    VitaFile files[VITA_FILES];
+    struct {
+        VitaPsarc* archive;
+        char point[256];
+        char* host;
+    } mounts[ARCHIVE_MOUNTS];
+    struct {
+        int mount; /* -1 for a free slot */
+        int entry;
+        uint64_t position;
+    } archive_files[ARCHIVE_FILES];
+} IoStaged;
+
+static int put_text(StateIo* io, const char* s) {
+    uint32_t n = s ? (uint32_t)strlen(s) : 0;
+    return io_put32(io, n) || io_put(io, s, n);
+}
+static char* get_text(StateIo* io) {
+    uint32_t n;
+    if (io_get32(io, &n) || n > 0x10000) return NULL;
+    char* s = malloc(n + 1);
+    if (s && io_get(io, s, n)) {
+        free(s);
+        return NULL;
+    }
+    if (s) s[n] = 0;
+    return s;
+}
+
+int vita_io_state_save(VitaProcess* p, StateIo* io) {
+    uint32_t files = 0, mounts = 0, archived = 0;
+    for (unsigned i = 0; i < VITA_FILES; ++i) files += p->files[i].host != NULL;
+    for (unsigned i = 0; i < ARCHIVE_MOUNTS; ++i) mounts += archive_mounts[i].archive != NULL;
+    for (unsigned i = 0; i < ARCHIVE_FILES; ++i) archived += archive_files[i].archive != NULL;
+    if (io_put32(io, files)) return -1;
+    for (unsigned i = 0; i < VITA_FILES; ++i) {
+        const VitaFile* f = &p->files[i];
+        if (!f->host) continue;
+        const Directory* d = f->directory ? f->host : NULL;
+        int64_t at = d ? (int64_t)d->next : io_tell(f->host);
+        if (io_put32(io, i) || io_put32(io, (uint32_t)f->directory) || io_put32(io, f->flags) ||
+            io_put64(io, (uint64_t)at) || put_text(io, d ? d->path : f->path))
+            return -1;
+    }
+    if (io_put32(io, mounts)) return -1;
+    for (unsigned i = 0; i < ARCHIVE_MOUNTS; ++i)
+        if (archive_mounts[i].archive &&
+            (io_put32(io, i) || put_text(io, archive_mounts[i].point) || put_text(io, archive_mounts[i].host)))
+            return -1;
+    if (io_put32(io, archived)) return -1;
+    for (unsigned i = 0; i < ARCHIVE_FILES; ++i) {
+        if (!archive_files[i].archive) continue;
+        uint32_t mount = 0;
+        while (mount < ARCHIVE_MOUNTS && archive_mounts[mount].archive != archive_files[i].archive) ++mount;
+        if (io_put32(io, i) || io_put32(io, mount) || io_put32(io, (uint32_t)archive_files[i].entry) ||
+            io_put64(io, archive_files[i].position))
+            return -1;
+    }
+    return 0;
+}
+
+void vita_io_state_drop(void* staged) {
+    IoStaged* s = staged;
+    if (!s) return;
+    for (unsigned i = 0; i < VITA_FILES; ++i) {
+        if (!s->files[i].host) continue;
+        if (s->files[i].directory)
+            close_directory(s->files[i].host);
+        else
+            fclose(s->files[i].host);
+        free(s->files[i].path);
+    }
+    for (unsigned i = 0; i < ARCHIVE_MOUNTS; ++i) {
+        vita_psarc_close(s->mounts[i].archive);
+        free(s->mounts[i].host);
+    }
+    free(s);
+}
+
+void* vita_io_state_open(VitaProcess* p, StateIo* io, char* why, size_t whysize) {
+    (void)p;
+    IoStaged* s = calloc(1, sizeof *s);
+    uint32_t files, mounts, archived;
+    if (!s) {
+        snprintf(why, whysize, "out of memory for the state's open files (%zu bytes)", sizeof *s);
+        return NULL;
+    }
+    for (unsigned i = 0; i < ARCHIVE_FILES; ++i) s->archive_files[i].mount = -1;
+    if (io_get32(io, &files) || files > VITA_FILES) goto damaged;
+    for (uint32_t n = 0; n < files; ++n) {
+        uint32_t slot, directory, flags;
+        uint64_t at;
+        if (io_get32(io, &slot) || io_get32(io, &directory) || io_get32(io, &flags) || io_get64(io, &at) ||
+            slot >= VITA_FILES || s->files[slot].host)
+            goto damaged;
+        char* path = get_text(io);
+        if (!path) goto damaged;
+        if (directory) {
+            Directory* d = calloc(1, sizeof *d);
+            if (!d || snx_list_dir(path, &d->names, &d->count)) {
+                snprintf(why, whysize, "the folder %s the game had open can't be listed again", path);
+                free(d);
+                free(path);
+                goto refused;
+            }
+            d->path = path;
+            d->next = at < d->count ? (size_t)at : d->count;
+            s->files[slot] = (VitaFile){d, 1, NULL, 0};
+            continue;
+        }
+        bool write = (flags & SCE_O_WRONLY) || (flags & (SCE_O_CREAT | SCE_O_TRUNC | SCE_O_APPEND));
+        FILE* f = snx_fopen(path, !write ? "rb" : (flags & SCE_O_APPEND) ? "ab" : "r+b");
+        if (!f || io_seek(f, (int64_t)at, SEEK_SET)) {
+            char os[160];
+            snprintf(why, whysize, "the file %s the game had open can't be opened again at byte %" PRIu64 ": %s", path,
+                     at, snx_os_error(os, sizeof os));
+            if (f) fclose(f);
+            free(path);
+            goto refused;
+        }
+        s->files[slot] = (VitaFile){f, 0, path, flags};
+    }
+    if (io_get32(io, &mounts) || mounts > ARCHIVE_MOUNTS) goto damaged;
+    for (uint32_t n = 0; n < mounts; ++n) {
+        uint32_t slot;
+        if (io_get32(io, &slot) || slot >= ARCHIVE_MOUNTS || s->mounts[slot].host) goto damaged;
+        char *point = get_text(io), *host = point ? get_text(io) : NULL;
+        if (!host) {
+            free(point);
+            goto damaged;
+        }
+        snprintf(s->mounts[slot].point, sizeof s->mounts[slot].point, "%s", point);
+        free(point);
+        s->mounts[slot].host = host;
+        if (!(s->mounts[slot].archive = vita_psarc_open(host))) {
+            snprintf(why, whysize, "the archive %s the game had mounted can't be opened again", host);
+            goto refused;
+        }
+    }
+    if (io_get32(io, &archived) || archived > ARCHIVE_FILES) goto damaged;
+    for (uint32_t n = 0; n < archived; ++n) {
+        uint32_t slot, mount, entry;
+        uint64_t at;
+        if (io_get32(io, &slot) || io_get32(io, &mount) || io_get32(io, &entry) || io_get64(io, &at) ||
+            slot >= ARCHIVE_FILES || mount >= ARCHIVE_MOUNTS || !s->mounts[mount].archive || (int)entry < 0 ||
+            (unsigned)entry >= vita_psarc_count(s->mounts[mount].archive))
+            goto damaged;
+        s->archive_files[slot].mount = (int)mount;
+        s->archive_files[slot].entry = (int)entry;
+        s->archive_files[slot].position = at;
+    }
+    return s;
+damaged:
+    snprintf(why, whysize, "its open files' section is damaged");
+refused:
+    vita_io_state_drop(s);
+    return NULL;
+}
+
+void vita_io_state_install(VitaProcess* p, void* staged) {
+    IoStaged* s = staged;
+    vita_io_close_all(p);
+    for (unsigned i = 0; i < ARCHIVE_FILES; ++i) archive_files[i].archive = NULL;
+    for (unsigned i = 0; i < ARCHIVE_MOUNTS; ++i) {
+        vita_psarc_close(archive_mounts[i].archive);
+        free(archive_mounts[i].host);
+        archive_mounts[i].archive = s->mounts[i].archive;
+        archive_mounts[i].host = s->mounts[i].host;
+        memcpy(archive_mounts[i].point, s->mounts[i].point, sizeof archive_mounts[i].point);
+    }
+    for (unsigned i = 0; i < ARCHIVE_FILES; ++i)
+        if (s->archive_files[i].mount >= 0)
+            archive_files[i] = (typeof(archive_files[i])){archive_mounts[s->archive_files[i].mount].archive,
+                                                          s->archive_files[i].entry, s->archive_files[i].position};
+    memcpy(p->files, s->files, sizeof p->files);
+    free(s);
 }

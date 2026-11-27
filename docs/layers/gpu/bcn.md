@@ -279,7 +279,7 @@ What Mali's search gives up, against what the BCn blocks decode to, decoded by `
 
 | Blocks | generic, dB | Mali's, dB | worst block, both (squared error, channel) | texels fitted |
 | --- | --- | --- | --- | --- |
-| Khronos's LDR sample textures (diffuse, emissive, metal and roughness, normals, occlusion) and two of edenprobe's ASTC pictures, 256x256 each, made BC7 by the CPU's encoder | 47.606 | 47.604 | 36113, 84 | 47% fewer |
+| Khronos's LDR sample textures (diffuse, emissive, metal and roughness, normals, occlusion) and two of Amberlith's ASTC pictures, 256x256 each, made BC7 by the CPU's encoder | 47.606 | 47.604 | 36113, 84 | 47% fewer |
 | 4096 random BC1 | 23.326 | 23.304 | 189406, 204 | 20% fewer |
 | 4096 random BC2, BC3 | 29.273, 32.159 | the same | 10363, 48; 15607, 54 | 21% fewer |
 | 4096 random BC7 | 24.121 | 24.121 | 135752, 183 | 34% fewer |

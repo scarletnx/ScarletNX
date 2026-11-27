@@ -6,13 +6,12 @@
    host's stack growing; a poll set stops it at its backward branch, and not at a forward one; a block that sets an
    exit (an SVC) returns at once, and so does one whose branch reaches the next block's address in the other state. Each block its own unit (the next block a declaration, linked from another object),
    and all in one. A host's native back end makes all of them: LLVM never starts */
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,7 +96,7 @@ static int build(const char* output, size_t units) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild llvm = {0};
+    SnxModuleBuild job = {0};
     image.name = "test";
     image.base = BASE;
     image.size = sizeof g_arm_module_chain.memory;
@@ -116,11 +115,11 @@ static int build(const char* output, size_t units) {
     options.chunk_instrs = units;
     options.hints = hints;
     options.hint_count = sizeof hints / sizeof *hints;
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
-    return snx_build_module_arm(&loaded, &options, &llvm);
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
+    return snx_build_module_arm(&loaded, &options, &job);
 }
 
 static SnxArmBlock block(const SnxArmModule* m, SnxU32 key) {
@@ -220,7 +219,6 @@ int main(void) {
     check_module(each, "a unit per block");
     CHECK(!build(one, 4096), "the module of one unit does not build");
     check_module(one, "one unit");
-    CHECK(!snx_native_arm_available() || !snx_ir_started(), "LLVM started for blocks the native back end makes");
     remove(each);
     remove(one);
     if (g_arm_module_chain.failures) {

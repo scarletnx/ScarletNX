@@ -13,6 +13,8 @@
 #include "nds/gpu/gpu3d.h"
 #include "nds/gpu/gpu3d_state.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1918,4 +1920,154 @@ void nds_gpu3d_free(NdsBoard* board)
     if (board->gpu3d) free(board->gpu3d->waiting);
     free(board->gpu3d);
     board->gpu3d = NULL;
+}
+
+/* ---- save states (runtime/state.c) ----
+   The engine's bytes as they are, but for its pointers, which go as indices after them: each polygon's vertices
+   (into vertex_ram), the polygons the renderer draws and the strip's last one (into polygon_ram), plus 1, 0 for
+   none. The two banks' current halves follow from cur_ram_bank. Then the queued commands, a parameter and a command
+   each */
+#define VERTICES     (sizeof((NdsGpu3D*)0)->vertex_ram / sizeof *((NdsGpu3D*)0)->vertex_ram)
+#define POLYGONS     (sizeof((NdsGpu3D*)0)->polygon_ram / sizeof *((NdsGpu3D*)0)->polygon_ram)
+#define DRAWN        (sizeof((NdsGpu3D*)0)->render_polygon_ram / sizeof *((NdsGpu3D*)0)->render_polygon_ram)
+#define LINKS        (POLYGONS * 10 + DRAWN + 1)
+#define WAITING_MOST (1u << 24) /* the queue a state may hold: commands a game sent in one frame, far past any */
+static_assert(VERTICES < 0xFFFF && POLYGONS < 0xFFFF, "an index plus 1 fits 16 bits");
+
+typedef struct {
+    Gpu3D engine;
+    uint16_t links[LINKS];
+    NdsGxEntry* waiting; /* the queue, its own allocation: the running engine takes it */
+} Gpu3DStaged;
+
+uint64_t nds_gpu3d_state_schema(const NdsBoard* board) {
+    const Gpu3D* g = (const Gpu3D*)board->gpu3d;
+    uint64_t h = SNX_FNV_BASIS ^ sizeof *g;
+    __builtin_dump_struct(g, snx_state_schema_out, &h);
+    __builtin_dump_struct(&g->state.vertex_ram[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&g->state.polygon_ram[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&g->state.temp_vertex_buffer[0], snx_state_schema_out, &h);
+    NdsGxEntry entry = {0};
+    __builtin_dump_struct(&entry, snx_state_schema_out, &h);
+    return h;
+}
+
+/* a pointer into an array of count, as its index plus 1, 0 for none; UINT16_MAX for one outside it */
+static uint16_t link_of(const void* p, const void* array, size_t size, size_t count) {
+    if (!p) return 0;
+    uintptr_t at = (uintptr_t)p, from = (uintptr_t)array;
+    return at >= from && (at - from) % size == 0 && (at - from) / size < count ? (uint16_t)((at - from) / size + 1)
+                                                                               : UINT16_MAX;
+}
+
+int nds_gpu3d_state_save(const NdsBoard* board, StateIo* io, char* why, size_t whysize) {
+    const Gpu3D* live = (const Gpu3D*)board->gpu3d;
+    const NdsGpu3D* g = &live->state;
+    Gpu3DStaged* s = malloc(sizeof *s);
+    if (!s) {
+        snprintf(why, whysize, "out of memory for a copy of the 3D engine (%zu bytes)", sizeof *s);
+        return -1;
+    }
+    memcpy(&s->engine, live, sizeof s->engine); /* its padding too, which goes in the file */
+    NdsGpu3D* c = &s->engine.state;
+    size_t at = 0;
+    for (size_t p = 0; p < POLYGONS; ++p)
+        for (size_t v = 0; v < 10; ++v) {
+            s->links[at++] = link_of(g->polygon_ram[p].vertices[v], g->vertex_ram, sizeof *g->vertex_ram, VERTICES);
+            c->polygon_ram[p].vertices[v] = NULL;
+        }
+    for (size_t p = 0; p < DRAWN; ++p) {
+        s->links[at++] = link_of(g->render_polygon_ram[p], g->polygon_ram, sizeof *g->polygon_ram, POLYGONS);
+        c->render_polygon_ram[p] = NULL;
+    }
+    s->links[at++] = link_of(g->last_strip_polygon, g->polygon_ram, sizeof *g->polygon_ram, POLYGONS);
+    c->last_strip_polygon = NULL;
+    c->cur_vertex_ram = NULL;
+    c->cur_polygon_ram = NULL;
+    c->waiting = NULL;
+    c->waiting_capacity = 0;
+    int r = -1;
+    for (size_t i = 0; i < LINKS; ++i)
+        if (s->links[i] == UINT16_MAX) {
+            snprintf(why, whysize, "the 3D engine's link %zu of %zu points outside its memory", i, (size_t)LINKS);
+            goto done;
+        }
+    if (io_put(io, &s->engine, sizeof s->engine) || io_put(io, s->links, sizeof s->links)) goto io;
+    for (uint32_t i = 0; i < g->waiting_count; ++i)
+        if (io_put32(io, g->waiting[i].param) || io_put(io, &g->waiting[i].command, 1)) goto io;
+    r = 0;
+    goto done;
+io:
+    snprintf(why, whysize, "the 3D engine's state couldn't be written");
+done:
+    free(s);
+    return r;
+}
+
+void* nds_gpu3d_state_parse(StateIo* io, char* why, size_t whysize) {
+    Gpu3DStaged* s = malloc(sizeof *s);
+    if (!s) {
+        snprintf(why, whysize, "out of memory for the state's 3D engine (%zu bytes)", sizeof *s);
+        return NULL;
+    }
+    s->waiting = NULL;
+    NdsGpu3D* c = &s->engine.state;
+    if (io_get(io, &s->engine, sizeof s->engine) || io_get(io, s->links, sizeof s->links)) goto damaged;
+    for (size_t i = 0; i < LINKS; ++i) {
+        size_t most = i < POLYGONS * 10 ? VERTICES : POLYGONS;
+        if (s->links[i] > most) {
+            snprintf(why, whysize, "its 3D engine's link %zu is %u, past the %zu it may be", i, s->links[i], most);
+            goto refused;
+        }
+    }
+    if (c->cur_ram_bank > 1 || c->waiting_count > WAITING_MOST || c->num_polygons > POLYGONS / 2 ||
+        c->num_vertices > VERTICES / 2 || c->render_num_polygons > DRAWN) {
+        snprintf(why, whysize,
+                 "its 3D engine is damaged: bank %u (0 or 1), %u commands queued (%u at most), %u polygons and %u "
+                 "vertices (%zu and %zu at most), %u drawn (%zu at most)",
+                 c->cur_ram_bank, c->waiting_count, WAITING_MOST, c->num_polygons, c->num_vertices, POLYGONS / 2,
+                 VERTICES / 2, c->render_num_polygons, (size_t)DRAWN);
+        goto refused;
+    }
+    s->waiting = malloc((c->waiting_count ? c->waiting_count : 1) * sizeof *s->waiting);
+    if (!s->waiting) {
+        snprintf(why, whysize, "out of memory for its 3D engine's %u queued commands", c->waiting_count);
+        goto refused;
+    }
+    for (uint32_t i = 0; i < c->waiting_count; ++i) {
+        s->waiting[i] = (NdsGxEntry){0};
+        if (io_get32(io, &s->waiting[i].param) || io_get(io, &s->waiting[i].command, 1)) goto damaged;
+    }
+    return s;
+damaged:
+    snprintf(why, whysize, "its 3D engine's section is damaged or cut short");
+refused:
+    nds_gpu3d_state_drop(s);
+    return NULL;
+}
+
+void nds_gpu3d_state_drop(void* staged) {
+    Gpu3DStaged* s = staged;
+    if (s) free(s->waiting);
+    free(s);
+}
+
+void nds_gpu3d_state_install(NdsBoard* board, void* staged) {
+    Gpu3DStaged* s = staged;
+    Gpu3D* live = (Gpu3D*)board->gpu3d;
+    free(live->state.waiting);
+    memcpy(live, &s->engine, sizeof *live);
+    NdsGpu3D* g = &live->state;
+    size_t at = 0;
+    for (size_t p = 0; p < POLYGONS; ++p)
+        for (size_t v = 0; v < 10; ++v, ++at)
+            g->polygon_ram[p].vertices[v] = s->links[at] ? &g->vertex_ram[s->links[at] - 1] : NULL;
+    for (size_t p = 0; p < DRAWN; ++p, ++at)
+        g->render_polygon_ram[p] = s->links[at] ? &g->polygon_ram[s->links[at] - 1] : NULL;
+    g->last_strip_polygon = s->links[at] ? &g->polygon_ram[s->links[at] - 1] : NULL;
+    g->cur_vertex_ram = &g->vertex_ram[g->cur_ram_bank ? 6144 : 0];
+    g->cur_polygon_ram = &g->polygon_ram[g->cur_ram_bank ? 2048 : 0];
+    g->waiting = s->waiting;
+    g->waiting_capacity = g->waiting_count ? g->waiting_count : 1;
+    free(s);
 }

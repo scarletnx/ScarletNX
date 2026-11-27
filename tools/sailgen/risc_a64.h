@@ -3,13 +3,12 @@
 /* sailgen's RISC back ends, A64's part (after mach_a64.h): the exclusives, the atomics, CRC32, the barriers and the
    machine instructions, from risc.h's operations and the machine's branches, calls and frame. The floating point is
    mach_a64.h's exact helpers (SGX_FP_HELPERS). Every barrier is the machine's full one (rk_fence): an acquire load
-   one after it, a release store one before and after (sequentially consistent, as the LLVM back end's are).
+   one after it, a release store one before and after (sequentially consistent).
 
    The exclusives and atomics are the machine's load-reserved and store-conditional (rk_lr, rk_sc) of 4 or 8 bytes: a
    store-exclusive is cpu.h's value-based monitor, a compare-and-swap of the value the load-exclusive read; a byte's
-   or a halfword's works on its aligned word, the other bytes kept as they are, as LLVM's masked atomics do; a pair's
-   (16 bytes) the exact helpers' over cpu.h's snx_cas128 (the runtime's RtAPI.cas128 on these hosts), as the LLVM
-   back end's code calls it. CRC32 is the exact helper's too */
+   or a halfword's works on its aligned word, the other bytes kept as they are; a pair's
+   (16 bytes) the exact helpers' over cpu.h's snx_cas128 (the runtime's RtAPI.cas128 on these hosts). CRC32 is the exact helper's too */
 
 /* ---- the exclusives, the atomics and CRC32 (SGX_K_MACHINE): inputs in the machine's fixed registers (RK_M_*):
    the guest memory's base RK_M_BASE, the address RK_M_ADDR, the values RK_M_V1 and RK_M_V2 (a CAS's expected and

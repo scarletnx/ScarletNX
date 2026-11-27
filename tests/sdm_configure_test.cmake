@@ -6,7 +6,8 @@
 # test's), stops where it lacks pdftotext, and where Intel's link doesn't give the pinned revision or doesn't answer
 # says what was expected, what came and what to do; a file already there that is another stops it too, and so does a pin
 # of cpmfile.json that isn't the revision's. CPMUtil's 5 s between tries is left out. Where nothing sets SNX_SAIL_X64
-# the back end is built on every x86-64 system, Android's included, and on no other machine. Run by ctest as
+# the back end is built on every x86-64 system, Android's included, and on no other machine; off on an x86-64 system,
+# whose only code generator it is, stops the configure. Run by ctest as
 # sdm_configure, with -DSRC and -DWORK
 cmake_minimum_required(VERSION 3.28)
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
@@ -78,7 +79,10 @@ endfunction()
 set(none -DSNX_PDFTOTEXT=OFF)
 set(with "-DSNX_PDFTOTEXT=${CMAKE_COMMAND}")
 configure(on goes "SNX_X64 is ON" ${none})
-configure(off goes "SNX_X64 is OFF" -DSNX_SAIL_X64=OFF ${none})
+# off on an x86-64 host, whose only code generator it is: refused, with the value given and the one that holds
+configure(off stops "SNX_SAIL_X64=OFF on x86_64: the x86-64 back end is this host's only code generator"
+          -DSNX_SAIL_X64=OFF -DMACHINE=x86_64 ${none})
+configure(off_arm64 goes "SNX_X64 is OFF" -DSNX_SAIL_X64=OFF -DMACHINE=arm64 ${none})
 # whether the back end is built where nothing says, and the line of the log that tells: <name> <processor> <Android>
 # <built|not built>
 function(default name processor android built)

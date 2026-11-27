@@ -22,8 +22,10 @@
 #include "common/cpu/recompiler/variants.h"
 #include "common/cpu/recompiler/loader/gdb_jit.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
+#include "common/utilities/old_llvm_caches.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -322,19 +324,14 @@ void jit_init(void) {
         WARN("jit: the AOT module has no runtime code variants; the JIT handles the misses and writes a cache\n");
     }
     memset(&config, 0, sizeof(config));
+    /* the native back end has no levels: the cache's key keeps the one each cache was made with, a phone's 0 and
+       jit_opt's default elsewhere, so no cache is made again for it */
 #if defined(__ANDROID__) || defined(SNX_IOS)
-    /* a phone compiles at O0: any other level breaks the JIT there, so settings.txt has no setting for it, and the ini
-       has no key */
     opt = '0';
 #else
-    opt = g_settings.jit_optimization[0];
-    /* ini_read takes any text that fits, as a hand-edited .ini has it; strchr finds an empty one's NUL */
-    if (!opt || !strchr("0123sz", opt)) {
-        opt = '2'; /* settings.txt's default, as a setting keeps its earlier value for one it does not take */
-        WARN("jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", g_settings.jit_optimization, opt);
-    }
+    opt = '2';
 #endif
-    /* the game's CPU (loader/ounce.h), as the recompiler's module_llvm.c gives it from the same NPDM */
+    /* the game's CPU (loader/ounce.h), as the recompiler's module_a64.c gives it from the same NPDM */
     config.features = snx_guest_features(g_ounce, g_settings.cpu_extensions);
     config.opt = opt;
     config.images = g_jit_images;
@@ -355,6 +352,14 @@ void jit_init(void) {
     config.thread = jit_thread_log;
     snprintf(g_jit_cache, sizeof(g_jit_cache), "%s%s.jitcache", g_cachedir, g_exename);
     config.cache_path = g_jit_cache;
+    { /* a .jitcache LLVM made: said with where it is deleted, never deleted here (the JIT starts another beside its key) */
+        SnxLlvmCaches old = {0};
+        char said[1600];
+        if (snx_llvm_caches_jit(g_jit_cache, &old) == 1 &&
+            snx_llvm_caches_said(&old, NULL, SNX_LLVM_CACHE_JIT_WHERE, said, sizeof said))
+            LOG("jit: %s\n", said);
+        snx_llvm_caches_free(&old);
+    }
     g_jit = snx_jit_service_new(&config, error, sizeof(error));
     if (!g_jit) {
         snprintf(g_jit_error, sizeof(g_jit_error), "%s", error);
@@ -369,6 +374,10 @@ void jit_init(void) {
         snx_jit_stats(g_jit, &stats);
         LOG("jit: %u compile threads and the miss thread, %lu pcs of earlier runs queued\n", stats.threads,
             (unsigned long)warm);
+        char why[256];
+        if (snx_native_floor(why, sizeof why)) WARN("jit: %s: LLVM makes the code\n", why);
+        else if (snx_native_fallback(why, sizeof why))
+            LOG("jit: %s\n", why);
     }
     /* mapping, permission and write-back changes drop the slots and images the range's code filled (mem.c) */
     mem_set_code_invalidate(jit_code_invalidate);

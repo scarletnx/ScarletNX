@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Testing and reporting
 
-[Usage](usage.md) · [development](../dev/development.md) · [contributing](../../CONTRIBUTING.md) · [edenprobe](../dev/edenprobe.md).
+[Usage](usage.md) · [development](../dev/development.md) · [contributing](../../CONTRIBUTING.md) · [Amberlith](../dev/amberlith.md).
 What to say in a test report so it can be compared with the last one. Nothing of a game goes into a report: no keys,
 dumps, game files or shader and texture dumps ([CONTRIBUTING](../../CONTRIBUTING.md#game-data-stays-out)).
 
@@ -27,11 +27,15 @@ Say what ran, for how long and how it ended:
 
 ## Which build
 
-- A nightly: its tag, `nightly-<date>-<commit>`.
-- A pull request's build: `pr-<number>` and the commit in its release notes. The next push replaces it.
+- A nightly: its tag, `nightly-<day>-<commit>`, the day (UTC) its build began.
+- A build of `main`'s prerelease: its tag, `main-<commit>`. The next push to `main` replaces it, so report on a nightly
+  when you can.
+- A pull request's build: `pr-<number>` and the commit in its release notes. The next push replaces it; once the pull
+  request is merged, it stays until a nightly has the change.
 - A build from source: `git rev-parse --short HEAD`, and whether the tree was clean.
 
-The game's log starts with a `build:` line that says the same. A game's code is recompiled only when the recompiler
+The game's log starts with a `build:` line that says the same: a nightly's names its `nightly-<day>` where another
+build names its branch. A game's code is recompiled only when the recompiler
 changes ([CLAUDE.md](../../CLAUDE.md)), so a `games/` folder made by an older build can still hold old code. Say so if you
 tested with one.
 
@@ -95,4 +99,4 @@ the same way. It labels the issue `game report` and `log: <how it ended>`. `buil
 same summary locally ([Run / diagnose](../dev/development.md#run--diagnose)).
 
 A maintainer who reproduces the failure labels it `status: confirmed`, which posts that it is ready to become an
-[edenprobe](../dev/edenprobe.md) case. A fix refers to the report.
+[Amberlith](../dev/amberlith.md) case. A fix refers to the report.

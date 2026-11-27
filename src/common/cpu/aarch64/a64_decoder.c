@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The generated A64 decoder (a64_decode.inc) behind the functions of a64_decoder.h */
 #include "common/cpu/aarch64/a64_decoder.h"
+#define SNX_A64_DECODE_ARGS /* the arguments' names and each op's list, for snx_a64_word_fields */
 #include "a64_decode.inc"
 
 SnxU64 snx_a64_features(SnxU64 features) {
@@ -68,6 +69,21 @@ void snx_a64_word_text(SnxU32 word, char* out, size_t size) {
     }
     past = insn.feature & ~(SnxU64)SNX_A64_FEAT_V8_0;
     snprintf(out, size, past ? "%s, which needs %s" : "%s", snx_a64_op_text(insn.op), snx_a64_feature_text(past));
+}
+
+int snx_a64_word_fields(SnxU32 word, char* out, size_t size) {
+    SnxA64Insn insn;
+    if (size) out[0] = 0;
+    if (snx_a64_decode(word, SNX_A64_TARGET_MAX | SNX_A64_FEAT_EL1, &insn) == SNX_A64_OP_UNDEF) return 0;
+    const SnxA64OpArgs* args = &snx_a64_op_args[insn.op];
+    int n = snprintf(out, size, "%s", snx_a64_op_text(insn.op));
+    for (unsigned i = 0; i < args->count && n >= 0 && (size_t)n < size; i++) {
+        unsigned arg = snx_a64_op_arg_list[args->first + i];
+        int more =
+            snprintf(out + n, size - (size_t)n, " %s=%d", snx_a64_arg_names[arg], snx_a64_arg_value(&insn.args, arg));
+        n = more < 0 ? more : n + more;
+    }
+    return 1;
 }
 
 SnxU64 snx_a64_decoder_hash(void) { return SNX_A64_DECODE_HASH; }

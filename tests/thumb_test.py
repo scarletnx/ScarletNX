@@ -4,8 +4,7 @@
 """Thumb16/Thumb32 blocks of a native back end vs ARMv8 AArch32 (Unicorn 2.1.4).
 
 A Thumb block for each instruction or sequence, its halfwords beside its text, made by this host's back end or (run
-under Unicorn) another machine's, with all its host registers and with three, so that values spill, or by LLVM at
-each --opt level. Each is run from
+under Unicorn) another machine's, with all its host registers and with three, so that values spill. Each is run from
 random state, every GPR, CPSR, D register, FPSCR and guest memory compared. Exact raw-bit comparisons only. No game
 assets.
 """

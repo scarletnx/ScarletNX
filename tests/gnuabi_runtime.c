@@ -3,8 +3,11 @@
 #include "gnuabi/process/process.h"
 #include "gnuabi/abi/errno.inc"
 #include "gnuabi/runtime/execution.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/utilities/endian.h"
 #include "gnuabi/kernel/signals.h"
+#include "sail_x64_emit.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -250,6 +253,16 @@ int main(int argc, char** argv) {
     CHECK(p->exited && p->exit_code == 42);
     t->cpu.mem = p->memory.base;
     p->exited = 0;
+#if defined(__x86_64__)
+    if (snx_native_available()) { /* a host below its back end's floor (native.h): why */
+        GnuJit none = {0};
+        char lacks[256];
+        snx_x64_without(SNX_X64_SSE2);
+        CHECK(snx_native_floor(lacks, sizeof lacks) && gnu_jit_init(&none, NULL, error, sizeof error) != 0);
+        CHECK(!strcmp(error, lacks) && !strncmp(error, "cpu: needs SSE2, this host has ", 31));
+        snx_x64_without(0);
+    }
+#endif
     CHECK(gnu_jit_init(&p->jit, NULL, error, sizeof error) == 0);
     gnu_jit_bind(&p->jit, &t->cpu);
     gnu_jit_install(&p->jit, 0x400100, faulting_guest);

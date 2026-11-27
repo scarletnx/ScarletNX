@@ -7,7 +7,8 @@
 #include "agb/runtime/vk.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
-#include "common/utilities/quit_key.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -34,10 +35,13 @@ struct AgbHost {
     SnxPadMap pad;
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
-    uint64_t quit_by;           /* a second Esc before this closes the window (common/utilities/quit_key.h) */
-    /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): Esc's first
-       press. Its band's texture, made again for another size */
+    /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): what the
+       runtime's keys say. Its band's texture, made again for another size */
     SnxNotice notice;
+    char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
+    bool shot;      /* the screenshot key's: the next frame saved */
+    int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) for the loop between two frames, -1 none */
+    int vsync; /* SDL's renderer's: on at the console's pace, off at another, as a Switch game's follows its limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
 };
@@ -59,6 +63,7 @@ uint16_t agb_host_key(int scancode) {
     }
 }
 
+static unsigned agb_key(int bit) { return agb_host_button(bit); }
 uint16_t agb_host_button(int bit) {
     switch (bit) {
         case 0: return AGB_KEY_A;
@@ -100,7 +105,33 @@ static uint16_t gamepads(const AgbHost* host) {
     return keys;
 }
 
-AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t error_size) {
+void agb_host_say(const char* line) { fprintf(stderr, "scarletnx-agb: %s\n", line); }
+/* the open window, whose notice shows what the runtime's keys say */
+static struct {
+    AgbHost* open;
+} g_host;
+static void show(const char* line) {
+    if (g_host.open) snx_notice_show(&g_host.open->notice, line, SDL_GetTicksNS());
+}
+/* a runtime's key the window does: the screenshot's, at the next frame; another said to do nothing, with why */
+static void key_action(AgbHost* host, int action) {
+    if (action == HOTKEY_SCREENSHOT) {
+        host->shot = true;
+        return;
+    }
+    if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT) {
+        host->state_ask = action;
+        return;
+    }
+    snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"
+                                 : action == HOTKEY_MOUSE     ? "its mouse is the pointer of the on-screen controls"
+                                 : action == HOTKEY_TV_MODE   ? "the TV mode is the Switch's console docked"
+                                 : action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING
+                                     ? "its screen is drawn in sharp pixels, with no upscaler nor anti-aliasing"
+                                     : "its window has none of it yet");
+}
+
+AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size) {
     AgbHost* host = (AgbHost*)calloc(1, sizeof(*host));
     SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, AGB_APU_RATE};
     if (!host) {
@@ -108,6 +139,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         return NULL;
     }
     snx_sdl_desktop_hints();
+    snx_vpad_sdl_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -139,6 +171,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
     /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
        refresh too) */
     if (!host->vk) {
+        host->vsync = 1;
         if (!SDL_SetRenderVSync(host->renderer, 1))
             fprintf(stderr,
                     "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
@@ -146,6 +179,14 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         snx_window_icon(host->window);
     }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
+    g_host.open = host;
+    host->state_ask = -1;
+    {
+        char* folder = ini ? snx_dirname(ini) : NULL;
+        host->captures = snx_format("%s/", folder ? folder : ".");
+        free(folder);
+    }
+    snx_vpad_window_open(host->window, ini, agb_host_say, show);
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
         !SDL_ResumeAudioStreamDevice(host->audio)) {
@@ -159,6 +200,9 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
 
 void agb_host_close(AgbHost* host) {
     if (!host) return;
+    if (g_host.open == host) g_host.open = NULL;
+    free(host->captures);
+    snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
     if (host->texture) SDL_DestroyTexture(host->texture);
@@ -175,29 +219,16 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     SDL_Event event;
     bool open = true;
     while (SDL_PollEvent(&event)) {
+        int action;
+        SnxVpadEvent took = snx_vpad_window_event(&event, &action);
+        if (took == SNX_VPAD_QUIT) open = false;
+        if (took == SNX_VPAD_ACTION) key_action(host, action);
+        if (took != SNX_VPAD_PASS) continue;
         switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
-            case SDL_EVENT_KEY_DOWN:
-                /* Esc twice closes the window, a first one warning on the terminal and over the game; not with Ctrl,
-                   Alt or the system key */
-                if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
-                    !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-                    char warning[64];
-                    if (snx_quit_press(&host->quit_by, SDL_GetTicksNS())) {
-                        open = false;
-                        break;
-                    }
-                    snx_quit_warning(warning, sizeof warning, "Esc");
-                    fprintf(stderr, "scarletnx-agb: %s\n", warning);
-                    snx_notice_show(&host->notice, warning, SDL_GetTicksNS());
-                    break;
-                }
-                if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
-                    SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
-                host->keyboard |= agb_host_key(event.key.scancode);
-                break;
+            case SDL_EVENT_KEY_DOWN: host->keyboard |= agb_host_key(event.key.scancode); break;
             case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~agb_host_key(event.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST: host->keyboard = 0; break; /* no key held where it cannot be let go */
             default: break;
@@ -205,6 +236,13 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     }
     host->buttons = gamepads(host);
     *keys = (uint16_t)(host->keyboard | host->buttons);
+    u64 pressed;
+    i32 sticks[4]; /* the GBA has none */
+    snx_vpad_window_state(&pressed, sticks);
+    for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
+        if (pressed >> bit & 1) *keys |= agb_host_button(bit);
+    if (vpad_editing()) *keys = 0;
+    snx_vpad_window_showcase(*keys, agb_key, NULL);
     return open;
 }
 
@@ -247,25 +285,66 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
     SDL_RenderClear(host->renderer);
     SDL_RenderTexture(host->renderer, host->texture, NULL, NULL);
     notice_draw(host);
+    /* the on-screen controls in the window's own pixels, as the notice */
+    SDL_SetRenderLogicalPresentation(host->renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    snx_vpad_window_render(host->renderer);
+    SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                     SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
 }
 
 const char* agb_host_notice(const AgbHost* host) {
     return snx_notice_shown(&host->notice, SDL_GetTicksNS()) ? host->notice.text : "";
 }
 
+/* the frame shown, as the Switch's screenshot is: a PPM in the game's captures/, said where */
+static void shot(AgbHost* host, const uint32_t* framebuffer) {
+    char path[SNX_PATH_SIZE], line[SNX_PATH_SIZE + 64], why[160];
+    host->shot = false;
+    snx_capture_path(path, sizeof path - 4, host->captures ? host->captures : "./");
+    strcat(path, ".ppm");
+    FILE* f = fopen(path, "wb");
+    int failed = !f || snx_ppm_write(f, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, (const unsigned char*)framebuffer, 4,
+                                     AGB_SCREEN_WIDTH * 4, SNX_PPM_RGBA);
+    if (f && fclose(f)) failed = 1;
+    if (failed) {
+        snprintf(line, sizeof line, "the screenshot could not be written to %s: %s", path,
+                 snx_os_error(why, sizeof why));
+        agb_host_say(line);
+        show("Screenshot not saved: the log says why");
+        return;
+    }
+    snprintf(line, sizeof line, "screenshot: %s", path);
+    agb_host_say(line);
+    show("Screenshot saved in captures");
+}
+int agb_host_state_ask(AgbHost* host) {
+    int ask = host->state_ask;
+    host->state_ask = -1;
+    return ask;
+}
+bool agb_host_held(AgbHost* host, const uint32_t* framebuffer) {
+    if (!snx_vpad_window_paused()) return false;
+    agb_host_frame(host, framebuffer, NULL, 0);
+    return true;
+}
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
+    if (host->shot) shot(host, framebuffer);
     if (host->vk)
         (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
     else {
+        int vsync = snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
+        if (vsync != host->vsync && SDL_SetRenderVSync(host->renderer, vsync)) host->vsync = vsync;
         agb_host_draw(host, framebuffer);
         SDL_RenderPresent(host->renderer);
     }
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
-    uint64_t now = SDL_GetTicksNS();
+    /* at fps_limit's pace (the console's, none, or N frames a second), which F4 switches */
+    uint64_t now = SDL_GetTicksNS(), step = snx_vpad_window_frame_ns(FRAME_NS);
+    if (!step) return;
     if (host->due > now)
         SDL_DelayPrecise(host->due - now);
-    else if (now - host->due > 3 * FRAME_NS) /* behind by more than a few frames: start the count again, no rush */
+    else if (now - host->due > 3 * step) /* behind by more than a few frames: start the count again, no rush */
         host->due = now;
-    host->due += FRAME_NS;
+    host->due += step;
 }

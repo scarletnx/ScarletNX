@@ -4,8 +4,7 @@
 """A32 VFP/NEON blocks of a native back end vs ARMv8 AArch32 (Unicorn 2.1.4).
 
 Every GPR, D register, CPSR, FPSCR and memory after one instruction, by the blocks of this host's back end or (run under
-Unicorn) another machine's, with all its host registers and with three, so that values spill, or LLVM's at each
---opt level. The instructions are
+Unicorn) another machine's, with all its host registers and with three, so that values spill. The instructions are
 arm_vfp_cases.s's and arm_neon_cases.s's, whose words stand beside their text, and forms of them made here by their
 fields. No host floating-point comparisons or tolerances. No skipped mismatches.
 """

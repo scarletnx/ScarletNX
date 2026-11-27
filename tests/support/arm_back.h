@@ -3,8 +3,7 @@
 /* The native back end whose AArch32 blocks a test makes: Back, its functions back_(name) and BACK_NAME. Built with
    SNX_TEST_ARM64, SNX_TEST_RV64 and their like it is that machine's, and SNX_TEST_NATIVE is defined: its code runs
    under Unicorn (BACK_UC, host_unicorn.h), arm64's as Windows' with SNX_TEST_ARM64WIN too, and x86-64's as Windows'
-   with SNX_TEST_WIN64, by an x86-64 host itself (host_win64.c). Built with none of them it is the host's own, and with
-   SNX_TEST_ARM_LLVM the host's LLVM blocks (support/arm_llvm_back.h) */
+   with SNX_TEST_WIN64, by an x86-64 host itself (host_win64.c). Built with none of them it is the host's own */
 #ifndef SNX_TEST_ARM_BACK_H
 #define SNX_TEST_ARM_BACK_H
 #if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_PPC64BE) ||       \
@@ -32,12 +31,7 @@
 #define BACK_MIPS64BE 1
 #endif
 
-#if defined(SNX_TEST_ARM_LLVM)
-#include "support/arm_llvm_back.h"
-typedef ArmLlvm Back;
-#define back_(name) arm_llvm_##name
-#define BACK_NAME   "LLVM"
-#elif defined(SNX_TEST_ARM64) || defined(BACK_ARM64)
+#if defined(SNX_TEST_ARM64) || defined(BACK_ARM64)
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
 typedef SnxArm64Arm Back;
 #define back_(name) snx_arm64_arm_##name

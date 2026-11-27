@@ -153,7 +153,7 @@ specification treats as errors. Both ports make the same choices, checked agains
   shader rounds `bits * 64 / (2^n - 1)` instead, which differs for 4 and 5 bit weights.
 - Bits past the color endpoint sequence's length read as zero, as Eden already does for the weights. Eden decodes
   the spare values of the last trit or quint block from them, which can change the values that are used.
-- Both decoders follow the LDR profile, as edenprobe's astc cases hold them to: an HDR void extent is an error,
+- Both decoders follow the LDR profile, as Amberlith's astc cases hold them to: an HDR void extent is an error,
   and a partition with an HDR endpoint mode (2, 3, 7, 11, 14 or 15) is the error color on its own texels while
   the block's other partitions decode. Eden decodes HDR endpoints. Its HDR endpoint decoding was left out.
 - The following are errors, as in the specification: a block whose weights and configuration leave no room for
@@ -460,7 +460,7 @@ vulkan: a 128x96x1 ASTC 8x8 texture held as BC4 is loaded again with blocks of l
 (`snx-test-astc-bcn-glsl --measure [--srgb] FILE.astc...`, the shaders' bodies run on the CPU, the GPU's bytes): PSNR over
 RGBA, and the largest error of R, G, B and A in levels of 256. BC7 is the encoder's fast build on the same blocks, what
 Auto gives them under pressure. The pictures are astcenc's `-medium` encodings of the Khronos glTF sample images
-astc-encoder's tests carry (MIT), and edenprobe's astcimage picture:
+astc-encoder's tests carry (MIT), and Amberlith's astcimage picture:
 
 | Blocks | Footprint | Held as | Its PSNR, largest errors | BC7's |
 | --- | --- | --- | --- | --- |
@@ -472,7 +472,7 @@ astc-encoder's tests carry (MIT), and edenprobe's astcimage picture:
 | | 6x6 | BC1 sRGB | 46.88 dB, 27 28 27 0 | 59.96 dB, 7 7 7 0 |
 | | 8x8 | BC1 sRGB | 47.49 dB, 24 22 24 0 | 59.68 dB, 5 5 5 0 |
 | | 12x12 | BC1 sRGB | 47.66 dB, 22 23 22 0 | 59.67 dB, 5 5 5 0 |
-| edenprobe's gradients, 64x64 | 8x8 | BC1 | 45.33 dB, 5 4 5 0 | 53.57 dB, 2 2 2 0 |
+| Amberlith's gradients, 64x64 | 8x8 | BC1 | 45.33 dB, 5 4 5 0 | 53.57 dB, 2 2 2 0 |
 | The same, sRGB | 8x8 | BC1 sRGB | 45.25 dB, 5 4 5 0 | 53.72 dB, 2 2 2 0 |
 | A 1024x1024 normal map (`-normal`: X in R, G and B, Y in alpha) | 4x4 | BC5 | 50.08 dB, 17 17 17 14 | 46.67 dB, 29 29 29 90 |
 | | 6x6 | BC5 | 50.01 dB, 17 17 17 14 | 47.61 dB, 37 37 37 102 |
@@ -490,7 +490,7 @@ astc-encoder's tests carry (MIT), and edenprobe's astcimage picture:
 Random blocks are the encoders' worst case, each texel at a weight of its own; `astc_bcn_glsl` holds them to those
 numbers. The rest of those pictures keeps the usual format: the four RGB ones (diffuse, emissive, two metal and
 roughness maps, 4x4, 8x8 and 12x12, `-esw rgb1`) mix partitions of colour, and luminance blocks among colour ones;
-RGBA and edenprobe's whole picture hold colour and alpha. On the normal maps BC5 loses less than BC7's fast build at 6
+RGBA and Amberlith's whole picture hold colour and alpha. On the normal maps BC5 loses less than BC7's fast build at 6
 of the 8 footprints and errs far less in alpha (Y), its two channels apart where BC7 fits lines through RGBA.
 
 **Memory and time.** BC1 and BC4 take 8 bytes a 4x4 block, half a byte a texel, an eighth of RGBA8's four and half of
@@ -610,7 +610,7 @@ a mean squared error of a quarter, 54 dB, for that block. A hard block still get
 weights that changed. Quality tests compare against the prior unpruned search and require each block to stay
 within the 16-error allowance or produce no more error than that reference.
 
-What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
+What it costs, as PSNR against what it encodes, on Amberlith's astcimage picture (gradients, hard edges where three
 colours meet in a block, noise, and alpha) decoded from ASTC: 39.9 dB over the picture at 4x4 (gradients 53.1,
 edges 48.9, noise 34.2, alpha 50.9), 40.4 at 6x6, 46.2 at 8x8 and 45.2 at 12x12. Mode 6 alone gave 27.6 at 4x4,
 its edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
@@ -770,7 +770,7 @@ quickly once more, and its pieces stored, as its old record is not the pieces'.
 The pieces of the two arrays' quick levels are 1890, 450 MB of blocks: they stay in the cache while its bound and
 the other levels' uses leave them room.
 
-| The quick build on edenprobe's astcimage picture | Gradients | Edges | Noise | Alpha |
+| The quick build on Amberlith's astcimage picture | Gradients | Edges | Noise | Alpha |
 | --- | --- | --- | --- | --- |
 | PSNR, against mode 6 alone | 42.7 dB (43.2) | 23.1 (26.2) | 24.7 (25.2) | 32.4 (40.0) |
 
@@ -855,7 +855,7 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
 ## Tests
 
 - `astc_decode` (ctest) checks the CPU decoder on void-extent blocks (the color in both decode modes, the
-  reserved bits, HDR void extents and empty extents), and on edenprobe's illegal block and HDR partition block
+  reserved bits, HDR void extents and empty extents), and on Amberlith's illegal block and HDR partition block
   against its reference decoder's texels.
 - `astc_blocks` (ctest) holds the CPU decoder to single blocks from rEden's decoder tests, texel for texel: an
   illegal block at each error exit, HDR partitions, color data cut short inside a trit or quint group under every
@@ -904,7 +904,7 @@ package, and `-DSNX_GLSLANG=path` picks any. spirv-opt and spirv-val are the SPI
   gives a line's ends back and a constant alpha its value in every subset of every partition, blocks of one colour,
   blocks that lie on a line mode 6 holds and blocks each other mode holds (modes 4 and 5 in each rotation and index
   selection) come back exact, blocks with one channel apart come back closer than the same encoder built without
-  modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), edenprobe's astcimage picture comes
+  modes 4 and 5 brings them (`SNX_BC7_MODES_4_5` 0, `bc7_encode_cpu_without_45`), Amberlith's astcimage picture comes
   back no worse than the PSNR each region is held to (the fast build, mode 6 alone and the quick build,
   `bc7_encode_cpu_quick`, to theirs, the fast build keeping mode 6 on more blocks than the full one, mode 6 alone and
   the quick build on all), and a 13x7 image of three slices encodes slice
@@ -1003,8 +1003,8 @@ The CPU decoder was also compared with ARM's astcenc 5.7.0 (`astcenc -dl` and `-
 used only as a tool), on the same kind of random blocks for every footprint. Every texel agreed within one step of
 rounding (astcenc's 8 bit output rounds differently), and every block one rejects the other rejects too. In the LDR
 profile astcenc also rejects HDR endpoint modes, which this decoder decoded then. After HDR endpoints became the
-error color, the CPU decoder was compared with edenprobe's LDR profile reference decoder (`source/astcref.c`, held
-to astcenc by edenprobe's reference suite) on 20,000 random blocks for each of the 14 footprints: every texel was
+error color, the CPU decoder was compared with Amberlith's LDR profile reference decoder (`source/astcref.c`, held
+to astcenc by Amberlith's reference suite) on 20,000 random blocks for each of the 14 footprints: every texel was
 one of the two bytes the reference allows, error blocks included. The sRGB decode mode was checked
 the same way against `astcenc -cs` and `-ds` on five footprints: every byte agreed, alpha included.
 

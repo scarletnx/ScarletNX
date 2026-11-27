@@ -7,6 +7,7 @@
 #include "android/bridge/hle_signal.h"
 #include "android/bridge/host.h"
 #include "common/cpu/aarch64/a64_decoder.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include "gnuabi/kernel/kernel.h"
@@ -71,9 +72,7 @@ static struct {
     uint64_t stop;      /* the address that ends a host call into guest code */
     uint64_t sigreturn; /* the address a guest signal handler returns to */
     uint64_t guard;
-    char optimization; /* bridge_set_optimization's, 0 for the default */
     bool verbose;      /* bridge_set_verbose's */
-    char* keep_ir;     /* bridge_set_keep_ir's folder, NULL for none */
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
     /* a thread's ThreadState: a key's value, whose destructor runs in a thread of any library's */
@@ -257,26 +256,18 @@ const char* bridge_export_name(uint64_t address) {
 
 /* ---- the window ---- */
 
-bool bridge_set_optimization(char level) {
-    if (!strchr("0123sz", level) || !level) return false;
-    b.optimization = level;
-    return true;
-}
-
 void bridge_set_verbose(bool verbose) {
     b.verbose = verbose;
-}
-void bridge_set_keep_ir(const char* folder) {
-    free(b.keep_ir);
-    b.keep_ir = folder && folder[0] ? snx_strdup(folder) : NULL;
 }
 
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
     /* before anything of the bridge is kept: b.window says it started, and a start that failed is tried whole again */
-    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     if (!recompiler) {
-        snprintf(error, error_size, "the LLVM backend cannot target this host");
+        if (!snx_native_refused(error, error_size))
+            snprintf(error, error_size, "no recompiler for this host: its native back end (%s) makes none",
+                     snx_native_name());
         return false;
     }
     /* the window at the same address on every run: the compiled code's cache is keyed by the code's addresses */
@@ -309,9 +300,6 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     b.exports_base = b.hi - EXPORTS_SIZE;
     /* a phone's CPU: Armv8.2, without pointer authentication (getauxval's HWCAP says the same) */
     snx_recompiler_set_a64_target(b.recompiler, SNX_RECOMPILER_A64_ANDROID);
-    if (b.optimization) snx_recompiler_set_optimization(b.recompiler, b.optimization);
-    if (b.keep_ir && snx_recompiler_set_keep_ir(b.recompiler, b.keep_ir))
-        fprintf(stderr, "scarletnx-android: cannot keep the JIT's IR in %s\n", b.keep_ir);
     if (cache && snx_recompiler_set_cache(b.recompiler, cache))
         fprintf(stderr, "scarletnx-android: %s; compiling without a cache\n", snx_recompiler_error(b.recompiler));
     snx_runtime_defaults(&b.rt);

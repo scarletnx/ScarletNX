@@ -9,8 +9,7 @@
 #                           scarletnx-agb (src/multicall)
 
 # The ARM and Thumb recompiler of src/common/cpu/arm, the same one the other system types use.
-if(NOT TARGET snx_arm_llvm)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" agb-arm-backend)
 endif()
 
@@ -21,15 +20,16 @@ set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime
 # The recompiler (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level
 # configures): the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches
 # compiled in this process by its executor (exec.c), as the 3DS and the Vita do
-target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_recompiler_jit)
+target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_decode snx_arm_rt snx_recompiler_jit)
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
 # command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba), and reads the
 # settings it takes by their names on a command line (snx_settings' settings_arg)
-add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c "${volk_SOURCE_DIR}/volk.c")
+add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c runtime/state.c "${volk_SOURCE_DIR}/volk.c")
 target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_pad_sdl snx_build_info
-                      snx_settings snx_notice)
+                      snx_settings snx_notice snx_vpad_sdl snx_vpad_consoles)
+target_link_libraries(snx_agb_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 # the window through Vulkan (runtime/vk.c), as the other consoles' windows; volk's loader compiled here, as every
 # frontend does. snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings) its device takes
 target_link_libraries(snx_agb_program PUBLIC snx_vk_common Vulkan::Headers snx_settings_runtime)

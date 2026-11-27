@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The runner's side of the screen, the speaker and the controls (SDL3): the board's frame in a window at a whole
-   scale, its sound at the console's rate, the keyboard and gamepads as the keypad, and the console's 59.73 frames a
-   second. The board knows none of it (tests/architecture.py keeps SDL out of scarletnx-agb) */
+   scale, its sound at the console's rate, the keyboard, gamepads and the on-screen controls as the keypad, and the
+   console's 59.73 frames a second. The board knows none of it (tests/architecture.py keeps SDL out of scarletnx-agb) */
 #ifndef SNX_AGB_HOST_H
 #define SNX_AGB_HOST_H
 #include <stdbool.h>
@@ -30,19 +30,29 @@ uint16_t agb_host_key(int scancode);
    the sticks' clicks */
 uint16_t agb_host_button(int bit);
 
+/* what the on-screen controls say, on stderr */
+void agb_host_say(const char* line);
 typedef struct AgbHost AgbHost;
 /* the window titled title, fullscreen or not, and the sound: NULL with error saying why. A host with no sound device
-   plays without one, and says so on stderr */
-AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t error_size);
+   plays without one, and says so on stderr. ini: the game's, which keeps the on-screen controls' layout (NULL: none
+   kept), the GBA's (vpad_consoles.h), whose settings are read by then (vpad_settings) */
+AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size);
 void agb_host_close(AgbHost* host);
-/* the events since the last call: the keys held after them (AGB_KEY_), false once the window is closed */
+/* the events since the last call: the keys held after them (AGB_KEY_), the on-screen controls' among them, none while
+   their layout is edited; false once the window is closed */
 bool agb_host_poll(AgbHost* host, uint16_t* keys);
 /* with SDL's renderer (a host with no Vulkan window), the 240x160 frame (RGBA, a byte each) drawn in the window, and
-   over it a notice while one shows (Esc's first press, common/utilities/notice.h), not shown yet: agb_host_frame's
-   first part. Nothing with the Vulkan window, whose frames agb_host_frame draws and shows at once */
+   over it a notice while one shows (Esc's first press, common/utilities/notice.h) and the on-screen controls, not shown
+   yet: agb_host_frame's first part. Nothing with the Vulkan window, whose frames agb_host_frame draws and shows at once */
 void agb_host_draw(AgbHost* host, const uint32_t* framebuffer);
 /* the line over the game while it shows ("" when none does): Esc's first press */
 const char* agb_host_notice(const AgbHost* host);
 /* the frame drawn and shown, its count frames of stereo samples, then the wait to the next frame's time */
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count);
+/* the save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), for the loop to do
+   between two frames (vpad_sdl.h's snx_vpad_window_states); -1 for none */
+int agb_host_state_ask(AgbHost* host);
+/* a frame of the pause (snx_vpad_window_paused): true while it holds, framebuffer shown again at the frames' pace with
+   no sound; false, doing nothing, when the game runs */
+bool agb_host_held(AgbHost* host, const uint32_t* framebuffer);
 #endif

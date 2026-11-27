@@ -55,7 +55,7 @@ u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
-extern const u32 snx_x64_crc32_table[256];
+extern const u32 snx_x64_crc32_table[8 * 256], snx_x64_crc32c_table[256];
 /* the floating-point helpers counted: a hot path's operation calls none */
 static unsigned long g_fp_calls;
 unsigned long snx_x64_fp_calls(void) { return g_fp_calls; }
@@ -114,7 +114,8 @@ static SnxU64 resolve(const char* sym) {
                  SNX_X64_FN(snx_x64_half),
                  SNX_X64_FN(snx_x64_bfdot),
                  SNX_X64_FN(snx_x64_sm4_box),
-                 {"snx_x64_crc32_table", (void*)snx_x64_crc32_table}};
+                 {"snx_x64_crc32_table", (void*)snx_x64_crc32_table},
+                 {"snx_x64_crc32c_table", (void*)snx_x64_crc32c_table}};
     for (size_t i = 0; i < sizeof table / sizeof *table; ++i)
         if (!strcmp(sym, table[i].name)) return (SnxU64)(uintptr_t)table[i].f;
     return 0;

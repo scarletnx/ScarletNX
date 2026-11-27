@@ -754,33 +754,13 @@ def check_weak_declarations(repo):
     return errors
 
 
-# LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
-# a header of the project's that does. A file leaves the list when it stops, and one joins it only with the LLVM code of
-# files that leave, never new code: what wants the code the native back ends leave asks for it through
-# recompiler/fallback.h (a game module's own through nx/loader/module_fallback.h), and the rest of the recompiler
-# (snx_recompiler_core) builds without LLVM
+# LLVM's headers: no file of src/ includes one, itself or through a header of the project's, as the build has no LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
-LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
-LLVM_USERS = {
-    'src/common/cpu/arm/llvm.c',
-    'src/common/cpu/arm/llvm.h',
-    'src/common/cpu/recompiler/fallback_llvm.c',
-    'src/common/cpu/recompiler/jit/jit_cache_key.c',
-    'src/common/cpu/recompiler/jit/jit_service.c',
-    'src/common/cpu/recompiler/library.c',
-    'src/common/cpu/recompiler/workers.h',
-    'src/nx/loader/module_fallback_llvm.c',
-    'src/nx/loader/module_variants.c',
-    'src/nx/loader/module_variants.h',
-    'src/nx/runtime/driver/disasm.c',
-    'src/nx/runtime/driver/llvm_tuning.c',
-    'src/nx/runtime/settings_llvm.h',
-}
 
 
 def check_llvm(repo):
-    """only the LLVM backend and the files of LLVM_USERS include LLVM's headers, themselves or through a header of the
-    project's: a build without LLVM has no file of the rest to stop at"""
+    """no file of src/ includes LLVM's headers, itself or through a header of the project's: the native back ends make
+    the code, and the build has no LLVM to find"""
     src = (repo / 'src').resolve()
     includes, by = {}, {}
     for path in sorted(src.rglob('*')):
@@ -802,15 +782,10 @@ def check_llvm(repo):
             if reached in names and shown not in by:
                 by[shown] = f'"{names[reached]}"'
                 pending.append(shown)
-    errors = [
-        f'{shown}: includes {by[shown]}, which takes LLVM: the recompiler builds without it but for the files of '
-        'LLVM_USERS (tests/architecture.py), which none joins: ask recompiler/fallback.h'
+    return [
+        f'{shown}: includes {by[shown]}, which takes LLVM: the build has none, the native back ends make the code'
         for shown in sorted(by)
-        if not shown.startswith(LLVM_FOLDER) and shown not in LLVM_USERS
     ]
-    for shown in sorted(LLVM_USERS - set(by)):
-        errors.append(f'tests/architecture.py: LLVM_USERS names {shown}, which takes no LLVM header: take it out')
-    return errors
 
 
 # A driver, a vendor or a device compared in the code: the VkDriverId's names, a comparison or a switch on an identity
@@ -1003,7 +978,7 @@ def check_graph(graph):
         ('snx_ctr_process', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_ctr_native', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_recompiler_core', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'scarletnx-common')),
-        ('snx_nx_fallback_none', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'snx_nx_fallback_llvm')),
+        ('snx_nx_aot', ('snx_llvm', 'snx_arm_llvm')),
     ):
         if owner not in by_name:
             if owner == 'scarletnx-common':
@@ -1013,7 +988,7 @@ def check_graph(graph):
         for target in forbidden:
             if target in dependencies:
                 errors.append(f'{owner} transitively links forbidden target {target}')
-        if owner in ('snx_recompiler_core', 'snx_nx_fallback_none'):
+        if owner in ('snx_recompiler_core', 'snx_nx_aot'):
             for target in dependencies:
                 if re.search(r'(?:^|[/\\]|-l|lib)LLVM', target):
                     errors.append(f'{owner} transitively links LLVM: {target}')

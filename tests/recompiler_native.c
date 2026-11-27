@@ -39,17 +39,6 @@ static void check_empty(const char* dir) {
     check(!snx_list_dir(dir, &names, &count) && !count, "temporary build directory cleaned up");
     snx_free_strings(names, count);
 }
-static void check_sources(const char* dir, const char* suffix) {
-    char** names = NULL;
-    size_t count = 0, i, len;
-    check(!snx_list_dir(dir, &names, &count) && count, "generated C retained on request");
-    for (i = 0; i < count; ++i) {
-        len = strlen(names[i]);
-        check(len > strlen(suffix) && !strcmp(names[i] + len - strlen(suffix), suffix),
-              "only generated sources retained");
-    }
-    snx_free_strings(names, count);
-}
 static void put32(unsigned char* p, size_t off, unsigned long n) {
     unsigned i;
     for (i = 0; i < 4; ++i) p[off + i] = (unsigned char)(n >> (8 * i));
@@ -245,10 +234,11 @@ int main(int argc, char** argv) {
             free(data_file);
         }
         check_empty(temp);
+        /* --keep-ir keeps nothing: LLVM's IR went with it, which the recompile says */
+        check(!snx_is_dir(build), "no build directory, --keep-ir's or another");
         if (pass == 5)
-            check_sources(build, ".ll");
-        else
-            check(!snx_is_dir(build), "no persistent build directory by default");
+            check(text && strstr(text, "--keep-ir went with LLVM's IR: the native back ends keep none"),
+                  "--keep-ir is said");
         free(text);
         text = NULL;
 #ifdef _WIN32
@@ -268,7 +258,6 @@ int main(int argc, char** argv) {
             check(!snx_remove_tree(module), "remove link output blocker");
         free(module);
     }
-    check(!snx_remove_tree(build), "remove kept sources before no-build test");
     data_file = snx_path_join(out, "Native Fixture/Native Fixture_data/exefs/main.nro");
     cached = (char*)snx_read_file(data_file, &cached_size);
     check(cached && cached_size == sizeof(image) && !memcmp(cached, image, sizeof(image)), "NRO staging");
@@ -308,13 +297,13 @@ int main(int argc, char** argv) {
         free(text);
         text = NULL;
     }
-    { /* the help names the level a recompile takes without -O, the common table's line (its lines end in \r\n on
-         Windows) */
+    { /* the help says -O went with LLVM, the common table's line (its lines end in \r\n on Windows) */
         const char* help[] = {argv[1], "--repo", argv[2], "-r", "--help", NULL};
-        check(!snx_run(help, root, NULL, &text) &&
-                  strstr(text, "-O, --opt LEVEL        LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z") &&
-                  strstr(text, "setting opt, 2)"),
-              "-O's default in the help");
+        check(
+            !snx_run(help, root, NULL, &text) &&
+                strstr(text,
+                       "-O, --opt LEVEL        LLVM's optimization level, which went with it: said, and nothing done"),
+            "-O in the help");
         free(text);
         text = NULL;
     }

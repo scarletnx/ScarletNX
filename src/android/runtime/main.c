@@ -56,8 +56,7 @@ static void usage(FILE* out) {
     "  --translate=DIR        Translate every class of the APK ahead of time into DIR, a .class file for each,\n"
     "                         and stop\n"
     "  -J OPTION              An option for the JVM (-J-Xmx2g)\n"
-    "  --jit-opt=LEVEL        LLVM's optimization of the native code the JIT compiles: 0, 1, 2 (the default),\n"
-    "                         3, s or z, as -O. 0 compiles several times faster, to test the JIT itself\n"
+    "  --jit-opt=LEVEL        LLVM's level, which went with it: said, and nothing done, as -O\n"
     "  --framework=JAR        The framework's jar, in place of the one beside the program\n"
     "  --java-home=DIR        The JDK to run on (21 or later), in place of the one the build found\n"
     "\n"
@@ -75,7 +74,7 @@ static void usage(FILE* out) {
     "  --log-signals          Each guest signal action, send and delivery\n"
     "  --sample               Every 5 s, each guest thread's pc, x30 and HLE call, and the Vulkan presents\n"
     "  --jit-verbose          Each unit the JIT compiles, before and after, with its time\n"
-    "  --jit-keep-ir=DIR      The LLVM IR of each unit the JIT compiles, saved in DIR\n"
+    "  --jit-keep-ir=DIR      LLVM's IR, which went with it: said, and nothing done\n"
     "  --linker-verbose       Each native library and its load address\n"
     "  --android-KEY=VALUE    A setting of the launcher's Settings > Android (docs/user/settings.md), the\n"
     "                         same as the option above: the last given counts\n"
@@ -378,18 +377,18 @@ static int android_setting(const char* arg, char** options, char** owned, size_t
     const char* given = settings_arg(arg, key, sizeof key);
     const IniOpt* o = given ? ini_find(g_android_ini, key) : NULL;
     if (given && !o) o = ini_find(g_android_debug_ini, key);
+    if (given && !o && ini_deprecated(key)) { /* an older version's key (android_jit_opt): said, nothing done */
+        fprintf(stderr, "scarletnx-android: settings: %s=%s, deprecated, %s (docs/user/deprecations.md)\n", key, given,
+                ini_deprecated(key));
+        return 1;
+    }
     if (!o) return 0;
     if (ini_check(o, given, error, sizeof error)) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         return -1;
     }
     ini_read(o, given);
-    if (!strcmp(key, "android_jit_opt")) {
-        if (strlen(g_settings.android_jit_level) != 1 || !bridge_set_optimization(g_settings.android_jit_level[0])) {
-            fprintf(stderr, "scarletnx-android: --android-jit-opt takes 0, 1, 2, 3, s or z, not %s\n", given);
-            return -1;
-        }
-    } else if (!strcmp(key, "android_log_level") &&
+    if (!strcmp(key, "android_log_level") &&
                (strlen(g_settings.android_log_level) != 1 || !strchr("VDIWEA", g_settings.android_log_level[0]))) {
         fprintf(stderr, "scarletnx-android: --android-log-level takes V, D, I, W, E or A, not %s\n", given);
         return -1;
@@ -409,8 +408,6 @@ static int android_setting(const char* arg, char** options, char** owned, size_t
         signals_set_options(*log_signals, *sample);
     } else if (!strcmp(key, "android_jit_verbose"))
         bridge_set_verbose(g_settings.android_jit_messages != 0);
-    else if (!strcmp(key, "android_jit_keep_ir"))
-        bridge_set_keep_ir(g_settings.android_jit_ir[0] ? g_settings.android_jit_ir : NULL);
     else if (!strcmp(key, "android_linker_verbose"))
         linker_set_verbose(g_settings.android_linker_messages != 0);
     return 1;
@@ -425,6 +422,7 @@ static void free_options(char** options, char** owned, size_t owned_count) {
 int snx_android_main(int argc, char** argv) {
     const char *apk = NULL, *translate = NULL, *framework = NULL, *shot = NULL, *shot_frames = NULL;
     bool headless = false, log_signals = false, sample = false;
+    int keep_ir_said = 0;                   /* --jit-keep-ir=, gone with LLVM: said once */
     const size_t room = (size_t)argc + 513; /* an argument's each, and android_java_options' words */
     char** options = calloc(room + 1, sizeof *options);
     char** owned = calloc(room + 1, sizeof *owned); /* the -D options made here, freed at the end */
@@ -463,8 +461,6 @@ int snx_android_main(int argc, char** argv) {
             headless = true;
         } else if (id == SNX_CLI_SHOT)
             shot = common.value;
-        else if (id == SNX_CLI_OPT)
-            (void)bridge_set_optimization(common.value[0]); /* a level the table checked */
         if (id) continue;
         for (size_t k = 0; k < sizeof java_options / sizeof *java_options && !java; ++k) {
             const char* v = !strcmp(argv[i], java_options[k].option) ? "true" : value_of(argv[i], java_options[k].option);
@@ -502,7 +498,11 @@ int snx_android_main(int argc, char** argv) {
             continue;
         }
         if ((value = value_of(argv[i], "--jit-keep-ir"))) {
-            bridge_set_keep_ir(value);
+            if (!keep_ir_said++)
+                fprintf(stderr,
+                        "scarletnx-android: --jit-keep-ir=%s went with LLVM's IR: the native back end keeps none "
+                        "(docs/user/deprecations.md)\n",
+                        value);
             continue;
         }
         if (!strcmp(argv[i], "--jit-verbose")) {
@@ -521,13 +521,6 @@ int snx_android_main(int argc, char** argv) {
         }
         if (!strncmp(argv[i], "--translate=", 12))
             translate = argv[i] + 12;
-        else if (!strncmp(argv[i], "--jit-opt=", 10)) {
-            if (strlen(argv[i]) != 11 || !bridge_set_optimization(argv[i][10])) {
-                fprintf(stderr, "scarletnx-android: --jit-opt takes 0, 1, 2, 3, s or z, not %s\n", argv[i] + 10);
-                free_options(options, owned, owned_count);
-                return 2;
-            }
-        }
         else if (!strcmp(argv[i], "-J") && i + 1 < argc)
             options[option_count++] = argv[++i];
         else if (!strncmp(argv[i], "-J", 2) && argv[i][2])

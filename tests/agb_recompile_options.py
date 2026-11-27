@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The recompile's options every driver shares (common/utilities/cli.h), on the GBA runner: -O is the level of the
-blocks LLVM makes, --keep-ir has it make them all and keeps their IR in <name>_build, -q says no progress, --jit-only plays with no module, --jit-cache names
+"""The recompile's options every driver shares (common/utilities/cli.h), on the GBA runner: -O and --keep-ir are said
+and change nothing (the native back end has no levels and no IR), -q says no progress, --jit-only plays with no module, --jit-cache names
 the map of the blocks runs reached that the recompile starts from, and --jobs, --chunk and the launcher's Gentle
 --aot-threads-most=N, which one module compiled whole has nothing to give, are said. A ROM made here puts 42 in r5 and
 spins (mov r5, #42; b .)."""
@@ -63,26 +63,24 @@ def main():
         )
         check("--jobs 4: a ROM's code is one module, compiled on 1 thread" in text, '--jobs not said', text)
         check("--chunk 100: a ROM's code is one module, compiled as one unit" in text, '--chunk not said', text)
-        ir = work / 'kept' / 'game' / 'game_build' / 'blocks.ll'
-        check(ir.is_file() and 'define ' in ir.read_text(), f'--keep-ir kept no IR in {ir}', text)
-        check(re.search(r'^LLVM: \d+ blocks \(--keep-ir', text, re.M), "--keep-ir's blocks are not all LLVM's", text)
-        # -q: no progress; the default level is 2, the setting opt's: the module -O2 makes
+        check("--keep-ir went with LLVM's IR: the native back ends keep none" in text, '--keep-ir not said', text)
+        check("-O 0, LLVM's level, went with LLVM" in text, '-O0 not said', text)
+        check(not (work / 'kept' / 'game' / 'game_build').exists(), '--keep-ir made a folder', text)
+        # -q: no progress; -O, said and choosing nothing, makes the same module
         text = run('quiet', '-r', '-q')
         check(
             'Recompiling' not in text and 'Built' not in text and 'back end: ' not in text, '-q said its progress', text
         )
         run('two', '-r', '-q', '--opt=2')
-        check(module('quiet') is not None and module('quiet') == module('two'), 'the default level is not -O2', text)
-        # the level is LLVM's: of every block with --keep-ir, and of none where the native back end makes them all
+        check(module('quiet') is not None and module('quiet') == module('two'), '--opt=2 changed the module', text)
+        # the native back end's module, whatever the level and --keep-ir
         run('kept2', '-r', '-q', '--keep-ir')
-        check(module('kept2') is not None and module('kept2') != module('kept'), '-O0 made the module -O2 makes', text)
+        check(module('kept2') is not None and module('kept2') == module('kept'), '--keep-ir changed the module', text)
         text = run('zero', '-r', '-O0')
         native = re.search(r'^(\S+) back end: (\d+) of (\d+) blocks', text, re.M)
-        check(
-            bool(native) or 'blocks (no native back end on this host)' in text, 'who made the blocks is not said', text
-        )
-        check(not native or native[2] == native[3], 'the native back end left blocks to LLVM', text)
-        check((module('zero') == module('quiet')) == bool(native), '-O0 and the native back end', text)
+        check(bool(native), 'who made the blocks is not said', text)
+        check(not native or native[2] == native[3], 'the native back end left blocks', text)
+        check(module('zero') == module('quiet'), '-O0 changed the module', text)
         # --jit-only: no module, every block compiled as the run reaches it
         text = run('jit', '--frames=2', '--registers', '--jit-only')
         check('No code ahead of time (--jit-only)' in text and re.search(r'\br5=0000002A\b', text), '--jit-only', text)
@@ -93,8 +91,8 @@ def main():
         missing = work / 'none.map'
         text = run('none', '-r', '--jit-cache', str(missing), status=1)
         check(f'scarletnx-agb: --jit-cache {missing}: cannot read {missing}' in text, 'a missing map not said', text)
-        text = run('bad', '-r', '-O9', status=2)
-        check('scarletnx-agb: -O 9: not 0, 1, 2, 3, s or z' in text, '-O9 not refused', text)
+        text = run('bad', '-r', '-O9')
+        check("-O 9, LLVM's level, went with LLVM" in text and module('bad') == module('quiet'), '-O9 not said', text)
         # the launcher's Gentle queue gives every driver --aot-threads=0 and --aot-threads-most=N: both said
         text = run('gentle', '-r', '--aot-threads=0', '--aot-threads-most=4')
         check("aot_threads_most=4: a ROM's code is one module, compiled on 1 thread" in text, 'Gentle refused', text)

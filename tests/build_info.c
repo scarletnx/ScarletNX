@@ -79,6 +79,7 @@ int main(void) {
             strspn(day + 5, "0123456789") == 2 && strspn(day + 8, "0123456789") == 2));
     assert(strlen(SNX_COMMIT) >= 7); /* a hash, or "unknown" */
     assert(!strcmp(snx_build_commit(), SNX_COMMIT));
+    assert(!strcmp(snx_build_branch(), SNX_BRANCH) && !strcmp(snx_build_committed(), SNX_COMMIT_DATE));
     assert(SNX_BRANCH[0]); /* a branch, "detached" or "unknown" */
     puts("build info: commit, compiler and host in the window titles' line, and its commit's day in the logs' passed");
     return 0;

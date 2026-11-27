@@ -236,11 +236,6 @@ setting Words
     key mode
     text 8
     default a|b
-table g_llvm_ini llvm
-setting @loop-unroll
-    name Loop unrolling pass
-setting @InlinerThreshold
-    name Inliner threshold
 section Game: g_game_ini
 """
 
@@ -253,8 +248,6 @@ DOC = """# Settings
 | `gamepad_p<N>_rumble` (N from 1 to 8) | `-10` | Repeated |
 | `controls_<ID>` (ID one of `a`, `b`) | empty | Each |
 | `mode` | `a\\|b` | A pipe |
-| `llvm_pass_loop_unroll` | `1` | A pass |
-| `llvm_inliner_threshold` | LLVM's own | An option |
 """
 
 
@@ -278,7 +271,7 @@ class Settings(unittest.TestCase):
         with self.checkout(DOC + '| `docked_old` | `1` | Renamed |\n') as c:
             self.assertEqual(
                 c.failures('settings'),
-                ['docs/user/settings.md:12: `docked_old` is no key of src/nx/runtime/settings.txt'],
+                ['docs/user/settings.md:10: `docked_old` is no key of src/nx/runtime/settings.txt'],
             )
 
     def test_a_vulkan_table_keys_each_extension_by_its_name_in_lowercase_auto(self):
@@ -294,9 +287,9 @@ class Settings(unittest.TestCase):
             self.assertEqual(
                 c.failures('settings'),
                 [
-                    'docs/user/settings.md:12: `vk_khr_maintenance5` says the default is `on`; '
-                    'src/nx/runtime/settings.txt:36 makes it `auto`',
-                    'src/nx/runtime/settings.txt:35: `vk_ext_transform_feedback` (default `auto`) has no row in '
+                    'docs/user/settings.md:10: `vk_khr_maintenance5` says the default is `on`; '
+                    'src/nx/runtime/settings.txt:31 makes it `auto`',
+                    'src/nx/runtime/settings.txt:30: `vk_ext_transform_feedback` (default `auto`) has no row in '
                     'docs/user/settings.md',
                 ],
             )

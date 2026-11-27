@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """The AArch32 blocks a native back end makes, run from a test's states: snx-test-arm-blocks (arm_blocks.c), which makes
-them and runs them in a process of its own, for this host or, under Unicorn, for another machine; or LLVM's, by
-snx-test-arm-blocks-llvm."""
+them and runs them in a process of its own, for this host or, under Unicorn, for another machine."""
 
 import ctypes as C
 import functools
@@ -80,31 +79,25 @@ def thumb(programs, pc=PC):
 
 
 def add_variants(parser):
-    """--pool and --opt, each given again for another variant of the blocks (variants)"""
-    parser.add_argument(
-        '--pool', type=int, action='append', help="a native back end's: the host registers its values are in (0: all)"
-    )
-    parser.add_argument(
-        '--opt', type=int, choices=(0, 2), action='append', help="LLVM's runner's: the passes' -O level"
-    )
+    """--pool, given again for another variant of the blocks (variants)"""
+    parser.add_argument('--pool', type=int, action='append', help='the host registers its values are in (0: all)')
 
 
 def variants(parser, args):
-    """Blocks' keyword arguments for each variant args name: LLVM's -O levels, or else the native back end's pools, all
-    the host registers and three by default, so that values spill"""
-    if args.opt and args.pool:
-        parser.error(f"--pool {args.pool} is a native back end's and --opt {args.opt} LLVM's: one of them")
-    return [{'opt': opt} for opt in args.opt] if args.opt else [{'pool': pool} for pool in args.pool or (0, 3)]
+    """Blocks' keyword arguments for each variant args name: the native back end's pools, all the host registers and
+    three by default, so that values spill"""
+    del parser
+    return [{'pool': pool} for pool in args.pool or (0, 3)]
 
 
 class Blocks:
     """The blocks of (isa, pc, words or halfwords), made by runner's back end for profile and memory (flat, checked),
-    its values in pool host registers (0: all of them), or by LLVM's runner at -O opt (.name says either). functions[i]
+    its values in pool host registers (0: all of them; .name says which). functions[i]
     runs the ith on a CPU (a Checked where memory is checked), or is None where the back end refused it; names[i] is
     what its decoder has of each instruction, why[i] what the refusal said. A state's flat memory (mem_size bytes, at
     most size) is copied there and back, but where it is .memory, which holds the runs' own."""
 
-    def __init__(self, runner, blocks, size=SIZE, profile='a57', memory='flat', pool=None, opt=None):
+    def __init__(self, runner, blocks, size=SIZE, profile='a57', memory='flat', pool=None):
         self.blocks, self.checked = blocks, memory == 'checked'
         self.directory = tempfile.TemporaryDirectory(prefix='snx-arm-blocks-')
         root = pathlib.Path(self.directory.name)
@@ -117,7 +110,7 @@ class Blocks:
         self.memory = (C.c_uint8 * size).from_buffer(self.map, MEMORY)
         self.size, self.at = size, C.addressof(self.memory)
         command = [runner, str(listed), str(state), '--profile', profile, '--memory', memory]
-        command += ['--opt', str(opt)] if opt is not None else ['--pool', str(pool)] if pool is not None else []
+        command += ['--pool', str(pool)] if pool is not None else []
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.functions, self.names, self.why = [], [], []
         for index in range(len(blocks)):
@@ -136,7 +129,7 @@ class Blocks:
         if not said.startswith('ready '):
             raise AssertionError(f'{command}: {said!r} after its {len(blocks)} blocks')
         self.machine = said.removeprefix('ready ')
-        self.name = f'{self.machine} -O{opt}' if opt is not None else f'{self.machine}, {pool or "all"} registers'
+        self.name = f'{self.machine}, {pool or "all"} registers'
 
     def said(self):
         """the next line of what it says of the blocks; a machine it has no back end or Unicorn for ends the test"""

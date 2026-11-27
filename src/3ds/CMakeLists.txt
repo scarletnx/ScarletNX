@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver links LLVM
-# for its compiler, and its presenter and audio output use SDL3 and the Vulkan headers.
+# The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver's presenter
+# and audio output use SDL3 and the Vulkan headers.
 add_library(snx_ctr_board STATIC board/board.c board/clock.c)
 target_link_libraries(snx_ctr_board PUBLIC scarletnx-common) # the clock's host time (snx_seconds)
 set_target_properties(snx_ctr_board PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
@@ -19,13 +19,16 @@ add_library(snx_ctr_process STATIC runtime/process.c kernel/kernel.c kernel/thre
             services/srv.c services/fs.c services/apt.c services/font.c services/ptm.c services/hid.c services/romfs.c
             services/file.c services/gsp.c services/dsp.c services/cfg.c services/system.c services/am.c services/y2r.c
             services/ldr.c services/cro.c services/swkbd.c services/mii_selector.c services/ir.c services/irrst.c
-            services/mic.c services/cam.c services/csnd.c services/soc.c services/ac.c services/frd.c)
+            services/mic.c services/cam.c services/csnd.c services/soc.c services/ac.c services/frd.c
+            runtime/state.c)
 # the system archives' stand-ins (cmake/ctr_system_archives.cmake), which services/fs.c serves through the NCCH archive
 target_sources(snx_ctr_process PRIVATE "${PROJECT_BINARY_DIR}/generated/ctr_system_archives.c")
 target_sources(snx_ctr_process PRIVATE services/uds.c)
 target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 # soc:U's names, Pretendo's rewrites and NASC's LOGIN (common/online), posted by the HTTPS client
 target_link_libraries(snx_ctr_process PRIVATE snx_online snx_https)
+# its save states' file, the Switch's (runtime/state.c)
+target_link_libraries(snx_ctr_process PRIVATE snx_state_file)
 # the player's input lives beside the presenter, whose window's events it reads
 add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")
@@ -42,7 +45,7 @@ snx_sailgen_gpu(snx_ctr_gpu pica DIR "${CMAKE_CURRENT_SOURCE_DIR}/gpu/sail")
 # archive once (GNU ld) needs it after snx_ctr_gpu
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings
                                          snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl
-                                         ${CMAKE_DL_LIBS})
+                                         snx_vpad_sdl snx_vpad_consoles ${CMAKE_DL_LIBS})
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 # the GPU's compute shaders, compiled at build time (cmake/glsl.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
@@ -89,8 +92,7 @@ target_compile_definitions(snx_ctr_program PRIVATE SNX_SOURCE_DIR="${PROJECT_SOU
 # what the tests run
 set(SNX_CTR_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-3ds${CMAKE_EXECUTABLE_SUFFIX}" PARENT_SCOPE)
 include(GNUInstallDirs)
-include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-if(NOT TARGET snx_arm_llvm)
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
 endif()
 target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
@@ -99,40 +101,7 @@ target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
 # objects and their helpers (armlib.c) with its own linker, and compiles the blocks the static module lacks at run time
 # (exec.c)
 target_sources(snx_ctr_program PRIVATE aot/compiler.c aot/discover.c)
-target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_recompiler_jit)
-# The compiler loads the LLVM toolchain's own libraries (including its z3)
-# at startup: resolve them without a caller-provided environment. A static
-# LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.
-if(SNX_LLVM_SHARED)
-    snx_target_path(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
-    find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
-        HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
-        PATH_SUFFIXES lib x86_64-linux-gnu)
-    if(SNX_Z3_LIBRARY)
-        get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        snx_target_path(ctr_z3_rpath "${ctr_z3_dir}")
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_rpath}")
-        # Forced into the dependency table (--as-needed would drop unreferenced
-        # libraries): libLLVM's own z3/xml2 dependencies then resolve through
-        # the binary's search path instead of the caller's environment.
-        find_library(SNX_XML2_LIBRARY NAMES xml2 libxml2.so.2 HINTS "${ctr_z3_dir}" "${SNX_LLVM_LIBRARY_DIR}"
-                        PATH_SUFFIXES lib x86_64-linux-gnu)
-        if(APPLE) # ld64 keeps every library named, and has no --as-needed
-            target_link_libraries(snx_ctr_program INTERFACE "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY})
-        else()
-            target_link_libraries(snx_ctr_program INTERFACE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}"
-                                  ${SNX_XML2_LIBRARY} "-Wl,--as-needed")
-        endif()
-    endif()
-    if(APPLE) # ld64 takes one folder per -rpath
-        string(REPLACE ":" ";" ctr_llvm_rpaths "${ctr_llvm_rpath}")
-        foreach(path IN LISTS ctr_llvm_rpaths)
-            target_link_options(snx_ctr_program INTERFACE "-Wl,-rpath,${path}")
-        endforeach()
-    else()
-        target_link_options(snx_ctr_program INTERFACE "-Wl,-rpath,${ctr_llvm_rpath}")
-    endif()
-endif()
+target_link_libraries(snx_ctr_program PUBLIC snx_recompiler_jit)
 add_library(snx_ctr_native STATIC aot/load.c)
 target_link_libraries(snx_ctr_native PUBLIC snx_ctr_process ${CMAKE_DL_LIBS})
 set_target_properties(snx_ctr_native PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)

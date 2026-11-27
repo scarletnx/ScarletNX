@@ -295,7 +295,6 @@ int snx_pack(int argc, char** argv, const SnxPaths* paths) {
 /* recompile.c's: a setting of the recompile, from the generated tables */
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
-    if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
 /* SNX_WORKFLOW_ADDON's recompile: --outdir GAMES -- DUMP [NAME]. A game's dump is named by its title ID, an update
@@ -371,12 +370,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         memmove(argv + 2, argv + 3, (size_t)(argc - 3) * sizeof *argv);
         --argc;
     }
-    /* the optimization level a played dump was given, passed on */
-    if (getenv("SNX_WORKFLOW_OPT") && *getenv("SNX_WORKFLOW_OPT")) {
-        CHECK(argc > 4 && !strcmp(argv[2], "-O") && !strcmp(argv[3], getenv("SNX_WORKFLOW_OPT")));
-        memmove(argv + 2, argv + 4, (size_t)(argc - 4) * sizeof *argv);
-        argc -= 2;
-    }
     /* the recompile's common options a played dump was given (SNX_WORKFLOW_PASSED), passed on in the forms -r takes,
        a space between each */
     if (getenv("SNX_WORKFLOW_PASSED") && *getenv("SNX_WORKFLOW_PASSED")) {
@@ -389,11 +382,11 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         argc -= at - 2;
     }
     /* a recompile's setting the dump was played with (SNX_WORKFLOW_FLAGS), its key's _ a - or not, passed on with a
-       - for each _; opt's --opt= is the common option, which reaches the recompile as -O (SNX_WORKFLOW_OPT) */
+       - for each _ */
     {
         const char* flags = getenv("SNX_WORKFLOW_FLAGS");
         char key[64], option[256];
-        if (flags && settings_arg(flags, key, sizeof key) && snx_recompile_setting(key) && strcmp(key, "opt")) {
+        if (flags && settings_arg(flags, key, sizeof key) && snx_recompile_setting(key)) {
             CHECK(argc > 3 && !strcmp(argv[2], passed_on(flags, option, sizeof option)));
             memmove(argv + 2, argv + 3, (size_t)(argc - 3) * sizeof *argv);
             --argc;
@@ -514,7 +507,6 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
     args[4] = repo;
     if (getenv("SNX_WORKFLOW_EXTRACT") && *getenv("SNX_WORKFLOW_EXTRACT")) args[n++] = "--extract-container";
     if (flags && *flags && strncmp(flags, "--backend=", 10)) args[n++] = flags;
-    if (getenv("SNX_WORKFLOW_MORE") && *getenv("SNX_WORKFLOW_MORE")) args[n++] = getenv("SNX_WORKFLOW_MORE");
     if (headless && *headless && !strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
     args[n++] = dump;
     if (keys && *keys) {
@@ -580,8 +572,8 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
 }
 /* the runtime's settings (runtime/options.c): those this test gives */
 int snx_setting_known(const char* key) {
-    static const char* const known[] = {"touch",   "controls",       "resolution", "controls_a",
-                                        "seconds", "slp_vectorizer", "log"};
+    static const char* const known[] = {"touch",   "controls",          "resolution", "controls_a",
+                                        "seconds", "unit_instructions", "log"};
     size_t i;
     for (i = 0; i < sizeof known / sizeof *known; ++i)
         if (!strcmp(key, known[i])) return 1;
@@ -907,9 +899,8 @@ int main(int argc, char** argv) {
             CHECK(argc == 2 && !strcmp(argv[1], "-f"));
         if (fullscreen && !strcmp(fullscreen, "--fullscreen=0")) CHECK(argc == 2 && !strcmp(argv[1], "--fullscreen=0"));
         /* the game's own settings, any --key=value of its .ini, reach it with a - for each _ of the key; the recompile's
-           common options (SNX_WORKFLOW_OPT, SNX_WORKFLOW_PASSED) its recompile alone */
-        int recompiles = (getenv("SNX_WORKFLOW_OPT") && *getenv("SNX_WORKFLOW_OPT")) ||
-                         (getenv("SNX_WORKFLOW_PASSED") && *getenv("SNX_WORKFLOW_PASSED"));
+           common options (SNX_WORKFLOW_PASSED) its recompile alone */
+        int recompiles = getenv("SNX_WORKFLOW_PASSED") && *getenv("SNX_WORKFLOW_PASSED");
         if (fullscreen && strchr(fullscreen, '=') && strncmp(fullscreen, "--fullscreen=", 13) &&
             strncmp(fullscreen, "--backend=", 10) && !recompiles) {
             char option[256];
@@ -1168,12 +1159,12 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--seconds=5");
         run(exe, repo, dump, log, 0, "G", NULL);
-        /* Debug's SLP vectorizer, which the recompile and the game both take: by its key, the older spelling, said
-           once; the game gets it with a -, and a recompile made for it takes it too */
-        set_env("SNX_WORKFLOW_FLAGS", "--slp_vectorizer=1");
+        /* a setting the recompile and the game both take (this test's game knows unit_instructions): by its key, the
+           older spelling, said once; the game gets it with a -, and a recompile made for it takes it too */
+        set_env("SNX_WORKFLOW_FLAGS", "--unit_instructions=1000");
         run(exe, repo, dump, log, 0, "G",
-            "settings: --slp_vectorizer is the old spelling of --slp-vectorizer: it is read as that; write "
-            "--slp-vectorizer");
+            "settings: --unit_instructions is the old spelling of --unit-instructions: it is read as that; write "
+            "--unit-instructions");
         {
             char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
             CHECK(!snx_write_file(stamp, "broken", 6));
@@ -1182,7 +1173,7 @@ int main(int argc, char** argv) {
         }
         /* and with a - for each _ of its key, as the settings are given: the same setting, for the game and a
            recompile made for it alike; a name with some _ left is no setting */
-        set_env("SNX_WORKFLOW_FLAGS", "--slp-vectorizer=1");
+        set_env("SNX_WORKFLOW_FLAGS", "--unit-instructions=1000");
         run(exe, repo, dump, log, 0, "G", NULL);
         {
             char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
@@ -1202,13 +1193,13 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=1");
         run(exe, repo, dump, log, 0, "G", NULL);
-        /* LLVM is the only backend: --backend=llvm, which older scripts give, changes nothing */
+        /* the native back end is the only one: --backend=llvm, which older scripts give, is said and changes nothing */
         set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
-        run(exe, repo, dump, log, 1, "", "--backend gcc: LLVM is the only backend");
+        run(exe, repo, dump, log, 1, "", "--backend gcc: the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "--backend=llvm");
-        run(exe, repo, dump, log, 0, "G", NULL);
+        run(exe, repo, dump, log, 0, "G", "--backend llvm went with LLVM: the host's native back end makes the code");
         set_env("SNX_WORKFLOW_FLAGS", "--backend=invalid");
-        run(exe, repo, dump, log, 1, "", "--backend invalid: LLVM is the only backend");
+        run(exe, repo, dump, log, 1, "", "--backend invalid: the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "");
     }
     set_env("SNX_WORKFLOW_ARGS", "1");
@@ -1527,7 +1518,7 @@ int main(int argc, char** argv) {
         run(exe, repo, game, log, 1, "", "-rx takes an XCI, NSP, XCZ, NSZ, DXCI or DNSP dump");
 #endif
         set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
-        run(exe, repo, game, log, 1, "", "LLVM is the only backend");
+        run(exe, repo, game, log, 1, "", "the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "");
         set_env("SNX_WORKFLOW_OUTDIR", repo);
         run(exe, repo, game, log, 1, "", "is a game");
@@ -1669,32 +1660,17 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "R", NULL);
         CHECK(!snx_path_exists(extracted) && records_dump(own, "Test game", dump));
         run(exe, repo, dump, log, 0, "R", NULL);
-        /* -O, played: the recompile's, given when the game is made; a game made already runs as it is */
+        /* -O and --keep-ir, played: LLVM's, gone with it, said once and passed to no recompile */
         set_env("SNX_WORKFLOW_FLAGS", "-O3");
-        set_env("SNX_WORKFLOW_OPT", "3");
         reset(repo, dump);
-        run(exe, repo, dump, log, 0, "RG", NULL);
-        run(exe, repo, dump, log, 0, "G", NULL);
-        set_env("SNX_WORKFLOW_OPT", "");
-        set_env("SNX_WORKFLOW_FLAGS", "-O9");
-        run(exe, repo, dump, log, 1, "", "-O 9: not 0, 1, 2, 3, s or z");
-        /* the setting's --opt= and -O are one option, the last given the level: the launcher gives an AOT pack's -O
-           after its settings' --opt= */
-        set_env("SNX_WORKFLOW_FLAGS", "--opt=1");
-        set_env("SNX_WORKFLOW_MORE", "-O3");
-        set_env("SNX_WORKFLOW_OPT", "3");
+        run(exe, repo, dump, log, 0, "RG", "-O 3, LLVM's level, went with LLVM");
+        set_env("SNX_WORKFLOW_FLAGS", "--keep-ir");
         reset(repo, dump);
-        run(exe, repo, dump, log, 0, "RG", NULL);
-        set_env("SNX_WORKFLOW_MORE", "");
-        set_env("SNX_WORKFLOW_OPT", "");
-        /* the recompile's other common options, played: passed on to the recompile that makes the game, as -O is,
-           --jobs 0 its Auto; a value they do not take stops the run with it */
+        run(exe, repo, dump, log, 0, "RG", "--keep-ir went with LLVM's IR");
+        /* the recompile's other common options, played: passed on to the recompile that makes the game, --jobs 0 its
+           Auto; a value they do not take stops the run with it */
         set_env("SNX_WORKFLOW_FLAGS", "--jobs=0");
         set_env("SNX_WORKFLOW_PASSED", "--jobs 0");
-        reset(repo, dump);
-        run(exe, repo, dump, log, 0, "RG", NULL);
-        set_env("SNX_WORKFLOW_FLAGS", "--keep-ir");
-        set_env("SNX_WORKFLOW_PASSED", "--keep-ir");
         reset(repo, dump);
         run(exe, repo, dump, log, 0, "RG", NULL);
         set_env("SNX_WORKFLOW_PASSED", "");

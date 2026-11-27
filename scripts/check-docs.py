@@ -56,7 +56,6 @@ BAN_FIELDS = (
 )
 # settings.txt's default-if macros, by the platform a Default cell names
 PLATFORMS = {'SNX_IOS': 'iOS', '__ANDROID__': 'Android'}
-UNSET = object()  # an LLVM option's default: LLVM's own value
 
 FENCE = re.compile(r'^\s*(```|~~~)')
 HEADING = re.compile(r'^(#{1,6})\s+(.*?)\s*#*\s*$')
@@ -328,55 +327,21 @@ class SettingsError(Exception):
         self.line, self.text = line, text
 
 
-def snake(name):
-    """tools/settingsgen's snake(): letters and digits lowercased, every other run an _, a camel-case word split where
-    its case changes (LoopVectorization, SLPVectorization: loop_vectorization, slp_vectorization)"""
-    out, gap = [], False
-    for i, c in enumerate(name):
-        if not c.isascii() or not c.isalnum():
-            gap = True
-            continue
-        if (
-            out
-            and c.isupper()
-            and i > 0
-            and (
-                name[i - 1].islower()
-                or name[i - 1].isdigit()
-                or (name[i - 1].isupper() and i + 1 < len(name) and name[i + 1].islower())
-            )
-        ):
-            gap = True
-        if gap and out:
-            out.append('_')
-        gap = False
-        out.append(c.lower())
-    s = ''.join(out)
-    return '_' + s if s[:1].isdigit() else s
-
-
 def settings_keys(path):
     """{key: (line, {platform or None: default})} of settings.txt, its <N> and <ID> kept in the key. A text with no
-    default is empty; an LLVM pass (@lowercase) is on, 1, and an LLVM option (@CamelCase) LLVM's own until it is set; a
-    vulkan table's extension (@VK_EXT_name) is keyed by its name in lowercase and auto"""
+    default is empty; a vulkan table's extension (@VK_EXT_name) is keyed by its name in lowercase and auto"""
     keys, current, table_kind = {}, None, None
 
     def done():
         if current is None:
             return
-        line, key, llvm_id, default, ifs, kind = (
+        line, key, default, ifs, kind = (
             current['line'],
             current['key'],
-            current['llvm'],
             current['default'],
             current['ifs'],
             current['kind'],
         )
-        if llvm_id is not None:
-            option = any(c.isupper() for c in llvm_id)
-            key = key or ('llvm_' if option else 'llvm_pass_') + snake(llvm_id)
-            if default is None:
-                default = UNSET if option else '1'
         if key is None:
             raise SettingsError(line, 'a setting with no key')
         if default is None and kind == 'text':
@@ -408,8 +373,7 @@ def settings_keys(path):
             continue
         if word == 'setting':
             done()
-            llvm = rest[1:] if table_kind == 'llvm' and rest.startswith('@') else None
-            current = {'line': number, 'key': None, 'llvm': llvm, 'default': None, 'ifs': [], 'kind': None}
+            current = {'line': number, 'key': None, 'default': None, 'ifs': [], 'kind': None}
             if table_kind == 'vulkan' and rest.startswith('@'):
                 current.update(key=rest[1:].lower(), default='auto', kind='text')
             continue
@@ -430,7 +394,7 @@ def settings_keys(path):
 
 
 DEFAULT_ITEM = re.compile(
-    r'\s*(`[^`]*`|none|empty|LLVM\'s own)'
+    r'\s*(`[^`]*`|none|empty)'
     r'(?:\s*\(((?:\s*(?:' + '|'.join(sorted(PLATFORMS.values())) + r')\s+(?:`[^`]*`|none|empty),?)+)\))?\s*(?:,|$)'
 )
 PLATFORM_VALUE = re.compile(r'(' + '|'.join(sorted(PLATFORMS.values())) + r')\s+(`[^`]*`|none|empty)')
@@ -439,8 +403,6 @@ PLATFORM_VALUE = re.compile(r'(' + '|'.join(sorted(PLATFORMS.values())) + r')\s+
 def cell_value(word):
     if word in ('none', 'empty'):
         return ''
-    if word == "LLVM's own":
-        return UNSET
     return word[1:-1]
 
 
@@ -461,7 +423,7 @@ def defaults_of(cell):
 
 def shown(values):
     def one(v):
-        return "LLVM's own" if v is UNSET else 'empty' if v == '' else f'`{v}`'
+        return 'empty' if v == '' else f'`{v}`'
 
     extra = ', '.join(f'{p} {one(v)}' for p, v in values.items() if p is not None)
     return one(values[None]) + (f' ({extra})' if extra else '')
@@ -510,7 +472,7 @@ def check_settings(root, failures):
                 SETTINGS_DOC,
                 number,
                 f'Default {row[1] if len(row) > 1 else ""!r} is not one default, or one for each of '
-                f"{', '.join(names)}, each `value`, none, empty or LLVM's own, with (iOS `value`) or (Android `value`)",
+                f'{", ".join(names)}, each `value`, none or empty, with (iOS `value`) or (Android `value`)',
             )
             continue
         for i, name in enumerate(names):

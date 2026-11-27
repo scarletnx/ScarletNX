@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An NRO's own AOT module as the recompiler makes one (module_llvm.c), written by hand: one module, an NRO, of
+/* An NRO's own AOT module as the recompiler makes one (module_a64.c), written by hand: one module, an NRO, of
    0x1000 bytes with the module ID 0x42 thirty-two times, and two functions, 0x100 and 0x200 into it, each 0x40 bytes
    of guest code, which leave their own guest address in x0. snx_module fills the entries again at each call, as the
    recompiler's does. runtime_variants loads it through guest_jit.c: snx_fixture gives it what a copy of the module

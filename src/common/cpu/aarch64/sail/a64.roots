@@ -3,7 +3,7 @@
 # Every A64 decode clause, copied alone for sailgen --encoders (a64_enc.inc): the encodings of the arm64 host's code
 encode __DecodeA64
 
-# A64 integer data processing (ir_int.c's plain integer instructions)
+# A64 integer data processing (the plain integer instructions)
 root decode_adc_aarch64_instrs_integer_arithmetic_add_sub_carry
 root decode_adcs_aarch64_instrs_integer_arithmetic_add_sub_carry
 root decode_sbc_aarch64_instrs_integer_arithmetic_add_sub_carry
@@ -85,7 +85,7 @@ root decode_smulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_umulh_aarch64_instrs_integer_arithmetic_mul_widening_64_128hi
 root decode_xpac_aarch64_instrs_integer_pac_strip_dp_1src
 
-# A64 branch operands (ir_codegen.c's flow): the condition of B.cond, CBZ and TBZ, the target of BR, BLR and RET and
+# A64 branch operands (the recompiler's flow): the condition of B.cond, CBZ and TBZ, the target of BR, BLR and RET and
 # their PAuth forms; the decode function's BranchTo gives them (gen.c), and BLR's link register is written as its Sail does
 root decode_b_cond_aarch64_instrs_branch_conditional_cond
 root decode_bc_cond_aarch64_instrs_branch_conditional_hinted
@@ -100,7 +100,7 @@ root decode_bra_aarch64_instrs_branch_unconditional_register
 root decode_blra_aarch64_instrs_branch_unconditional_register
 root decode_reta_aarch64_instrs_branch_unconditional_register
 
-# A64 hints, barriers and the exclusive monitor (ir_int.c's hint space, DSB, DMB, ISB, CLREX), with the PAuth hints
+# A64 hints, barriers and the exclusive monitor (the hint space, DSB, DMB, ISB, CLREX), with the PAuth hints
 # and XPACLRI. A hint word goes to the first clause that matches it, as Sail's decode tries them, and on to the next
 # when that one throws Error_See: AUTIA's and AUTIB's clauses come first, then BTI's and the hints of one word each,
 # then HINT's, which takes the rest of the space (NOP, YIELD, WFE, WFI, SEV, SEVL, whose own clauses come after it and
@@ -123,10 +123,10 @@ root decode_pacia_aarch64_instrs_integer_pac_pacia_hint
 root decode_pacib_aarch64_instrs_integer_pac_pacib_hint
 root decode_xpac_aarch64_instrs_integer_pac_strip_hint
 
-# A64 loads and stores of the general-purpose registers (ir_ldst.c's): every addressing mode of LDR and STR and
+# A64 loads and stores of the general-purpose registers: every addressing mode of LDR and STR and
 # their byte, halfword, signed and unprivileged forms, the literal loads, the pairs, load-acquire and store-release
 # (RCpc and LOR included), the exclusives, the LSE atomics and the prefetches (the decoder's NOP rows outside the hint
-# space, ir_int.c's); guest memory is nx.sail's
+# space); guest memory is nx.sail's
 root decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_post_idx
 root decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_signed_pre_idx
 root decode_ldr_imm_gen_aarch64_instrs_memory_single_general_immediate_unsigned
@@ -271,8 +271,7 @@ root decode_swp_aarch64_instrs_memory_atomicops_swp
 root decode_swpb_aarch64_instrs_memory_atomicops_swp
 root decode_swph_aarch64_instrs_memory_atomicops_swp
 
-# A64 SIMD, the integer ops of one element per lane (ir_vec.c's three same and two-register ones): each element loop
-# is one vector operation (gen.c's lanes)
+# A64 SIMD, the integer ops of one element per lane (the three same and two-register ones)
 root decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd
 root decode_sub_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_simd
 root decode_cmeq_advsimd_reg_aarch64_instrs_vector_arithmetic_binary_uniform_cmp_bitwise_simd
@@ -289,17 +288,16 @@ root decode_neg_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd
 root decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_simd
 root decode_mul_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_mul_int_product
 
-# A64 SIMD, the pairwise ops (ir_vec.c's three same ones that read the elements of Vm:Vn two by two): each element
-# loop's element 2e and 2e + 1 of the concatenation are a shuffle of both registers' lanes (gen.c's lanes)
+# A64 SIMD, the pairwise ops (the three same ones that read the elements of Vm:Vn two by two)
 root decode_addp_advsimd_vec_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_pair
 root decode_smaxp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
 root decode_sminp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
 root decode_umaxp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
 root decode_uminp_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_max_min_pair
 
-# A64 SIMD, across lanes (ir_vec.c's across()): each element loop that folds the elements into one value from the
-# first is one reduction of the lanes, and so is ADDV's Reduce, which adds what it gives for each half of its bits
-# (gen.c's halves). Reduce's floating-point minimum and maximum, which no instruction here reaches, are not followed
+# A64 SIMD, across lanes: each element loop that folds the elements into one value from the first, and ADDV's Reduce,
+# which adds what it gives for each half of its bits, the elements' sum (gen.c's halves). Reduce's floating-point
+# minimum and maximum, which no instruction here reaches, are not followed
 root decode_addv_advsimd_aarch64_instrs_vector_reduce_add_simd
 root decode_saddlv_advsimd_aarch64_instrs_vector_reduce_add_long
 root decode_uaddlv_advsimd_aarch64_instrs_vector_reduce_add_long
@@ -328,7 +326,7 @@ stop BranchTo
 stop BranchNotTaken
 stop EndOfInstruction
 
-# the machine's actions the back end lowers (llvm.h, sg_NAME): the hints, the barriers, the exclusive monitor
+# the machine's actions the back end lowers (its sg_NAME): the hints, the barriers, the exclusive monitor
 stop Hint_Yield
 stop Hint_WFE
 stop Hint_WFI
@@ -416,7 +414,7 @@ stop SPESetDataVirtualAddress
 stop SPESampleGeneralPurposeLoadStore
 stop SPESampleExtendedLoadStore
 
-# A64 scalar floating point (ir_fpu.c's): the data processing with one, two and three sources, FCMP, FCCMP, FCSEL, the
+# A64 scalar floating point: the data processing with one, two and three sources, FCMP, FCCMP, FCSEL, the
 # FMOVs, the FRINTs, and the conversions between precisions and to and from integers, fixed point and BFloat16
 root decode_fabs_float_aarch64_instrs_float_arithmetic_unary
 root decode_fadd_float_aarch64_instrs_float_arithmetic_add_sub
@@ -543,8 +541,8 @@ stop execute_aarch64_instrs_integer_tags_mcsubtag
 stop execute_aarch64_instrs_integer_tags_mcinsertrandomtag
 stop execute_aarch64_instrs_integer_tags_mcinserttagmask
 
-# A64 Advanced SIMD and the SIMD&FP loads and stores not above: copied, not generated here (keep: LLVM makes them with
-# llvm/ir_vec.c); the RISC back ends' a64_risc.roots take those sailgen makes, in general-purpose doublewords
+# A64 Advanced SIMD and the SIMD&FP loads and stores not above: copied, not generated here (keep); the back ends'
+# a64_x64.roots and a64_risc.roots take those sailgen makes for them, the RISC ones in general-purpose doublewords
 keep decode_abs_advsimd_aarch64_instrs_vector_arithmetic_unary_diff_neg_int_sisd
 keep decode_add_advsimd_aarch64_instrs_vector_arithmetic_binary_uniform_add_wrapping_single_sisd
 keep decode_addhn_advsimd_aarch64_instrs_vector_arithmetic_binary_disparate_add_sub_narrow

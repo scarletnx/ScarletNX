@@ -30,7 +30,6 @@ void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     *recomp = (AgbRecomp){0};
     recomp->base = (char*)malloc(strlen(base) + 1);
     if (recomp->base) strcpy(recomp->base, base);
-    recomp->opt = '2';
 }
 
 void agb_recomp_free(AgbRecomp* recomp) {
@@ -39,18 +38,10 @@ void agb_recomp_free(AgbRecomp* recomp) {
     free(recomp->blocks);
     free(recomp->steps);
     free(recomp->base);
-    free(recomp->keep_ir);
     *recomp = (AgbRecomp){0};
 }
 
 static char* block_name(size_t index) { return snx_format("snx_agb_%zu", index); }
-
-/* FNV-1a (snx_fnv1a) tells one ROM, or one block's code, from another */
-static uint64_t rom_hash(const AgbBoard* board) {
-    return board->has_cartridge    ? snx_fnv1a(SNX_FNV_BASIS, board->cartridge.data, board->cartridge.size)
-           : board->multiboot_size ? board->multiboot_hash
-                                   : SNX_FNV_BASIS;
-}
 
 /* The BIOS and the cartridge windows hold the same code for the whole run; the game writes over the rest */
 static int fixed(uint32_t pc) {
@@ -277,17 +268,17 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
 /* ---- linking ---- */
 
 
-/* Emits every block into <base>.so: by the host's native back end, and the fallback for what that does not make
-   (cpu/arm/aot.h), with the helpers they call (armlib.c), and linked by the backend's own linker, which exports each
-   block's function by its name */
+/* Emits every block into <base>.so: by the host's native back end (cpu/arm/aot.h), with the helpers they call
+   (armlib.c), and linked by the backend's own linker, which exports each block's function by its name */
 static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
     size_t count = recomp->count;
     char **names = (char**)calloc(count ? count : 1, sizeof(*names)), *library = snx_format("%s.so", recomp->base), *tmp = NULL;
-    SnxArmAot* aot = snx_arm_aot_new(recomp->opt, recomp->keep_ir);
-    SnxLinkInput inputs[3] = {{(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"}};
+    SnxArmAot* aot = snx_arm_aot_new(error, error_size);
+    SnxLinkInput inputs[2] = {{(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"}};
     SnxLinkOutput linked = {NULL, 0};
     int result = -1, objects;
-    if (!names || !library || !aot) {
+    if (!aot) goto done;
+    if (!names || !library) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
@@ -314,7 +305,7 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         block->instructions = (uint16_t)consumed;
         block->code = code_hash(board, block->pc, block->thumb, block->instructions);
     }
-    if ((objects = snx_arm_aot_objects(aot, "blocks", inputs + 1, error, error_size)) < 0) goto done;
+    if ((objects = snx_arm_aot_objects(aot, inputs + 1, error, error_size)) < 0) goto done;
     recomp->made = *snx_arm_aot_count(aot);
     if (snx_link(inputs, 1 + (size_t)objects, (const char* const*)names, count, snx_path_leaf(library), &linked, error,
                  error_size))
@@ -333,7 +324,7 @@ done:
     free(names);
     free(library);
     free(tmp);
-    for (int k = 1; k < 3; ++k) free((void*)inputs[k].data);
+    free((void*)inputs[1].data);
     free(linked.data);
     snx_arm_aot_free(aot);
     return result;
@@ -419,7 +410,8 @@ static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
     FILE* file = fopen(map_path, "w");
     free(map_path);
     if (!file) return -1;
-    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI, (unsigned long long)rom_hash(board));
+    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI,
+            (unsigned long long)agb_board_hash(board));
     for (size_t i = 1; i <= recomp->count; ++i) {
         const AgbBlock* block = &recomp->blocks[i];
         fprintf(file, "%08X %u %u %016llX ", block->pc, block->thumb, block->instructions,
@@ -464,7 +456,7 @@ int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* pat
         fclose(file);
         return -1;
     }
-    unsigned long long here = (unsigned long long)rom_hash(board);
+    unsigned long long here = (unsigned long long)agb_board_hash(board);
     if (sscanf(line, "snx-agb-code %*d %*u %llX", &rom) != 1 || rom != here) {
         snprintf(error, error_size, "%s is another ROM's (%016llX, this one %016llX)", map_path, rom, here);
         fclose(file);

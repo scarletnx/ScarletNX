@@ -7,6 +7,7 @@
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE /* sigaltstack */
 #endif
+#include "vita/gpu/present.h"
 #include "vita/runtime/process.h"
 #include "vita/runtime/jit.h"
 #include "vita/runtime/lockstep.h"
@@ -14,6 +15,7 @@
 #include "vita/hle/hle.h"
 #include "vita/gpu/render.h"
 #include "common/utilities/common.h"
+#include "common/utilities/vpad_sdl.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <setjmp.h>
@@ -414,7 +416,7 @@ static bool runtime_page_step(VitaProcess* p, VitaThread* t, uint32_t pc) {
 int vita_run(VitaProcess* p, double seconds) {
     char why[256];
     if (!(p->jit = vita_jit_new(p, why, sizeof why))) printf("No run-time compiler (%s): only the module's blocks run\n", why);
-    uint64_t end = seconds > 0 ? plat_ns() + (uint64_t)(seconds * 1e9) : 0;
+    uint64_t start = plat_ns(), end = seconds > 0 ? start + (uint64_t)(seconds * 1e9) : 0;
     int result = 0;
     bool closed = false;
     p->display.next_ns = plat_ns() + VBLANK_NS;
@@ -442,13 +444,20 @@ int vita_run(VitaProcess* p, double seconds) {
     if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
     bool vblank_late = false; /* this vblank waited for a frame: the next one is due a period after it */
     while (!p->exited) {
+        vita_present_states(p, (plat_ns() - start) / 1000000u); /* between two slices: no thread runs */
+        if (vita_present_dump_asked()) {                        /* F5, as a Switch game's thread dump */
+            printf("Threads (the thread dump's key):\n");
+            report_threads(p);
+        }
         uint64_t now = plat_ns(), wake;
         if (now >= p->display.next_ns && vblank_waits(p, now)) vblank_late = true;
         else if (now >= p->display.next_ns) {
             ++p->display.vblanks;
-            p->display.next_ns = vblank_late ? now + VBLANK_NS : p->display.next_ns + VBLANK_NS;
+            /* at fps_limit's pace (the screen's, none, or N a second), which F4 switches */
+            uint64_t period = snx_vpad_window_frame_ns(VBLANK_NS);
+            p->display.next_ns = vblank_late ? now + period : p->display.next_ns + period;
             vblank_late = false;
-            if (p->display.next_ns < now) p->display.next_ns = now + VBLANK_NS;
+            if (p->display.next_ns < now) p->display.next_ns = now + period;
             if (!vita_display_vblank(p)) {
                 closed = true;
                 break;
@@ -501,8 +510,8 @@ int vita_run(VitaProcess* p, double seconds) {
                 result = 1;
                 goto done;
             }
-            /* a hosted block leaves its entry state to this loop (llvm.h): r15 and CPSR.T chose it, exit is clear
-               after an SVC, and no IT block may be under way, which an SVC inside one leaves */
+            /* a hosted block leaves its entry state to this loop (arm/codegen.h): r15 and CPSR.T chose it, exit is
+               clear after an SVC, and no IT block may be under way, which an SVC inside one leaves */
             uint32_t itstate = thumb ? snx_arm_itstate(t->cpu.cpsr) : 0;
             if (itstate) {
                 t->cpu.exit = SNX_ARM_IT_ENTRY;

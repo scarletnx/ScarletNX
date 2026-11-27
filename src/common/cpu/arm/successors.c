@@ -46,7 +46,7 @@ static void thumb_next(SnxArmProfile profile, uint32_t pc, const unsigned char* 
         cond = it_idx < it_len ? it_conds[it_idx++] : 14;
         if (used + len >= units) break;
         used += len;
-        if (t.shape == TH_IT) { /* as llvm_thumb.inc reads it: 4 - ctz(mask) instructions */
+        if (t.shape == TH_IT) { /* 4 - ctz(mask) instructions */
             unsigned mask = t.imm & 15, first = (t.imm >> 4) & 15;
             for (it_len = 4; !(mask & 1); mask >>= 1) --it_len;
             mask = t.imm & 15;

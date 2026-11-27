@@ -38,7 +38,7 @@ static unsigned arm64_arm_features(void) {
 #define MG_ARM_FEATURES()  arm64_arm_features()
 #define MG_ARM_EM          A64_EM
 #define MG_ARM_CALL_RELOC  A64_CALL26
-#define MG_ARM_LOAD_FENCE  1 /* an LDR is no acquire: a DMB after it, as LLVM's LDA lowering's order */
+#define MG_ARM_LOAD_FENCE   1 /* an LDR is no acquire: a DMB after it orders it as an acquire */
 #define MG_ARM_FP_HOT      0
 #define MG_ARM_ABI          SNX_ARM64_F_WIN
 /* the code of a frame one range, the one exit that has none past it */
@@ -116,7 +116,7 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     sga_w(b, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-4 & 0x7F, 2)); /* STP X29, X30, [SP, #-32]! */
     sga_w(b, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));                    /* MOV X29, SP */
     sga_w(b, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));           /* STP X19, X20, [SP, #16] */
-    sga_w(b, sge_a64_orr_log_shift(SGX_BASE, SGA_ZR, 0, 0, 0, 1));        /* MOV X19, X0 */
+    sga_state_in(b);
     frame(c, 0);
 }
 /* where a check of the entry failed: W1 the block's address, W2 its first word (a Thumb block's halfword), and
@@ -167,7 +167,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size
         sgx_a32_jmp(g, b, g->ret);
         sgx_a32_bind(g, b, go);
     }
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19 */
+    sga_state_out(b);
     epilogue(c);
     char sym[24];
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
@@ -180,13 +180,13 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size
 static void mg_tail(MG_ARM* c, int reg) {
     SgXBuf* b = &c->b;
     sga_w(b, sge_a64_orr_log_shift(SGA_X16, SGA_ZR, 0, (SnxU32)reg, 0, 1)); /* MOV X16, reg */
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1));          /* MOV X0, X19 */
+    sga_state_out(b);
     epilogue(c);
     sga_w(b, sge_a64_br(SGA_X16));
 }
 
 /* snx_a64_a32_entry_exit(state X0, the block's address W1, its first word W2), each object's own, where a block's
-   entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address; else
+   entry check failed, in this order: R15 not the address, BAD_ENTRY with the address; else
    CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
 static void entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
@@ -212,7 +212,7 @@ static void entry_exit_fn(SnxXElf* o) {
     snx_xelf_symbol(o, "snx_a64_a32_entry_exit", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
 }
 /* snx_a64_thumb_entry(state X0, the block's address W1, its first halfword W2), where a Thumb block's entry check failed
-   (llvm_thumb.inc's, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY with the
+   in this order: R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY with the
    halfword; ITSTATE in CPSR, IT_ENTRY with it; else (E) ENDIAN_UNSUPPORTED with the halfword */
 static void thumb_entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};

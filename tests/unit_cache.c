@@ -12,7 +12,7 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,7 +71,7 @@ static int build(const char* output) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild llvm = {0};
+    SnxModuleBuild job = {0};
     image.name = "test";
     image.base = SNX_CODE_BASE;
     image.size = sizeof g_unit_cache.memory;
@@ -90,12 +90,12 @@ static int build(const char* output) {
     options.abi = SNX_ABI;
     options.quiet = 1;
     options.chunk_instrs = 1; /* each function a unit */
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
-    llvm.wrappers = &g_unit_cache.wrappers;
-    return snx_build_module_llvm(&loaded, &options, &llvm);
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
+    job.wrappers = &g_unit_cache.wrappers;
+    return snx_build_module_a64(&loaded, &options, &job);
 }
 
 static void undefined(CPU* c, u64 pc, u32 w) {

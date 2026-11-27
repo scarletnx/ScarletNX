@@ -10,6 +10,7 @@
   * [Initial CTR IPC/services (3a)](#initial-ctr-ipcservices-3a)
   * [Current limits and trust](#current-limits-and-trust)
   * [Build and test](#build-and-test)
+* [Save states](#save-states)
 * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
 * [Online: sockets and Pretendo Network](#online-sockets-and-pretendo-network)
 * [Source provenance and licensing](#source-provenance-and-licensing)
@@ -360,16 +361,15 @@ Implemented:
   callbacks connecting statically generated integer instructions to the page
   controller, including aliases, R/W/X, whole-range multiword RAM validation and
   ordinary MMIO. Every instruction checks execute permission and code identity.
-  Static O0/O2 native witnesses execute against this adapter without LLVM/JIT
-  linked into their executables.
+  Static native witnesses execute against this adapter without the JIT linked into their executables.
 - Stage 2b2: raw ExHeader/expanded `.code` revalidation, RX/R/RW process mappings,
   zeroed page-appended BSS, guarded stack and one private initial TLS page.
   `TPIDRURO` points at this page. Initial 3b adds per-thread zeroed TLS slots
   and serialized native context scheduling, not a host-thread/multicore scheduler.
 - The offline compiler and native host linker, part of `scarletnx-3ds`:
   private staging/publication, versioned module ABI and exact image
-  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`), and LLVM the ones it refuses,
-  or all of them on a host without one or with `--keep-ir`; the recompile says how many each made, and why. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
+  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`); the recompile says how many it
+  made, and why it refused one. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
   entries. Stage 2b3 adds conservative static CFG discovery for larger images:
   direct branches/calls, conditional continuations, literal/ADR code pointers,
   initialized RO/data pointer candidates, legacy Thumb BL pairs and a bounded
@@ -377,7 +377,7 @@ Implemented:
   CMP / LDRLS PC-indexed tables with at most 256 entries; no unbounded sweep.
   Blocks contain at most 32 guest instructions;
   bounded chunks of them are objects, then statically linked.
-  The link is the LLVM backend's own (`src/common/cpu/recompiler/object/link.c`),
+  The link is the recompiler's own (`src/common/cpu/recompiler/object/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
   A block the static discovery misses compiles at run time through the ARM JIT; with `--jit-only` every block does.
@@ -387,7 +387,6 @@ Implemented:
 - Native loader/dispatcher checks ABI, ISA, memory mode, CPU sizes, table counts
   and image identity. It dispatches on PC + CPSR.T, enforces execution permission
   and a block budget, and reports missing entries, faults and unsupported SVCs.
-  The static module does not link LLVM; the run-time compiler does, when a block needs it.
 
 ### Kernel-bootstrap subset (2b4)
 
@@ -955,14 +954,12 @@ code the static graph lacks does. The static graph is bounded by the text itself
 (each instruction slot is visited once in each instruction set). Objects together
 are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept,
 beside the game as `<title ID>_code.so`. The chunks are of 512 blocks, compiled on the
-`aot_threads` threads (75% of the physical cores by default); the setting `opt` (`-O`,
-2) is the level of the blocks LLVM compiles.
+`aot_threads` threads (75% of the physical cores by default).
 
 ### Build and test
 
-`scarletnx-3ds` holds the AOT compiler, so it links LLVM, and its presenter and
-audio output use SDL3 and Vulkan headers, which CMake fetches as for the Switch
-runtime. With the normal Clang, CMake and LLVM SDK prerequisites:
+`scarletnx-3ds` holds the AOT compiler, and its presenter and audio output use SDL3 and Vulkan headers, which CMake
+fetches as for the Switch runtime. With the normal Clang and CMake prerequisites:
 
 ```sh
 cmake -S . -B build/3ds -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_GUI=OFF
@@ -976,8 +973,7 @@ The 3DS tests are named `3ds_*` and `ctr_*` (`ctest -R "3ds|ctr"`, `3ds_cci` the
 cartridge images' and bare NCCHs'), and the ARM
 CPU tests the 3DS shares with the Switch's 32-bit games `arm_*`. Use `-DSNX_BUILD_GUI=ON` to include the launcher and its
 regression tests. `-DSNX_BUILD_3DS=OFF` omits the driver with its compiler and
-runtime (the GUI diagnoses its absence). The profile decoder test needs no LLVM.
-Additional static AOT tests are explicitly opt-in:
+runtime (the GUI diagnoses its absence). Additional static AOT tests are explicitly opt-in:
 
 ```sh
 cmake -S . -B build/arm11 -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF \
@@ -986,17 +982,16 @@ cmake --build build/arm11
 ctest --test-dir build/arm11 --output-on-failure
 ```
 
-This requires a native LLVM SDK (select with `SNX_LLVM_CONFIG` if needed).
 `SNX_TEST_ARM_DIFF=ON` additionally requires Python `unicorn==2.1.4`, and enables
 ARM11 MPCore plus shared A57 integer/VFP/NEON/Thumb regressions of the native back
-ends' blocks and LLVM's. See
+ends' blocks. See
 `src/common/cpu/arm/README.md` for the codegen contract and exact limitations.
-The compiler links its objects with the LLVM backend's linker, so a game compiles
-on a machine without a C compiler. The compiled modules need no LLVM library. On Windows `scarletnx-3ds` carries the runtime's
+The compiler links its objects with the recompiler's own linker, so a game compiles
+on a machine without a C compiler. On Windows `scarletnx-3ds` carries the runtime's
 application manifest (long paths, UTF-8 code page), and the module is a DLL linked
 with DEP and ASLR compatibility, exporting only its descriptor.
 Add `SNX_TEST_ARM_AOT=ON` for the CPU tests as well as the pipeline's.
-The bounded CFG unit test needs no LLVM. To run the optional external SuperTux
+To run the optional external SuperTux
 bootstrap gate, set `SNX_TEST_3DS_SUPERTUX=/absolute/path/to/Supertux.cia`.
 `SNX_TEST_ARM_DIFF=ON` additionally compares its first-SVC GPR/CPSR and complete
 data/stack/TLS snapshots against pinned Unicorn ARM11 MPCore. A second CPU
@@ -1012,6 +1007,43 @@ of blocks more one at a time and a few of the driver's polled slices.
 Separate native CIA and unit tests exercise actual worker wakeups, resources
 and rollback. Service policy is not independently hardware-validated.
 No sample binaries are downloaded or distributed.
+
+## Save states
+
+A state is the whole game at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/3ds/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| PROCESS | the kernel objects and handles, each thread with its registers, the memory blocks and aliases, the services' state (GSP, Y2R, HID, the cameras, CSND, APT...), the pages' owners |
+| TIME | the times kept by the host's clock (each thread's wake, each timer's signal, the vblank, the audio frames, the inputs' and cameras' sampling, the hourly time entry, the tick count's origin), counted from the save: a load counts them from its own, so the tick count goes on from the save's |
+| MAPS | the address space's mappings, in runs of pages with their physical addresses and permissions |
+| MEMORY | the board's RAM: FCRAM, VRAM and the DSP's |
+| FILES | each file, folder and archive open, by its path in the filesystem tree, and the DLC contents opened |
+| LDR | the CROs loaded, and the AOT blocks a CRO's relocation made stale |
+| PICA | the GPU's command processor (its registers, shader units, tables) with the command list it ran last |
+| DSP | the DSP: its pipes, its sources with their queues and decoded buffers, its mixers with their delay lines (`audio/dsp.c`) |
+
+A save reads the RAM through write tracking, so what the GPU keeps newer than memory (a render target, a transfer's
+output) lands there first; a load writes it the same way, so the renderer drops every texture and target it kept of
+the running game. The mappings that differ are made again, the blocks the run-time compiler made are dropped. A file
+open is opened again by its path, never truncated: the SD card, the save data and what the game wrote since stay, as
+a Switch game's files do. The DSP's AAC decoder is opened again: what FFmpeg's decoder keeps of the frames before
+starts empty, so the first AAC frame decoded after a load can differ, a click of one frame at most.
+
+The game is its title ID, its segments, its name, the model and its memory. A load reads and checks every section
+before it changes anything, and refuses another game's state (both named), another `SNX_CTR_STATE_VERSION` (both
+versions), a section of another layout (both hashes), a damaged file, a file or DLC content that can't be opened
+again (named), and a load while a friends login of the running game is on its way. A failure past that point (a
+mapping the space refuses) ends the game, saying why. A save is refused, saying what, while the game has sockets or
+local wireless (nwm::UDS) open or a friends login on its way, which a state can't keep, while an ldr:ro command is half
+done, and while the GPU holds immediate-mode vertices it hasn't drawn. The threads run by the host's clock, so
+`3ds_state` (`tests/3ds_state.c`) checks that what follows a save (the DSP's frames, a file's bytes, a folder's next
+entry, the objects' answers, the registers, the memory, the tick count) follows a load the same, word for word, in the
+process and in a fresh one, and that a save right after a load holds what the first held; `3ds_state_gpu`
+(`tests/3ds_state_gpu.c`, each path the device takes to the RAM) that a save holds the transfer engine's work it didn't
+wait for, and that after a load the GPU reads what the load wrote, not what it kept of its own writes.
 
 ## Experimental local wireless over rooms
 
@@ -1096,8 +1128,8 @@ dispatch, the update overlay) reads `ncch_container.cpp`'s `AutoOpenNCCHNCSD`,
 partition layout and the base/update semantics; the C implementation is new, as
 the CIA one is. Initial 2b CPU/profile and bus code is new project C code using ARMv6K/legacy
 Thumb architectural semantics; it does not copy an Azahar CPU engine. The
-shared emitter retains its existing notices. LLVM's `mpcore` assembler model
-and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
+shared emitter retains its existing notices. Unicorn 2.1.4's ARM11 MPCore model is a test reference, not a runtime
+engine.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.

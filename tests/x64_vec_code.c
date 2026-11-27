@@ -20,7 +20,7 @@
 #include <string.h>
 
 #define BASE          0x10000u
-#define MOST          12u
+#define MOST          32u
 #define NEEDS_AVX2    32768u
 #define NEEDS_GFNI    65536u
 #define NEEDS_SHA     8192u
@@ -45,6 +45,8 @@
 /* INSERTPS (66 0F 3A 21) and MOVQ xmm, xmm/m64 (F3 0F 7E), or their VEX forms: a scalar's upper bits made 0 in XMM */
 #define INSERTPS      "66 0F 3A 21|C4 ?? ?? 21"
 #define MOVQ_XMM      "F3 0F 7E|C5 FA 7E|C5 7A 7E"
+/* MOVDQU of V30's field (disp32 0x2F8 off RBX) to XMM8-XMM15 (REX.R, or VEX's inverted R): a pin's load */
+#define V30_PIN_LOAD  "F3 44 0F 6F ?? F8 02 00 00|C5 7A 6F ?? F8 02 00 00"
 /* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
 #define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
@@ -101,8 +103,8 @@ static const Row k_rows[] = {
     {"raddhn v0.8b, v1.8h, v2.8h", 0, 0, 304, -1, NULL, "2E224020"},
     {"sqdmull v0.4s, v1.4h, v2.4h", 0, 0, 320, -1, NULL, "0E62D020"},
     {"sqdmlal v0.2d, v1.2s, v2.2s", 0, 0, 400, -1, NULL, "0EA29020"},
-    {"crc32w w0, w0, w2", 0, 0, 224, -1, NULL, "1AC24800"},
-    {"crc32x w0, w0, x2", 0, 0, 272, -1, NULL, "9AC24C00"},
+    {"crc32w w0, w0, w2", 0, 0, 226, -1, NULL, "1AC24800"},
+    {"crc32x w0, w0, x2", 0, 0, 282, -1, NULL, "9AC24C00"},
     {"sha1c q0, s1, v2.4s", NEEDS_SHA, 0, 256, -1, "0F 3A CC", "5E020020"},
     {"sha1h s0, s1", 0, 0, 224, -1, NULL, "5E280820"},
     {"sha1su0 v0.4s, v1.4s, v2.4s", 0, 0, 240, -1, NULL, "5E023020"},
@@ -131,12 +133,12 @@ static const Row k_rows[] = {
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
     {"fmul v0.4s, v1.4s, v2.4s (the hot test with no SETNE)", 0, 0, 832, -1, "!" SETNE, "6E22DC20"},
-    {"fcmp s1, s2 (NZCV off UCOMISS's flags: JP out where unordered)", 0, 0, 416, -1, JP_REL32, "1E222020"},
-    {"fcmpe d1, d2 (its cold path's flags back by PUSH and POPFQ)", 0, 0, 368, -1, PUSH_RSP_POPFQ, "1E622030"},
+    {"fcmp s1, s2 (NZCV off UCOMISS's flags: JP out where unordered)", 0, 0, 448, -1, JP_REL32, "1E222020"},
+    {"fcmpe d1, d2 (its cold path's flags back by PUSH and POPFQ)", 0, 0, 400, -1, PUSH_RSP_POPFQ, "1E622030"},
     {"frecps v0.4s, v1.4s, v2.4s (the warm path: its hot test with no SETNE)", 0, 0, 768, -1, "!" SETNE, "4E22FC20"},
     {"frsqrts d0, d1, d2 (the warm path: its hot test with no SETNE)", 0, 0, 800, -1, "!" SETNE, "5EE2FC20"},
-    {"ucvtf s0, x1 (from 2^63 up inline: the exponent's PADDD)", 0, 0, 352, -1, PADDD, "9E230020"},
-    {"ucvtf d0, x1, #3 (from 2^63 up inline: the exponent's PADDQ)", 0, 0, 384, -1, PADDQ, "9E43F420"},
+    {"ucvtf s0, x1 (from 2^63 up inline: the exponent's PADDD)", 0, 0, 384, -1, PADDD, "9E230020"},
+    {"ucvtf d0, x1, #3 (from 2^63 up inline: the exponent's PADDQ)", 0, 0, 416, -1, PADDQ, "9E43F420"},
     {"fneg s0, s1 (by the vector's lanes)", 0, 0, 240, -1, INSERTPS, "1E214020"},
     {"fabs d0, d1 (by the vector's lanes)", 0, 0, 240, -1, MOVQ_XMM, "1E60C020"},
     {"fmax v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 656, -1, "=1 " MOVMSKPS, "4E22F420"},
@@ -144,6 +146,13 @@ static const Row k_rows[] = {
     {"fsqrt v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 784, -1, "=1 " MOVMSKPS, "6EA1F820"},
     {"frintm v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 576, -1, "=1 " MOVMSKPS, "4E219820"},
     {"fcvtzs v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 608, -1, "=1 " MOVMSKPS, "4EA1B820"},
+    /* a loop of eight ADD, EOR, EOR into V30 (simd_ab's): V3 to V10 and V30 each save a load and a store a turn, so
+       of the nine that tie, V30, read and written eight times a turn, takes a pin (else its chain goes through memory
+       at each turn) */
+    {"a loop's accumulator V30 among nine V registers that tie", 0, 0, 1216, -1, V30_PIN_LOAD,
+     "D2800C90 4EFF8463 6E221C70 6E301FDE 4EFF8484 6E221C91 6E311FDE 4EFF84A5 6E221CB2 6E321FDE 4EFF84C6 6E221CD3 "
+     "6E331FDE 4EFF84E7 6E221CF4 6E341FDE 4EFF8508 6E221D15 6E351FDE 4EFF8529 6E221D36 6E361FDE 4EFF854A 6E221D57 "
+     "6E371FDE F1000610 54FFFCE1"},
 };
 
 static struct {
@@ -210,6 +219,12 @@ static void check(const Row* row, int print) {
     unsigned count = 0;
     g_x64_vec_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
+    while (*at == ' ') ++at;
+    if (*at) { /* a row cut short would test other code */
+        fprintf(stderr, "FAIL: %s: words past the %u a row holds\n", row->what, MOST);
+        ++g_x64_vec_code.failures;
+        return;
+    }
     for (unsigned i = 0; i <= count; ++i)
         for (unsigned b = 0; b < 4; ++b)
             image[4 * i + b] = (unsigned char)((i < count ? words[i] : 0xD65F03C0u) >> (8 * b));

@@ -1,3 +1,4 @@
-# a function that calls itself on each half of its bits and adds the two results: the sum of the bits' elements, one
-# reduction of the lanes
+# a function that calls itself on each half of its bits and adds the two results: the sum of the bits' elements
 root decode_sum_aarch64_instrs_test
+# the same function joining the halves' results by EOR: the elements joined pair by pair
+root decode_op_aarch64_instrs_test

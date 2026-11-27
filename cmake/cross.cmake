@@ -13,10 +13,9 @@
 #     (common/runtime/cas128.c), which takes POWER8's instructions where the machine has them and a lock elsewhere.
 #     SNX_PPC64_ELFV2 builds big-endian glibc for ELFv2 (Arch POWER's), as Clang builds it for ELFv1 (Debian ports').
 #     The flags go into CMAKE_C_FLAGS and CMAKE_CXX_FLAGS, so the configure checks (the libraries' among them) compile
-#     for the same CPU and ABI. RISC-V builds rv64gc and LoongArch LA64 v1.0, as the recompiler's modules are (ir.c),
-#     and both without linker relaxation: the runtime library is merged into each module with its functions' own target
+#     for the same CPU and ABI. RISC-V builds rv64gc and LoongArch LA64 v1.0, both without linker relaxation: the runtime library is merged into each module with its functions' own target
 #     features, and the module's linker (link_elf.c) moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in
-#     either byte order, and s390x z13: before it LLVM makes the runtime library's 128-bit shifts calls to libgcc's
+#     either byte order, and s390x z13: before it Clang makes the runtime library's 128-bit shifts calls to libgcc's
 #     __ashlti3 and __lshrti3, which a module links no library to have.
 #   - for a Linux or NetBSD cross build with Clang (the linux-*-cross and netbsd-*-cross presets): the target triple
 #     and the sysroot, which CMake passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the
@@ -27,6 +26,11 @@
 # All are empty for the other hosts and builds.
 include_guard(GLOBAL)
 option(SNX_PPC64_ELFV2 "Build big-endian PowerPC64 glibc for ELFv2 (Arch POWER), not ELFv1 (Debian ports)" ON)
+# the ppc64 back end makes a game's code, and it writes ELFv2's calls
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$" AND NOT SNX_PPC64_ELFV2)
+    message(FATAL_ERROR "SNX_PPC64_ELFV2=${SNX_PPC64_ELFV2}: nothing would make a game's code here. The ppc64 back "
+                        "end needs ELFv2 and this build has ELFv1: build with -DSNX_PPC64_ELFV2=ON.")
+endif()
 set(SNX_ARCH_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$")
     list(APPEND SNX_ARCH_FLAGS -mcpu=ppc64 -mno-altivec)

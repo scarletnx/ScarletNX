@@ -34,6 +34,9 @@
 #define ursqrte32       snx_arm_soft_ursqrte32
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/helpers/fp.c"
+#include "common/cpu/aarch64/helpers/fp_env.h"
+
+void snx_arm_fp_env(void) { snx_host_fp_env(); }
 
 /* the helpers take the FPCR and return the FPSR bits they raised: this state accumulates them */
 static u64 take(SnxFpEnv* c, SnxFpReply r) {

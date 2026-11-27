@@ -11,7 +11,8 @@
   * [Renderer coherence + lifetime](#renderer-coherence--lifetime)
   * [Videodec/VIC channels](#videodecvic-channels)
 
-ScarletNX compiles AArch64 code into native modules through LLVM IR.
+ScarletNX compiles AArch64 code into native modules with the host's own back end (x86-64's, arm64's, or a RISC
+machine's), which sailgen generates from the Arm architecture's Sail.
 The CPU implementation is shared by the Horizon HLE runtime and the CPU-only Linux AArch64 ABI runtimes.
 Source map: [CLAUDE.md](../../CLAUDE.md).
 
@@ -26,11 +27,10 @@ Source map: [CLAUDE.md](../../CLAUDE.md).
 The experimental `src/3ds/` / `scarletnx-3ds` target supplies board profiles,
 decrypted CIA/NCCH/ExeFS/RomFS extraction, or the same read in place from the mapped CIA, an independent checked page-memory
 controller and a static-AOT pipeline for Linux and Windows hosts:
-extraction -> the driver's offline LLVM compiler/host linker (only when the module is missing or stale) ->
+extraction -> the driver's offline compiler/host linker (only when the module is missing or stale) ->
 a native module (an ELF shared object, or a DLL on Windows) -> checked process/ARM/Thumb dispatch. `snx_ctr_process` maps raw
 ExHeader segments/BSS/stack/TLS; `snx_ctr_native` validates/loads module ABI 1.
-The driver links LLVM for its compiler, the modules do not. The runtime uses neither MCJIT nor NX/GNU
-ABI code. `common/filesystem/` / `scarletnx-filesystem` owns NX and CTR's shared
+The runtime uses no NX or GNU ABI code. `common/filesystem/` / `scarletnx-filesystem` owns NX and CTR's shared
 indexed host tree, immutable file mappings and on-demand opens. CTR uses its own
 level-3 RomFS serializer/file objects and wire protocol, not Switch FS IPC.
 Host staging/process utilities are also reused.
@@ -41,7 +41,7 @@ shared backend CMake target is initialized once when several runtimes request it
 The compiler exhaustively emits one-instruction entries for images up to 4 KiB.
 Larger images use bounded offline CFG discovery, code-pointer candidates and a
 bounded PC-relative ADD jump window, with blocks of at most 32 instructions.
-It emits 128 entries per LLVM chunk and links all PIC objects with a separate
+It emits 128 entries per chunk and links all PIC objects with a separate
 ABI-1 full-geometry index object; unproven targets remain NULL. There is no
 runtime discovery or compilation. SuperTux draws its title screen and plays its
 music through this path, without input yet. See [3DS port](../platforms/3ds/README.md) for coverage limits, absent HLE/devices
@@ -63,8 +63,8 @@ used as Linux syscalls.
 
 `scarletnx` is every driver the build has: `src/multicall/main.c` is the only `main`, and runs
 the driver its name says from the library of the driver's own folder (`snx_switch_program`,
-`snx_ctr_program`, `snx_vita_program`, `scarletnx-gnuabi`, `snx_agb_program`, `snx_nds_program`), so LLVM and SDL
-are in one program once. On Linux and macOS `scarletnx-switch`, `scarletnx-3ds`,
+`snx_ctr_program`, `snx_vita_program`, `scarletnx-gnuabi`, `snx_agb_program`, `snx_nds_program`), so the recompiler
+and SDL are in one program once. On Linux and macOS `scarletnx-switch`, `scarletnx-3ds`,
 `scarletnx-vita`, `scarletnx-gnuabi`, `scarletnx-agb` and `scarletnx-nds` are symlinks to it. Windows has no
 links: the driver's name goes first (`scarletnx.exe scarletnx-3ds ...`), and the launcher runs
 the drivers that way (`snx_menu_has_driver`), as Android's does through `libscarletnx-run.so`.
@@ -114,42 +114,30 @@ the game's image read from that image.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
   table, chunk labels, progress lines); chunks batch whole functions up to `CHUNK_INSTRUCTIONS` (`library.c`), 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
-- The native back ends (`src/common/cpu/recompiler/mach/` and a folder a machine) make the guest's code where the host
-  has one. What they leave is the fallback's (`recompiler/fallback.h`): LLVM's (`fallback_llvm.c`), or, in a build
-  without it, none (`fallback_none.c`), which refuses it and names what was asked. The JIT, the AArch32 executor and the
-  Switch's AOT modules (`src/nx/loader/module_llvm.c`, `module_arm.c`) ask it there, and a game module's own part of it
-  through `src/nx/loader/module_fallback.h` (the descriptor of a module whose code LLVM made some of, a 32-bit program's
-  blocks chained, the profile cache's key: `module_fallback_llvm.c`, or `module_fallback_none.c`). Without LLVM the
-  native back end makes a function with an instruction it has no code for, the instruction undefined where it runs
-  (`SnxNativeOptions.alone`). The other AOT compilers and the library still call LLVM themselves.
-  `tests/architecture.py` lists the files that take LLVM's headers (`LLVM_USERS`), which only LLVM code moved out of
-  another joins.
-- The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
-  LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
-  `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose
-  registers' loads and stores, the scalar floating point and the SIMD integer ops of one element per lane, the
-  pairwise ones and those across lanes `tools/sailgen` generates from the Arm architecture's Sail
-  (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`,
-  and `src/nx/loader/module_fallback_llvm.c` the `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
-  `link_coff.c`, `link_macho.c` in `src/common/cpu/recompiler/object/`) with `rtlib/rtlib.c`, the helpers compiled when
-  the recompiler is built, into a module
-  with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF on Windows, or on macOS and iOS a Mach-O dylib
-  with an ad hoc signature, each with a veneer for a branch past 128 MiB), PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT: [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/llvm_qemu_differential.c` runs its step functions against
-  `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, for words of every row of the generated decoder, with
-  the groups known to differ in `tests/llvm_qemu_expected.txt` (a new group, or a listed one that no longer differs,
-  fails it; `--sweep` runs more of each), loaded as a module, with the JIT's loader and in the emitters' portable
-  forms. `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
-  `tests/llvm_module.c` a whole program against the end state QEMU gives it, `tests/llvm_bench.c` times it on
-  assembly kernels.
-- `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
-  (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
-  as lld's `CallGraphSort.cpp`) and writes their guest addresses. LLVM gives each listed function a code
-  section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
-  No instruction changes. ELF modules for this host only, and only when no object needs veneers.
+- The native back ends (`src/common/cpu/recompiler/mach/` and a folder a machine: `x64`, `arm64`, `rv64`, `ppc64`,
+  `mips64`, `la64`, `s390x`) make all of the guest's code, from the emitters `tools/sailgen` generates from the Arm
+  architecture's Sail (`src/common/cpu/aarch64/sail/`, `src/common/cpu/arm/sail/`). An instruction a back end has no
+  code for raises an undefined instruction where it runs, and its function is made all the same; a function it still
+  cannot make (one longer than its branches reach) is said. The JIT, the AArch32 executor, the recompiler's library
+  (`library.c`) and the Switch's AOT modules (`src/nx/loader/module_a64.c`, `module_arm.c`) all take their code from
+  it. The objects are linked by the recompiler itself (`link_elf.c`, `link_coff.c`, `link_macho.c` in
+  `src/common/cpu/recompiler/object/`) with the runtime library, the helpers compiled when the recompiler is built
+  (`rtlib_object.h`), into a module with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF
+  on Windows, or on macOS and iOS a Mach-O dylib with an ad hoc signature, each with a veneer for a branch past
+  128 MiB), PowerPC64 (ELF, ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and
+  LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT:
+  [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/native_qemu_differential.c` runs the
+  host's native back end on words of every row of the generated decoder (`tests/native_steps.c`), against
+  `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, with the groups known to differ in
+  `tests/native_qemu_expected.txt` (a new group, or a listed one that no longer differs, fails it; `--sweep` runs more
+  of each); the hosts with no QEMU beside the test take a reference that another host recorded
+  ([the implementer guide](../layers/cpu/guide.md#rules-that-apply-to-this-work)). `tests/a64_ported.c` runs rEden's
+  cases through the steps against their expected values and QEMU, `tests/native_module.c` a whole program against the
+  end state QEMU gives it, `tests/native_bench.c` times it on assembly kernels.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
   does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
   leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
-  target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
+  target's label.
 - A module calls another module's functions, and some of its own, through its PLT: a stub (`adrp x16`, `ldr x17` of
   its slot, `add x16`, `br x17`) branches to the address the game's linker puts in the slot at the stub's first call.
   The recompile binds each stub whose symbol one module alone of the program defines as a function
@@ -197,23 +185,13 @@ the game's image read from that image.
   `nn::init::Start`, compares every relocated word of the game's memory with the copy; the log gives the count, or
   how many differ and the first of them. `ctest -R 'loader_relocate|runtime_linker|ldr_service'`
   (`tests/relocate_test.c`, `tests/runtime_linker.c`, `tests/ldr_service.c`).
-- The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
-  registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
-  Logical immediates and SIMD
-  immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is
-  provably the soft-float helper's, flags included (`sg_fp_fast_binary`, `sg_fp_fast_sqrt` and `sg_fp_fast_fma` in
-  `tools/sailgen/llvm.h` for the scalar instructions, `ir_vec_fp.c` for AdvSIMD);
-  the AdvSIMD and crypto encodings are inline, not calls
-  to helpers, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
-  generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection), and the runtime library's
-  helpers are portable C that LLVM compiles for each module's CPU; nothing is detected at run time. The emitters'
-  x86 paths follow the target triple: AES-NI, PCLMULQDQ (PMULL, CRC32 by Barrett
-  reduction), SSE4.2 CRC32C, VPTERNLOG (BSL/BIT/BIF, signed saturation), PAVGB/PAVGW (rounding halving adds, signed
-  ones biased by 0x80), GF2P8AFFINEQB (8-bit shifts, bit reversal); the tricks are wunkolo's (wunkolo.github.io).
-  The x86-64 back end (`x64/x64_vec.c`) makes the same with SSE4.2's and AVX's forms: GF2P8AFFINEQB, PAVGB/PAVGW, AVX2's
+- The native back ends' code is the host's: build == host == target, the code takes the host's extensions where it
+  is made (`snx_native_features`), and the runtime library's helpers are portable C compiled when the recompiler is
+  built; nothing is detected at run time.
+  The x86-64 back end (`x64/x64_vec.c`) makes AdvSIMD with SSE4.2's and AVX's forms: GF2P8AFFINEQB, PAVGB/PAVGW, AVX2's
   shifts by a lane's own amount (bytes and halfwords by products with the amount's power of two), and FPSR.QC tested
   once for all the saturating instructions of a block; CRC32 by PCLMULQDQ, SHA-1 by SHA1RNDS4, and VSM4RNDS4 and VSM4KEY4
-  where CPUID says SM4.
+  where CPUID says SM4; the tricks are wunkolo's (wunkolo.github.io).
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
 - `src/common/platform/` / `scarletnx-platform`: the host layer every driver shares, without SDL: threads and locks,
   clocks and sleep, files, address space and shared libraries. The NX runtime's `runtime/platform/` builds on it.
@@ -232,12 +210,12 @@ miss, and the 16-byte compare-and-swap of STXP on RISC-V, LoongArch and MIPS64 h
 without code yet is queued in the live misses' queue and its thread waits for the compile off its guest core, and a pc
 the JIT can't compile (or a host where it can't start: Windows before 10 1803) ends the game with the reason. Compile
 threads (host threads, not guest threads) take the queued pcs in batches: the functions at them and their callees
-found by `snx_codegen_discover`, emitted by the LLVM backend into one module, loaded into a code arena with a copy of
-`rtlib.c` (`code_loader.c`, packed into shared memory mapped once executable and once writable) and published into
+found by `snx_codegen_discover`, made by the host's native back end into one object, loaded into a code arena with a
+copy of the runtime library (`code_loader.c`, packed into shared memory mapped once executable and once writable) and published into
 `CPU.disp`. At start the hints of earlier runs are queued behind every miss. The pc is recorded as a hint either way,
 so the next recompile has it. Each unit compiled is appended to `<game>.jitcache` in the cache folder, and a later run
 loads it instead of compiling when the guest code it came from is the same byte for byte and the file was written with
-the same ABI, IR object version, target triple, LLVM, runtime library, host CPU and settings. Its calls into the AOT
+the same ABI, native back end and code, host features, runtime library and settings. Its calls into the AOT
 module go through `snx_aot_<pc>` symbols that the loader resolves at each load, so the object holds no host address.
 `cpu_helpers.c` + `helpers/`: SIMD, crypto, FP.
 

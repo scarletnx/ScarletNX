@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The JIT loader's COFF objects (code_loader.h): Windows' x86-64 and ARM64 objects, as LLVM writes them, placed in the
-   code arena and relocated there, by the rules link_coff.c links a module by. The structures are read byte by byte, so
-   this builds anywhere and a test can load Windows objects into any host's arena; only a Windows host of the objects'
-   machine registers the function table and runs the code.
+/* The JIT loader's COFF objects (code_loader.h): Windows' x86-64 and ARM64 objects, as the back ends and Clang write
+   them, placed in the code arena and relocated there, by the rules link_coff.c links a module by. The structures are
+   read byte by byte, so this builds anywhere and a test can load Windows objects into any host's arena; only a Windows
+   host of the objects' machine registers the function table and runs the code.
 
    A load's parts go into the arena's regions: [code] [read-only data and unwind data, the function table, import
    slots] [data, bss]. Symbols resolve to the load's own definitions, then to the loader's table (earlier loads, defined
    names). A COMDAT section whose key an earlier load or object already defines is left out, and its symbols resolve
-   to that definition (LLVM puts floating-point constants in COMDATs named after their value, __real@...). An
+   to that definition (Clang puts floating-point constants in COMDATs named after their value, __real@...). An
    __imp_X reference (a dllimport declaration) gets a slot holding X's address. ADDR32NB values (the function table's,
    the unwind data's) are offsets from the arena's start, which RtlAddFunctionTable is given as their image base: the
    arena is at most 2 GiB, so they fit. A REL32 reaches anything in the arena. A call or jump (E8, E9 before the field)

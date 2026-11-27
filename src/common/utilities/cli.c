@@ -49,8 +49,7 @@ static const CliOption options[SNX_CLI_COUNT] = {
     [SNX_CLI_FULLSCREEN] = {"--fullscreen", 'f', NULL, NULL, NULL, "Start fullscreen, for this run (=0: windowed)"},
     [SNX_CLI_HEADLESS] = {"--headless", 'H', NULL, NULL, NULL, "Run without a window"},
     [SNX_CLI_OPT] = {"--opt", 'O', NULL, "LEVEL", "a level",
-                     "LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the\n"
-                     "setting opt, 2)"},
+                     "LLVM's optimization level, which went with it: said, and nothing done"},
     [SNX_CLI_JOBS] = {"--jobs", 0, NULL, "N", "a whole number",
                       "The threads compiling the game's code, the setting aot_threads: 1 to 1024, or 0\n"
                       "(the default), Auto"},
@@ -63,11 +62,15 @@ static const CliOption options[SNX_CLI_COUNT] = {
     [SNX_CLI_JIT_ONLY] = {"--jit-only", 0, "--interp-only", NULL, NULL,
                           "Compile no code ahead of time: the run-time compiler compiles all of it"},
     [SNX_CLI_KEEP_IR] = {"--keep-ir", 0, "--keep-c", NULL, NULL,
-                         "Save the code the recompile generates, LLVM IR, in <the game's folder>/\n"
-                         "<its name>_build"},
+                         "LLVM's IR, which went with it: said, and nothing done"},
     [SNX_CLI_QUIET] = {"--quiet", 'q', NULL, NULL, NULL, "Say no progress of the recompile"},
     [SNX_CLI_HELP] = {"--help", 'h', NULL, NULL, NULL, "Show this help"},
 };
+
+/* the options gone with LLVM a run has said, each once */
+static struct {
+    int gone[SNX_CLI_COUNT];
+} g_cli;
 
 /* arg's length up to its '=', or all of it */
 static size_t name_length(const char* arg) {
@@ -127,6 +130,9 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
             snprintf(error, size, "%s: %.*s takes no value", program, length, arg);
             return SNX_CLI_ERROR;
         }
+        if (id == SNX_CLI_KEEP_IR && !g_cli.gone[id]++)
+            snx_error("%.*s went with LLVM's IR: the native back ends keep none (docs/user/deprecations.md)", length,
+                      arg);
         return id;
     }
     /* a value apart is the next argument, unless that is an option: the value was left out */
@@ -140,10 +146,11 @@ int snx_cli_match(int argc, char** argv, int* i, unsigned accepted, const char* 
     }
     if (!equal && !attached) ++*i;
     out->value = value;
-    if (id == SNX_CLI_OPT && (strlen(value) != 1 || !strchr("0123sz", value[0]))) {
-        snprintf(error, size, "%s: %.*s %s: not 0, 1, 2, 3, s or z", program, length, arg, value);
-        return SNX_CLI_ERROR;
-    }
+    if (id == SNX_CLI_OPT && !g_cli.gone[id]++)
+        snx_error(
+            "%.*s %s, LLVM's level, went with LLVM: the native back ends make the code with no optimization level "
+            "(docs/user/deprecations.md)",
+            length, arg, value);
     if (id == SNX_CLI_JOBS || id == SNX_CLI_CHUNK) {
         char* end;
         long most = id == SNX_CLI_JOBS ? 1024 : INT_MAX, least = id == SNX_CLI_JOBS ? 0 : 1;
@@ -211,17 +218,15 @@ SnxCliRecompile snx_cli_recompile(const SnxCli* cli) {
     SnxCliRecompile r = {cli->chunk,
                          cli->value[SNX_CLI_JIT_CACHE],
                          !!(cli->flags & SNX_CLI_BIT(SNX_CLI_JIT_ONLY)),
-                         !!(cli->flags & SNX_CLI_BIT(SNX_CLI_KEEP_IR)),
                          !!(cli->flags & SNX_CLI_BIT(SNX_CLI_QUIET)),
                          NULL};
-    r.given = cli->value[SNX_CLI_OPT] ? "-O"
-              : cli->jobs >= 0        ? "--jobs"
-              : r.chunk               ? "--chunk"
-              : r.jit_cache           ? "--jit-cache"
-              : r.jit_only            ? "--jit-only"
-              : r.keep_ir             ? "--keep-ir"
-              : r.quiet               ? "-q"
-                                      : NULL;
+    /* -O and --keep-ir, gone with LLVM, are said and choose nothing: none of the recompile's */
+    r.given = cli->jobs >= 0 ? "--jobs"
+              : r.chunk      ? "--chunk"
+              : r.jit_cache  ? "--jit-cache"
+              : r.jit_only   ? "--jit-only"
+              : r.quiet      ? "-q"
+                             : NULL;
     return r;
 }
 void snx_cli_free(SnxCli* cli) {

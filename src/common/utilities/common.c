@@ -12,6 +12,7 @@
 #define _DARWIN_C_SOURCE
 #endif
 #include "common/utilities/common.h"
+#include "common/platform/thread.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
@@ -1769,6 +1770,10 @@ void snx_thread_clock_close(SnxU64 clock) {
 #else
     (void)clock;
 #endif
+}
+int plat_cpu_count(void) {
+    int ids[1024], n = plat_cpus(ids, 1024);
+    return n > 0 ? n : (int)snx_cpu_count();
 }
 void snx_thread_name_get(char* out, size_t n) {
     if (!n) return;

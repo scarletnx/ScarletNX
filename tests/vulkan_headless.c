@@ -6142,7 +6142,7 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
 }
 /* A target over what one owner may hold, published (a watched page touched by the CPU): an owner a band of rows of
    blocks over its span, each landing when the CPU touches it, rather than a write-back that let the span's pages go
-   before writing them over a second later (a 512 MiB RGBA16F one, edenprobe's tex8k, read on another thread
+   before writing them over a second later (a 512 MiB RGBA16F one, Amberlith's tex8k, read on another thread
    meanwhile: #2094). A block linear RGBA16F target of 256x128, 256 KiB, loaded from guest memory holding a pattern,
    its red cleared to 0.25 alone, and published under a cap of 64 KiB: the publish takes it, owners hold its bytes in
    more than one band, and every byte read from guest memory is where the guest's layout has it, red 0.25 and the
@@ -7264,7 +7264,7 @@ static int check_rt_watch_linear(void) {
     free(ch);
     return 0;
 }
-/* Depth targets the 3D engine clears and the CPU then reads from memory, as edenprobe's zeta and msaa suites do after a
+/* Depth targets the 3D engine clears and the CPU then reads from memory, as Amberlith's zeta and msaa suites do after a
    barrier and a wait for idle: a release watches them as it does color ones, and the CPU's first read publishes them
    and lands them in their format's layout (S8's a byte a texel, its stencil). Each format a 80x40 block linear target
    (2 rows of blocks of 4 GOBs), cleared to depth 0.25 and stencil 0x5A, then its scissor's rectangle to depth 0.75 and
@@ -8183,6 +8183,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
 #include "vulkan_owned_page_reads.inc"
+#include "vulkan_owned_kept_copy.inc"
 #include "vulkan_writeback_sweep.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
@@ -8868,6 +8869,8 @@ static int run_headless(int argc, char** argv) {
             result = check_targetless_stores();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
+        else if (!strcmp(name, "owned_kept_copy"))
+            result = check_owned_kept_copy();
         else if (!strcmp(name, "index_draws"))
             result = check_index_draws();
         else if (!strcmp(name, "memory_release"))
@@ -8897,9 +8900,7 @@ static int run_headless(int argc, char** argv) {
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
         else if (!strcmp(name, "rt_stride"))
-            result = check_rt_stride() || check_rt_stride_apart() || check_rt_stride_written();
-        else if (!strcmp(name, "rt_stride_written"))
-            result = check_rt_stride_written();
+            result = check_rt_stride() || check_rt_stride_apart();
         else if (!strcmp(name, "cube_take_frames"))
             result = check_cube_take_frames();
         else if (!strcmp(name, "texture_quiet"))
@@ -9397,6 +9398,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_fragment_flow_lod());
     CHECK(!check_fragment_quad());
     CHECK(!check_owned_page_reads());
+    CHECK(!check_owned_kept_copy());
     CHECK(!check_memory_release());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
@@ -9458,7 +9460,6 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_rt_aside());
     CHECK(!check_rt_stride());
     CHECK(!check_rt_stride_apart());
-    CHECK(!check_rt_stride_written());
     CHECK(!check_so_note());
     CHECK(!check_dma_bands_frames());
     CHECK(!check_flush_parts());

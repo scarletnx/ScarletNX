@@ -83,7 +83,7 @@ static inline SnxU32 sga_a32_stlxr(unsigned bytes, int rs, int rt) {
 static inline void sgx_a32_movi(SgXBuf* b, int reg, SnxU32 v) { sga_movi(b, reg, v, 0); }
 /* a call of the runtime library's sym, the state its first argument */
 static inline void sgx_a32_call_out(SgXAsm* a, SgXBuf* b, const char* sym) {
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19 */
+    sga_state_out(b);
     if (a->reloc) {
         a->reloc(a->machine, b->n, sym, 0); /* BL, which the object's CALL26 fills */
         sga_w(b, sge_a64_bl(0));
@@ -136,7 +136,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_FENCE: sga_w(b, sge_a64_dmb(11)); return; /* DMB ISH */
         case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
-            /* llvm.c's exclusive(): the monitor disarmed, its address and size checked, then a compare-and-swap of the
+            /* the store-exclusive: the monitor disarmed, its address and size checked, then a compare-and-swap of the
                value the load-exclusive read at the access's size: W0 0 where it took, 1 otherwise. The address in
                X1, the value in X2, the memory's base in X3 (sgx_a32_strex); X4 and X5 its own */
             unsigned bytes = (unsigned)i->imm;

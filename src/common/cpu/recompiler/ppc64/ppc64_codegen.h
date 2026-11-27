@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The powerpc64 back end's guest functions (ppc64_codegen.c): the recompiler's code without LLVM on a powerpc64 host, from
-   the A64 emitters sailgen generates with its powerpc64 back end (tools/sailgen/ppc64.h and risc.h, its words LLVM's
-   PowerPC TableGen records'), written as an ELF PowerPC64 (ELFv2) object the linker and the JIT's loader take as they take LLVM's.
-   It builds on any host (the code is powerpc64's: a test runs it under Unicorn); a function it can't make is left to
-   another back end */
+/* The powerpc64 back end's guest functions (ppc64_codegen.c): the recompiler's code on a powerpc64 host, from the A64
+   emitters sailgen generates with its powerpc64 back end (tools/sailgen/ppc64.h and risc.h, its words LLVM's PowerPC
+   TableGen records'), written as an ELF PowerPC64 (ELFv2) object which the linker and the JIT's loader take. It builds
+   on any host (the code is powerpc64's: a test runs it under Unicorn); a function it can't make whole is said */
 #ifndef SNX_RECOMPILER_PPC64_CODEGEN_H
 #define SNX_RECOMPILER_PPC64_CODEGEN_H
 #include "common/cpu/recompiler/codegen.h"

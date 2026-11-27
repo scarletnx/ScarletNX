@@ -4,9 +4,17 @@
 
 ## Downloads
 
-Each push to `main` that builds everywhere becomes a nightly in
-[scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30 kept, with each open pull request's
-builds. The latest:
+Two kinds of build of `main`:
+
+- **The nightly**, to play and to report on: once a day, the first scheduled build of `main` that builds everywhere
+  becomes that day's nightly in [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), where every nightly
+  stays with what changed since the one before, beside each open pull request's builds.
+- **main**, to try a change merged since the last nightly: the build of the newest push to `main`, the one
+  [prerelease of this repository](https://github.com/scarletnx/ScarletNX/releases), `main-<commit>`. Each package joins
+  it as its job ends, its notes say which are still building, and the next push's first package replaces it. It lists
+  no changes.
+
+The latest nightly:
 
 | System | Download | |
 | --- | --- | --- |

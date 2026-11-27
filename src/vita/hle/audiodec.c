@@ -14,8 +14,12 @@
 #include "vita/hle/hle.h"
 #include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <libavcodec/avcodec.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -304,4 +308,135 @@ uint32_t vita_audiodec_close_block(VitaProcess* p, VitaThread* t, uint32_t id) {
     if (!p->audiodec || id < 1 || id > BLOCKS) return 0x80000000u;
     memset(&p->audiodec->blocks[id - 1], 0, sizeof p->audiodec->blocks[id - 1]);
     return 0;
+}
+
+/* ---- save states (vita/runtime/state.c) ----
+   Each decoder as the game made it: its kind and sizes, FFmpeg's configuration of it (the AudioSpecificConfig or
+   ATRAC9's), and an ATRAC9 superframe decoded and not all handed out yet; then the codec engine's blocks. A load makes
+   each decoder again from its configuration: what FFmpeg's decoder keeps of the frames before (the overlap of their
+   transforms) starts empty, so the first frame decoded after a load differs from the console's, the ones after it
+   don't */
+#define EXTRA_MOST 12u
+typedef struct {
+    uint32_t used, type, channels, frame_bytes, frame_samples, superframe_frames, superframe_index;
+    uint32_t extra_size, block_align;
+    unsigned char extra[EXTRA_MOST];
+} Saved;
+typedef struct {
+    Decoder decoders[DECODERS];
+    uint32_t blocks[BLOCKS][3];
+} AudiodecStaged;
+
+uint64_t vita_audiodec_state_schema(void) {
+    static const Saved v; /* only walked */
+    uint64_t h = SNX_FNV_BASIS ^ sizeof v ^ (uint64_t)DECODERS << 32 ^ (uint64_t)BLOCKS << 40;
+    __builtin_dump_struct(&v, snx_state_schema_out, &h);
+    return h;
+}
+static uint32_t superframe_bytes(const Decoder* d) {
+    return d->superframe_pcm ? d->superframe_frames * d->frame_samples * d->channels * 2 : 0;
+}
+int vita_audiodec_state_save(VitaProcess* p, StateIo* io) {
+    struct VitaAudiodec* s = p->audiodec;
+    for (unsigned i = 0; i < DECODERS; ++i) {
+        const Decoder* d = s ? &s->decoders[i] : NULL;
+        Saved v;
+        memset(&v, 0, sizeof v); /* its padding is the file's */
+        if (d && d->used) {
+            v.used = 1, v.type = d->type, v.channels = d->channels, v.frame_bytes = d->frame_bytes;
+            v.frame_samples = d->frame_samples, v.superframe_frames = d->superframe_frames;
+            v.superframe_index = d->superframe_index;
+            v.extra_size = d->codec->extradata_size > 0 && (uint32_t)d->codec->extradata_size <= EXTRA_MOST
+                               ? (uint32_t)d->codec->extradata_size
+                               : 0;
+            v.block_align = (uint32_t)d->codec->block_align;
+            if (v.extra_size) memcpy(v.extra, d->codec->extradata, v.extra_size);
+        }
+        if (io_put(io, &v, sizeof v) ||
+            (v.used && superframe_bytes(d) && io_put(io, d->superframe_pcm, superframe_bytes(d))))
+            return -1;
+    }
+    for (unsigned i = 0; i < BLOCKS; ++i) {
+        uint32_t b[3] = {s ? s->blocks[i].base : 0, s ? s->blocks[i].size : 0, s ? s->blocks[i].used : 0};
+        if (io_put(io, b, sizeof b)) return -1;
+    }
+    return 0;
+}
+void vita_audiodec_state_drop(void* staged) {
+    AudiodecStaged* s = staged;
+    for (unsigned i = 0; s && i < DECODERS; ++i)
+        if (s->decoders[i].used) release(&s->decoders[i]);
+    free(s);
+}
+void* vita_audiodec_state_parse(StateIo* io, char* why, size_t whysize) {
+    AudiodecStaged* s = calloc(1, sizeof *s);
+    if (!s) {
+        snprintf(why, whysize, "out of memory for the state's audio decoders (%zu bytes)", sizeof *s);
+        return NULL;
+    }
+    for (unsigned i = 0; i < DECODERS; ++i) {
+        Saved v;
+        if (io_get(io, &v, sizeof v)) goto damaged;
+        if (!v.used) continue;
+        Decoder* d = &s->decoders[i];
+        if ((v.type != TYPE_AAC && v.type != TYPE_AT9) || v.extra_size > EXTRA_MOST || !v.channels || v.channels > 8 ||
+            v.frame_samples > 4096 || v.superframe_frames > 4 ||
+            (v.superframe_frames && v.superframe_index >= v.superframe_frames)) {
+            snprintf(why, whysize,
+                     "its audio decoder %u is damaged: type 0x%x, %u channels, %u samples a frame, %u "
+                     "frames a superframe from %u",
+                     i + 1, v.type, v.channels, v.frame_samples, v.superframe_frames, v.superframe_index);
+            goto refused;
+        }
+        const AVCodec* codec = avcodec_find_decoder(v.type == TYPE_AAC ? AV_CODEC_ID_AAC : AV_CODEC_ID_ATRAC9);
+        d->used = true, d->type = v.type, d->channels = v.channels, d->frame_bytes = v.frame_bytes;
+        d->frame_samples = v.frame_samples, d->superframe_frames = v.superframe_frames;
+        d->superframe_index = v.superframe_index;
+        d->codec = codec ? avcodec_alloc_context3(codec) : NULL;
+        d->packet = av_packet_alloc(), d->frame = av_frame_alloc();
+        unsigned char* extra = av_mallocz(EXTRA_MOST + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!d->codec || !d->packet || !d->frame || !extra) {
+            av_free(extra);
+            snprintf(why, whysize, "its audio decoder %u (type 0x%x) can't be made again: %s", i + 1, v.type,
+                     codec ? "out of memory" : "FFmpeg has no such decoder");
+            goto refused;
+        }
+        memcpy(extra, v.extra, v.extra_size);
+        d->codec->extradata = extra, d->codec->extradata_size = (int)v.extra_size;
+        d->codec->block_align = (int)v.block_align;
+        if (avcodec_open2(d->codec, codec, NULL) < 0) {
+            snprintf(why, whysize, "its audio decoder %u (type 0x%x) can't be opened again with its configuration",
+                     i + 1, v.type);
+            goto refused;
+        }
+        if (v.type == TYPE_AT9 && v.superframe_frames > 1) {
+            if (!(d->superframe_pcm = malloc(superframe_bytes(d) ? superframe_bytes(d) : 1)) ||
+                io_get(io, d->superframe_pcm, superframe_bytes(d)))
+                goto damaged;
+        }
+    }
+    for (unsigned i = 0; i < BLOCKS; ++i)
+        if (io_get(io, s->blocks[i], sizeof s->blocks[i])) goto damaged;
+    return s;
+damaged:
+    snprintf(why, whysize, "its audio decoders' section is damaged or cut short");
+refused:
+    vita_audiodec_state_drop(s);
+    return NULL;
+}
+void vita_audiodec_state_install(VitaProcess* p, void* staged) {
+    AudiodecStaged* s = staged;
+    bool any = false;
+    for (unsigned i = 0; i < DECODERS; ++i) any = any || s->decoders[i].used;
+    for (unsigned i = 0; i < BLOCKS; ++i) any = any || s->blocks[i][1];
+    vita_audiodec_free(p);
+    struct VitaAudiodec* a = any ? state(p) : NULL;
+    if (a) {
+        memcpy(a->decoders, s->decoders, sizeof a->decoders); /* the decoders' FFmpeg objects go with them */
+        for (unsigned i = 0; i < BLOCKS; ++i)
+            a->blocks[i].base = s->blocks[i][0], a->blocks[i].size = s->blocks[i][1],
+            a->blocks[i].used = s->blocks[i][2];
+        free(s);
+    } else
+        vita_audiodec_state_drop(s);
 }

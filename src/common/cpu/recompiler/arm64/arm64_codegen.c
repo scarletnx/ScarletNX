@@ -3,17 +3,21 @@
 /* The arm64 back end's guest functions: mach/mach_codegen.inc over sailgen's arm64 emitters (a64_arm64.inc), with
    the glue of AAPCS64 written here, every word an encoder's of the A64 Sail (a64_enc.inc).
 
-   The function's ABI is GuestFn's: the state in X0, kept in X19, the entry in X1 (SGX_FN_TARGET, as a call's target
-   is); X29 and X30 saved, then X19 and X20, and X21 to X28 where the function pins guest registers there (the
-   callee's: no call changes them), SP 16-aligned below a frame of spill slots whose size is patched in at the end.
+   The function's ABI is GuestFn's: the state in X0, kept in X19 (SGX_BASE_BIAS past it), the entry in X1
+   (SGX_FN_TARGET, as a call's target is), compared with the start before the frame, so that a call of a function of
+   the unit at its start comes in past that check (with nothing in X1 where the callee was made before the call);
+   X29 and X30 saved, then X19 and X20, and X21 to X28 where the function pins guest registers there (the callee's: no
+   call changes them), and the spill slots, whose size is patched in at the end, above them (below them on Windows),
+   SP 16-aligned at the frame's bottom.
    The guest's vector registers are pinned in V31 down to V24 (caller-saved: stored around a call); V8 to V15,
    whose low halves are the callee's, hold no value, nor does V7, a by-element form's Rm (arm64_vec.c). X16 and X17 are the glue's and the assembler's own.
 
    The object is ELF AArch64: F_<address> global and hidden in the AOT module's units, so another back end's
    function calls one of these and the other way; in a JIT unit local, with the unit's table (ABS64). A call is a
    CALL26 relocation (a tail call JUMP26), resolved here where the callee is this object's own; snx_stale is read by
-   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC). For Windows (SNX_ARM64_F_WIN) the code is the same, AAPCS64's
-   registers Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
+   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC). For Windows (SNX_ARM64_F_WIN) the code is the same but for the
+   entry's check, after the prologue there, which the unwinder reads at the function's first word; AAPCS64's registers
+   are Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
    prologue and the epilogues (x64_elf.c), a frame of a page or more read page by page first (the guard page's) */
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/object/link.h"
@@ -67,6 +71,8 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
 #include "a64_arm64.inc"
 
+static_assert(SNX_ARM64_STATE_BIAS == SGX_BASE_BIAS, "arm64_codegen.h's bias of X19 is sailgen's");
+
 /* ---- what mach_codegen.inc asks of the machine ---- */
 #define MG_EM EM_AARCH64
 #define MG_COFF windows
@@ -74,11 +80,18 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 #define SGX_FN_TARGET 1
 static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_NPINS 9
+#define MG_GPR_NAME(r, buf) (snprintf((buf), sizeof(buf), "X%d", (r)), (buf))
+#define MG_VREG_PREFIX      "V"
 #define MG_NPINS_FIXED 9
 #define MG_PIN_RESERVED(h) 0
 #define MG_BOUND 1
 #define MG_FAR_JUMPS 1             /* past B.cond's 1 MiB: the opposite over a B */
 #define MG_POOL_REACH (512u << 10) /* LDR (literal)'s is 1 MiB */
+#define MG_DIRECT_ENTRY    (64u << 20)  /* half of BL's 128 MiB: the call's glue comes before it */
+#define MG_JTAB            1
+#define MG_JTAB_CLOBBER    0u /* X16 and X17 alone */
+#define MG_JTAB_LEADERS    24 /* fewer: the dispatch block (x86-64's measure; an arm64 device's is to come) */
+#define MG_POLL_INLINE     1  /* a loop's turn: LDR and CBZ of the poll back to its header, the call out of line */
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
@@ -92,7 +105,12 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 /* the code is for Windows */
 static int windows(const Unit* u) { return (u->g->x.features & SNX_ARM64_F_WIN) != 0; }
 
-enum { FIX_B, FIX_BCOND, FIX_CBZ }; /* a fixup's word: B's imm26, B.cond's and CBZ's imm19 */
+/* a fixup's word: B's imm26, B.cond's and CBZ's imm19, ADR's immhi:immlo; FIX_TAB + a table's label: a jump table's
+   word, the label's distance from the table */
+enum { FIX_B, FIX_BCOND, FIX_CBZ, FIX_ADR, FIX_TAB };
+/* the frame: the ten registers the prologue saves, then the slots; off Windows, slots of up to FRAME_FOLDED bytes are
+   in STP X29, X30's pre-index and LDP's post-index (504 bytes at most), larger ones a SUB SP first */
+enum { FRAME_SAVED = 96, FRAME_FOLDED = 504 - FRAME_SAVED };
 
 static void w32(Unit* u, SnxU32 w) { sga_w(&u->b, w); }
 static void fixup(Unit* u, int label, int kind) {
@@ -131,7 +149,7 @@ static void jcc(Unit* u, int cc, int label) {
 /* the state's field at off, of bytes, to or from Xt */
 static void state_ldst(Unit* u, int load, int bytes, int rt, size_t off) { sga_ldst(&u->b, load, bytes, rt, SGX_BASE, -1, (int)off); }
 static void movi(Unit* u, int rd, SnxU64 v) { sga_movi(&u->b, rd, v, 1); }
-static void mov_x0_state(Unit* u) { w32(u, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); }
+static void mov_x0_state(Unit* u) { sga_state_out(&u->b); }
 static void set_pc(Unit* u, SnxU64 pc) {
     movi(u, SGA_X16, pc);
     state_ldst(u, 0, 8, SGA_X16, offsetof(CPU, pc));
@@ -143,16 +161,17 @@ static void call_rt(Unit* u, int off) {
     w32(u, sge_a64_blr(SGA_X16));
 }
 
-/* the pins to the state (store; none where none is newer than it) or from it: every one, or (caller) the vector ones,
-   which a call may change */
+/* the pins to the state (store: those written there since it was in step, cur_dirty) or from it (those pin_sel
+   names, the ones live there): every one, or (caller) the vector ones, which a call may change */
 static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
-    if (!u->pinned || (store && !u->cur_dirty && !u->vcur_dirty)) return;
+    if (!u->pinned) return;
     if (u->mempin >= 0 && !store && !caller) sga_ldst(b, 1, 8, u->mempin, SGX_BASE, -1, (int)offsetof(CPU, mem));
     for (n = 0; n < 32; ++n) {
-        if (u->pin[n] >= 0 && !caller)
+        if (u->pin[n] >= 0 && !caller && (store ? (u->pin_wr & u->cur_dirty) >> n & 1 : u->pin_sel >> n & 1))
             sga_ldst(b, !store, 8, u->pin[n], SGX_BASE, -1, (int)(offsetof(CPU, x) + 8 * (size_t)n));
-        if (u->vpin[n] >= 0) sga_fp_ldst(b, !store, 16, u->vpin[n], SGX_BASE, -1, (int)(offsetof(CPU, v) + 16 * (size_t)n));
+        if (u->vpin[n] >= 0 && (store ? (u->vpin_wr & u->vcur_dirty) >> n & 1 : u->vpin_sel >> n & 1))
+            sga_fp_ldst(b, !store, 16, u->vpin[n], SGX_BASE, -1, (int)(offsetof(CPU, v) + 16 * (size_t)n));
     }
 }
 
@@ -161,10 +180,19 @@ static void frame_here(Unit* u, size_t at) {
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = at;
 }
-/* STP X29, X30, [SP, #-96]!; MOV X29, SP; STP X19, X20, [SP, #16] (and X21-X28 where pinned); MOV X19, X0; SUB SP,
-   SP, #frame (patched), on Windows past the probe of one of a page or more; the pins loaded. x64_elf.c's a64_prologue
-   reads it back, and knows the epilogue by it */
+/* the slots in STP X29, X30's pre-index: off Windows, but where mg_finish found them too large and made the function
+   again (Unit.again) */
+static int folded(const Unit* u) { return !windows(u) && !u->again; }
+/* STP X29, X30, [SP, #-96]!; MOV X29, SP; STP X19, X20, [SP, #16] (and X21-X28 where pinned); ADD X19, X0, #8
+   (sga_state_in); the pins loaded. The slots: off Windows above the saved registers, folded into the STP's pre-index
+   (patched) or, larger, a SUB SP, SP, #frame (patched) before it; on Windows below them, a SUB SP after the ADD, past
+   the probe of a page or more, as x64_elf.c's a64_prologue reads it back (and knows the epilogue by it) */
 static void prologue(Unit* u) {
+    u->a.frame_off = windows(u) ? 0 : FRAME_SAVED;
+    if (!windows(u)) {
+        frame_here(u, u->b.n);
+        if (!folded(u)) w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    }
     w32(u, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-12 & 0x7F, 2));
     w32(u, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));
     w32(u, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));
@@ -172,23 +200,33 @@ static void prologue(Unit* u) {
         int k;
         for (k = 0; k < 4; ++k) w32(u, sge_a64_stp_gen_general_offset((SnxU32)(21 + 2 * k), 31, (SnxU32)(22 + 2 * k), (SnxU32)(4 + 2 * k), 2));
     }
-    w32(u, sge_a64_orr_log_shift(SGX_BASE, SGA_ZR, 0, 0, 0, 1)); /* MOV X19, X0 */
-    if (windows(u) && u->again) frame_here(u, sga_stack_probe(&u->b));
-    frame_here(u, u->b.n);
-    w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    sga_state_in(&u->b);
+    if (windows(u)) {
+        if (u->again) frame_here(u, sga_stack_probe(&u->b));
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    }
     pins(u, 0);
 }
-/* ADD SP, SP, #frame (patched); the saved registers back; LDP X29, X30, [SP], #96. The return or the jump is next:
-   Windows' unwinder has an epilogue end at one */
+/* the prologue's undone: the saved registers back, LDP X29, X30, [SP], #96, the slots in its post-index (patched) or an
+   ADD SP, SP, #frame (patched) after it; on Windows that ADD first. The return or the jump is next: Windows' unwinder
+   has an epilogue end at one */
 static void epilogue(Unit* u) {
-    frame_here(u, u->b.n);
-    w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    if (windows(u)) {
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    }
     if (u->pinned) {
         int k;
         for (k = 0; k < 4; ++k) w32(u, sge_a64_ldp_gen_general_offset((SnxU32)(21 + 2 * k), 31, (SnxU32)(22 + 2 * k), (SnxU32)(4 + 2 * k), 2));
     }
     w32(u, sge_a64_ldp_gen_general_offset(19, 31, 20, 2, 2));
+    if (folded(u)) frame_here(u, u->b.n);
     w32(u, sge_a64_ldp_gen_post_idx(29, 31, 30, 12, 2));
+    if (!windows(u) && !folded(u)) {
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    }
 }
 static void leave(Unit* u) {
     pins(u, 1);
@@ -288,12 +326,17 @@ static void check_return(Unit* u, SnxU64 next) {
     }
 }
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
-static void poll_then(Unit* u, SnxU64 resume) {
-    int run = new_label(u);
-    char sym[40];
+static void poll_jz(Unit* u, int label) {
     state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
-    fixup(u, run, FIX_CBZ);
+    if (u->far) { /* past CBZ's 1 MiB: CBNZ over a B */
+        w32(u, sge_a64_cbnz(SGA_X16, 2, 0));
+        jmp(u, label);
+        return;
+    }
+    fixup(u, label, FIX_CBZ);
     w32(u, sge_a64_cbz(SGA_X16, 0, 0));
+}
+static void poll_slow(Unit* u, SnxU64 resume) {
     pins(u, 1);
     set_pc(u, resume);
     mov_x0_state(u);
@@ -301,10 +344,52 @@ static void poll_then(Unit* u, SnxU64 resume) {
     mov_x0_state(u);
     movi(u, 1, resume);
     epilogue(u);
-    fname(sym, sizeof sym, "F_", u->f->start);
-    reloc(u, u->b.n, sym, A64_JUMP26, 0);
-    w32(u, sge_a64_b_uncond(0));
+    jmp(u, u->start_label); /* the entry of any target: past the check is the start's */
+}
+static void poll_then(Unit* u, SnxU64 resume) {
+    int run = new_label(u);
+    state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
+    fixup(u, run, FIX_CBZ); /* the slow path's few words: always in reach */
+    w32(u, sge_a64_cbz(SGA_X16, 0, 0));
+    poll_slow(u, resume);
     bind(u, run);
+}
+/* a switch's jump, X1 the target (SGX_FN_TARGET): if (!c->poll && X1 - lo <= span && !(X1 & 3)) goto table +
+   table[X1 - lo] (ADR, LDRSW, ADD, BR), else the dispatch block (CPU.pc holds the target). A function of more than ADR's
+   1 MiB (far) takes the dispatch block */
+static void jtab_jump(Unit* u, int k) {
+    const struct JTab* t = &u->jtabs[k];
+    if (u->far) {
+        jmp(u, u->d_label);
+        return;
+    }
+    state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
+    fixup(u, u->d_label, FIX_CBZ);
+    w32(u, sge_a64_cbnz(SGA_X16, 0, 0));
+    movi(u, SGA_X16, t->lo);
+    w32(u, sge_a64_sub_addsub_shift(SGA_X16, 1, 0, SGA_X16, 0, 1));         /* X16 = X1 - lo */
+    w32(u, sge_a64_subs_addsub_imm(SGA_ZR, SGA_X16, (t->n - 1) * 4, 0, 1)); /* CMP X16, #span (under 4 KiB) */
+    jcc(u, 8, u->d_label);                                                  /* B.HI */
+    w32(u, sge_a64_ands_log_imm(SGA_ZR, SGA_X16, 1, 0, 1, 1));              /* TST X16, #3 */
+    jcc(u, 1, u->d_label);                                                  /* B.NE */
+    fixup(u, t->label, FIX_ADR);
+    w32(u, sge_a64_adr(SGA_X17, 0, 0));
+    w32(u, sge_a64_ldrsw_reg(SGA_X16, SGA_X17, 0, 3, SGA_X16)); /* LDRSW X16, [X17, X16] */
+    w32(u, sge_a64_add_addsub_shift(SGA_X16, SGA_X17, 0, SGA_X16, 0, 1));
+    w32(u, sge_a64_br(SGA_X16));
+}
+/* each table: a word a slot, its label's distance from the table (FIX_TAB) */
+static void jtab_emit(Unit* u) {
+    int k;
+    for (k = 0; k < u->njtabs; ++k) {
+        const struct JTab* t = &u->jtabs[k];
+        unsigned s;
+        bind(u, t->label);
+        for (s = 0; s < t->n; ++s) {
+            fixup(u, u->jslots[t->first + s], FIX_TAB + t->label);
+            w32(u, 0);
+        }
+    }
 }
 static void mg_undef(Unit* u, SnxU64 address, SnxU32 word) {
     pins(u, 1);
@@ -336,18 +421,30 @@ static void mg_brk(Unit* u, SnxU64 address, unsigned imm16) {
     movi(u, 2, imm16);
     call_rt(u, (int)offsetof(RtAPI, brk));
 }
-static void mg_entry(Unit* u, size_t index, SnxU64 start) {
-    if (u->options->stale) {
-        int live = new_label(u);
-        stale_test(u, index);
-        jcc(u, 0, live); /* B.EQ */
-        state_ldst(u, 0, 8, 1, offsetof(CPU, pc));
-        leave(u);
-        bind(u, live);
-    }
+static int mg_direct(const Unit* u) { return !windows(u); }
+/* MOVZ/MOVK X16, start; CMP X1, X16; B.NE label */
+static void mg_check(Unit* u, SnxU64 start, int label) {
     movi(u, SGA_X16, start);
     w32(u, sge_a64_subs_addsub_shift(SGA_ZR, 1, 0, SGA_X16, 0, 1));
-    jcc(u, 1, u->mismatch_label);
+    jcc(u, 1, label);
+}
+static void mg_stale(Unit* u, size_t index, int given, SnxU64 start) {
+    int live;
+    if (!u->options->stale) return;
+    live = new_label(u);
+    stale_test(u, index);
+    jcc(u, 0, live); /* B.EQ */
+    if (given)
+        state_ldst(u, 0, 8, 1, offsetof(CPU, pc));
+    else
+        set_pc(u, start);
+    epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
+    w32(u, sge_a64_ret(30));
+    bind(u, live);
+}
+static void mg_entry(Unit* u, size_t index, SnxU64 start) {
+    mg_stale(u, index, 1, start);
+    mg_check(u, start, u->mismatch_label);
 }
 static void mg_dispatch(Unit* u, int lab0) {
     const SnxFunction* f = u->f;
@@ -388,6 +485,9 @@ static int put_offset(Unit* u, size_t at, long long d, int kind) {
     if (kind == FIX_B) {
         if (d < -(1ll << 25) || d >= (1ll << 25)) return 0;
         w = (w & ~0x3FFFFFFu) | ((SnxU32)d & 0x3FFFFFFu);
+    } else if (kind == FIX_ADR) {
+        if (d < -(1ll << 18) || d >= (1ll << 18)) return 0; /* d words: immhi, immlo 0 */
+        w = (w & ~(3u << 29 | 0x7FFFFu << 5)) | ((SnxU32)d & 0x7FFFFu) << 5;
     } else {
         if (d < -(1ll << 18) || d >= (1ll << 18)) return 0;
         w = (w & ~(0x7FFFFu << 5)) | ((SnxU32)d & 0x7FFFFu) << 5;
@@ -402,6 +502,16 @@ static void mg_pool_island(Unit* u) {
     sgx_pool_emit(&u->a);
     put_offset(u, at, (long long)(u->b.n - at) / 4, FIX_B);
 }
+/* STP X29, X30's pre-index or LDP's post-index at at: the saved registers' and size bytes of slots, in 8s */
+static void frame_pair(Unit* u, size_t at, unsigned size) {
+    SnxU32 w, imm7;
+    if (at + 4 > u->b.cap) return;
+    w = (SnxU32)u->b.p[at] | (SnxU32)u->b.p[at + 1] << 8 | (SnxU32)u->b.p[at + 2] << 16 | (SnxU32)u->b.p[at + 3] << 24;
+    imm7 = (w >> 22 & 1 ? (FRAME_SAVED + size) / 8 : 0u - (FRAME_SAVED + size) / 8) & 0x7Fu; /* LDP: L, up */
+    w = (w & ~(0x7Fu << 15)) | imm7 << 15;
+    u->b.p[at] = (unsigned char)w, u->b.p[at + 1] = (unsigned char)(w >> 8), u->b.p[at + 2] = (unsigned char)(w >> 16);
+    u->b.p[at + 3] = (unsigned char)(w >> 24);
+}
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
     unsigned size = sga_frame_size(&u->a), sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
@@ -410,10 +520,24 @@ static int mg_finish(Unit* u, size_t fix0) {
         u->again = 1; /* a page or more, read page by page first (the guard page): made again with it */
         return 0;
     }
-    for (i = 0; i < u->nframe; ++i) sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
+    if (folded(u) && size > FRAME_FOLDED) {
+        u->again = 1; /* past the pre-index's reach: made again with a SUB and ADD of SP */
+        return 0;
+    }
+    for (i = 0; i < u->nframe; ++i) {
+        if (folded(u))
+            frame_pair(u, u->frame_at[i], size);
+        else
+            sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
+    }
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
-        if (t < 0 || !put_offset(u, u->fixups[i].at, (t - (long long)u->fixups[i].at) / 4, u->fixups[i].kind)) return 0;
+        if (t < 0) return 0;
+        if (u->fixups[i].kind >= FIX_TAB) {
+            if (u->fixups[i].at + 4 <= u->b.cap)
+                snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - u->label_at[u->fixups[i].kind - FIX_TAB]));
+        } else if (!put_offset(u, u->fixups[i].at, (t - (long long)u->fixups[i].at) / 4, u->fixups[i].kind))
+            return 0;
     }
     return 1;
 }

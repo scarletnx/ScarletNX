@@ -22,11 +22,15 @@
 #include "3ds/gpu/vk/vk_render.h"
 #include "common/utilities/bits.h"
 #include "common/gpu/vk/notice.h"
+#include "common/gpu/vk/rects.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/vpad_sdl.h"
+#include "common/utilities/state_header.h"
 #include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -78,6 +82,7 @@ static struct {
     SnxNotice notice;
     SDL_WindowID notice_window;
     SnxVkNotice* notice_vk[2];
+    SnxVkRects* controls; /* the on-screen controls over the window with both screens, or the top's own */
     const char* frame_dir;
     unsigned dumps;
     double latest_at[2];   /* past the first dumps, when each screen's latest was last kept (host seconds) */
@@ -93,9 +98,12 @@ static struct {
     uint64_t
         console_frames; /* the console's frames: the top screen's, or the bottom's until the first top screen frame */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
-    uint64_t quit_by;      /* a second Esc before this closes the window (common/utilities/quit_key.h) */
+    int state_ask;         /* a save states' key (HOTKEY_SAVE_STATE...) plus 1, done between two dispatches; 0 none */
+    bool dump;             /* the thread dump's key (F5): the threads listed between two dispatches */
+    int pace;              /* the clock's pace as the keys last left it (common/utilities/vpad_sdl.h) */
+    char* game;            /* the game's folder with its separator, whose captures/ a screenshot goes in */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
-    unsigned up : 1, closed : 1, separate : 1, by_finger : 1;
+    unsigned up : 1, closed : 1, separate : 1, by_finger : 1, keys : 1;
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -574,39 +582,74 @@ static void notice(const char* text, SDL_WindowID window) {
     snx_notice_show(&g_present.notice, text, SDL_GetTicksNS());
     g_present.notice_window = window || !g_present.up ? window : SDL_GetWindowID(screen_window(0));
 }
-/* The window's own keys, as a Switch game's (backend/sdl3.c): F11, or Alt+Enter, switches the window it is pressed in
-   to fullscreen and back, F4 turns the FPS limit off and back on (board/clock.h), and Esc twice closes it, a first one
-   warning on the terminal and over the game; not with Ctrl or the system key, the desktop's, nor F4 or Esc with Alt */
-static void key_event(const SDL_Event* event) {
-    if (event->type != SDL_EVENT_KEY_DOWN || event->key.repeat || (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)))
-        return;
-    bool alt = event->key.mod & SDL_KMOD_ALT;
-    SDL_Window* window = SDL_GetWindowFromID(event->key.windowID);
-    if (event->key.key == SDLK_ESCAPE && !alt) {
-        if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS()))
-            g_present.closed = 1;
-        else {
-            char warning[64];
-            snx_quit_warning(warning, sizeof warning, "Esc");
-            fprintf(stderr, "%s\n", warning);
-            notice(warning, event->key.windowID);
-        }
-    } else if (window && ((event->key.key == SDLK_F11 && !alt) || (event->key.key == SDLK_RETURN && alt)))
-        fullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
-    else if (event->key.key == SDLK_F4 && !alt) {
-        char line[64];
-        snx_ctr_clock_toggle(line, sizeof line);
-        fprintf(stderr, "%s\n", line);
-    }
+static void say(const char* line) { fprintf(stderr, "%s\n", line); }
+/* a key's line over the window it was pressed in, of the two the screens may have */
+static void show(const char* line) { notice(line, snx_vpad_window_key_window()); }
+/* the runtime's keys of the window, as a Switch game's and every console's (common/utilities/vpad_sdl.h): the quit key
+   twice, fullscreen in the window pressed, Pause, F4's pace, which the clock follows (board/clock.h), F3, F7 to F9
+   between two dispatches; a key the 3DS has nothing for said so */
+static void key_action(int action) {
+    char path[1024];
+    if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT)
+        g_present.state_ask = action + 1;
+    else if (action == HOTKEY_THREAD_DUMP)
+        g_present.dump = true;
+    else if (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING) { /* both screens', for the run */
+        int* at = action == HOTKEY_ANTI_ALIASING ? &g_present.fx_config.aa : &g_present.fx_config.upscaler;
+        *at = action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_next(*at) : snx_fx_upscale_next(*at);
+        snx_vpad_window_effect(action,
+                               action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_label(*at) : snx_fx_upscale_label(*at));
+    } else if (action == HOTKEY_SCREENSHOT) {
+        snx_capture_path(path, sizeof path - 4, g_present.game ? g_present.game : "./");
+        strcat(path, ".ppm");
+        char line[1100];
+        bool saved = snx_ctr_present_shot(path); /* both screens, the top above the bottom, as --shot writes them */
+        snprintf(line, sizeof line, saved ? "screenshot: %s" : "the screenshot could not be written to %s", path);
+        say(line);
+        show(saved ? "Screenshot saved in captures" : "Screenshot not saved: the log says why");
+    } else
+        snx_vpad_window_none(action, "its window has none of it yet");
 }
 static void pump(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
+        int action = -1;
+        SnxVpadEvent took = g_present.keys ? snx_vpad_window_event(&event, &action) : SNX_VPAD_PASS;
+        if (took == SNX_VPAD_QUIT) g_present.closed = 1;
+        if (took == SNX_VPAD_ACTION) key_action(action);
+        if (took != SNX_VPAD_PASS) continue;
         pointer_event(&event);
-        key_event(&event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
+    int pace = snx_vpad_window_pace();
+    if (g_present.keys && pace != g_present.pace) snx_ctr_clock_set_pace(g_present.pace = pace); /* F4 */
+}
+bool snx_ctr_present_dump_asked(void) {
+    bool asked = g_present.dump;
+    g_present.dump = false;
+    return asked;
+}
+int snx_ctr_present_state_ask(void) {
+    int ask = g_present.state_ask - 1;
+    g_present.state_ask = 0;
+    return ask;
+}
+void snx_ctr_present_keys(SDL_Window* window, const char* ini) {
+    if (g_present.keys || !window) return;
+    snx_vpad_window_open(window, ini, say, show);
+    g_present.pace = snx_ctr_clock_pace();
+    snx_vpad_window_set_pace(g_present.pace);
+    g_present.keys = 1;
+}
+void snx_ctr_present_game(const char* folder, const char* ini) {
+    free(g_present.game);
+    g_present.game = folder ? snx_format("%s/", folder) : NULL;
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!g_present.up || !v || !v->host.window || g_present.keys) return;
+    if (!(g_present.controls = snx_vk_rects_create(v->phys, v->device, SNX_CTR_VK_SLOTS)))
+        fprintf(stderr, "3ds gpu: out of memory for the on-screen controls: they are not drawn\n");
+    snx_ctr_present_keys(v->host.window, ini);
 }
 const char* snx_ctr_present_notice(void) {
     return snx_notice_shown(&g_present.notice, SDL_GetTicksNS()) ? g_present.notice.text : "";
@@ -662,6 +705,9 @@ static void show_screens(VkCommandBuffer cb, unsigned window, uint32_t index, un
         (void)snx_vk_notice_draw(g_present.notice_vk[window], cb, slot, sc->format.format, sc->extent.width,
                                  sc->extent.height, snx_display_percent(SDL_GetWindowDisplayScale(shown)),
                                  &g_present.notice, SDL_GetTicksNS(), notice_log);
+    if (!window && g_present.keys) /* the window the keys and the controls belong to */
+        (void)snx_vk_rects_draw(g_present.controls, cb, slot, sc->format.format, sc->extent.width, sc->extent.height,
+                                snx_vpad_window_rects((int)sc->extent.width, (int)sc->extent.height), notice_log);
     snx_vk_swapchain_end(cb, sc, index);
 }
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
@@ -893,11 +939,14 @@ static bool read_frame(unsigned screen, VkBuffer target, unsigned char* map, uns
     *height = f->height;
     return true;
 }
-bool snx_ctr_present_shot(const char* path) {
-    if (!g_present.up || !path || !path[0]) return false;
+/* both screens' last frames, the top above the bottom on black, read back from the GPU into one RGBA picture, owned,
+   its size into w and h; NULL where none was decoded or memory runs out */
+static unsigned char* shot_canvas(unsigned* w, unsigned* h) {
+    *w = *h = 0;
+    if (!g_present.up) return NULL;
     write_pending(true);
     SnxCtrVk* v = snx_ctr_vk();
-    unsigned char* screens[2] = {NULL, NULL};
+    unsigned char *screens[2] = {NULL, NULL}, *canvas = NULL;
     unsigned width[2] = {0, 0}, height[2] = {0, 0};
     VkDeviceSize bytes = 0;
     for (unsigned screen = 0; screen < 2; ++screen) {
@@ -917,37 +966,50 @@ bool snx_ctr_present_shot(const char* path) {
     shot_buffer_free(v, &shot);
     unsigned layout_w = width[0] > width[1] ? width[0] : width[1];
     unsigned layout_h = height[0] + height[1];
-    if (ok && layout_w && layout_h) {
-        unsigned char* canvas = calloc((size_t)layout_w * layout_h, 4);
-        ok = canvas != NULL;
-        if (ok) {
-            unsigned y = 0;
-            for (unsigned screen = 0; screen < 2; ++screen) {
-                if (!screens[screen]) continue;
-                unsigned x = (layout_w - width[screen]) / 2;
-                for (unsigned row = 0; row < height[screen]; ++row)
-                    memcpy(canvas + ((size_t)(y + row) * layout_w + x) * 4,
-                           screens[screen] + (size_t)row * width[screen] * 4, (size_t)width[screen] * 4);
-                y += height[screen];
-            }
-            char staged[1040], native[1024];
-            if (snx_path_format(native, sizeof native, "%s", path) ||
-                snx_path_format(staged, sizeof staged, "%s.partial", native))
-                ok = false;
-            else {
-                FILE* file = fopen(staged, "wb");
-                ok = file && !snx_ppm_write(file, layout_w, layout_h, canvas, 4, (ptrdiff_t)layout_w * 4, SNX_PPM_RGBA);
-                if (file && fclose(file)) ok = false;
-                if (ok)
-                    ok = !plat_replace_file(staged, native);
-                else
-                    remove(staged);
-            }
-            free(canvas);
+    if (ok && layout_w && layout_h && (canvas = calloc((size_t)layout_w * layout_h, 4))) {
+        unsigned y = 0;
+        for (unsigned screen = 0; screen < 2; ++screen) {
+            if (!screens[screen]) continue;
+            unsigned x = (layout_w - width[screen]) / 2;
+            for (unsigned row = 0; row < height[screen]; ++row)
+                memcpy(canvas + ((size_t)(y + row) * layout_w + x) * 4,
+                       screens[screen] + (size_t)row * width[screen] * 4, (size_t)width[screen] * 4);
+            y += height[screen];
         }
+        *w = layout_w, *h = layout_h;
     }
     for (unsigned screen = 0; screen < 2; ++screen) free(screens[screen]);
-    return ok && layout_w && layout_h;
+    return canvas;
+}
+bool snx_ctr_present_shot(const char* path) {
+    if (!g_present.up || !path || !path[0]) return false;
+    unsigned layout_w, layout_h;
+    unsigned char* canvas = shot_canvas(&layout_w, &layout_h);
+    bool ok = canvas != NULL;
+    if (ok) {
+        char staged[1040], native[1024];
+        if (snx_path_format(native, sizeof native, "%s", path) ||
+            snx_path_format(staged, sizeof staged, "%s.partial", native))
+            ok = false;
+        else {
+            FILE* file = fopen(staged, "wb");
+            ok = file && !snx_ppm_write(file, layout_w, layout_h, canvas, 4, (ptrdiff_t)layout_w * 4, SNX_PPM_RGBA);
+            if (file && fclose(file)) ok = false;
+            if (ok)
+                ok = !plat_replace_file(staged, native);
+            else
+                remove(staged);
+        }
+    }
+    free(canvas);
+    return ok;
+}
+bool snx_ctr_present_thumb(uint8_t* thumb) {
+    unsigned w, h;
+    unsigned char* canvas = shot_canvas(&w, &h);
+    if (canvas) snx_state_thumb(canvas, (int)w, (int)h, (size_t)w * 4, thumb);
+    free(canvas);
+    return canvas != NULL;
 }
 void snx_ctr_present_report(void) {
     if (!g_present.up) return;
@@ -967,6 +1029,9 @@ void snx_ctr_present_report(void) {
            copies, (unsigned long long)t.traps);
 }
 void snx_ctr_present_free(void) {
+    if (g_present.keys) snx_vpad_window_close();
+    free(g_present.game);
+    g_present.game = NULL, g_present.keys = 0;
     if (!g_present.up) {
         memset(&g_present, 0, sizeof g_present);
         return; /* a headless run keeps its signal handlers until the process ends */
@@ -984,6 +1049,7 @@ void snx_ctr_present_free(void) {
     frame_free(&g_present.source_dummy);
     for (unsigned i = 0; i < 2; ++i) snx_fx_destroy(g_present.fx[i]);
     for (unsigned screen = 0; screen < 2; ++screen) snx_vk_notice_destroy(g_present.notice_vk[screen]);
+    snx_vk_rects_destroy(g_present.controls);
     for (unsigned screen = 0; screen < 2; ++screen) {
         for (unsigned i = 0; i < SNX_CTR_VK_SLOTS; ++i)
             if (g_present.acquire[screen][i]) vkDestroySemaphore(v->device, g_present.acquire[screen][i], NULL);

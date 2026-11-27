@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/platform/stats.h"
-#include "nx/runtime/platform/ui_colors.h"
+#include "common/utilities/stats.h"
+#include "common/utilities/ui_colors.h"
 #include "common/utilities/slide.h"
 #include <stdio.h>
 #include <string.h>

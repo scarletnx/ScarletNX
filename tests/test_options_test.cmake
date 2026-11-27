@@ -31,10 +31,23 @@ function(configure name says)
 endfunction()
 configure(option_on "SNX_TEST_VULKAN=ON needs the tests, which this configure leaves out (BUILD_TESTING=OFF)"
           -DBUILD_TESTING=OFF -DSNX_TEST_VULKAN:BOOL=ON)
-configure(path_given "SNX_TEST_EDENPROBE=/some/probe.nro needs the tests"
+configure(path_given "SNX_TEST_AMBERLITH=/some/probe.nro needs the tests"
+          -DBUILD_TESTING=OFF -DSNX_TEST_AMBERLITH=/some/probe.nro)
+configure(old_name_given "SNX_TEST_AMBERLITH=/some/probe.nro needs the tests"
           -DBUILD_TESTING=OFF -DSNX_TEST_EDENPROBE=/some/probe.nro)
-configure(tests_on "" -DBUILD_TESTING=ON -DSNX_TEST_VULKAN:BOOL=ON -DSNX_TEST_EDENPROBE=/some/probe.nro)
-configure(options_off "" -DBUILD_TESTING=OFF -DSNX_TEST_VULKAN:BOOL=OFF -DSNX_TEST_EDENPROBE=)
+configure(tests_on "" -DBUILD_TESTING=ON -DSNX_TEST_VULKAN:BOOL=ON -DSNX_TEST_AMBERLITH=/some/probe.nro)
+configure(options_off "" -DBUILD_TESTING=OFF -DSNX_TEST_VULKAN:BOOL=OFF -DSNX_TEST_AMBERLITH=)
+# the old name, SNX_TEST_EDENPROBE, read as SNX_TEST_AMBERLITH and said
+execute_process(COMMAND "${CMAKE_COMMAND}" -S "${WORK}/src" -B "${WORK}/old_name" -DBUILD_TESTING=ON
+                        -DSNX_TEST_EDENPROBE=/some/probe.nro
+                RESULT_VARIABLE failed OUTPUT_VARIABLE out ERROR_VARIABLE out)
+string(REGEX REPLACE "[ \n]+" " " out "${out}")
+string(FIND "${out}" "SNX_TEST_EDENPROBE is the old name of SNX_TEST_AMBERLITH: SNX_TEST_AMBERLITH=/some/probe.nro is taken"
+       said)
+file(STRINGS "${WORK}/old_name/CMakeCache.txt" kept REGEX "^SNX_TEST_AMBERLITH:")
+if(failed OR said EQUAL -1 OR NOT kept STREQUAL "SNX_TEST_AMBERLITH:STRING=/some/probe.nro")
+    message(FATAL_ERROR "old_name: the configure took SNX_TEST_EDENPROBE as \"${kept}\" (exit ${failed}): ${out}")
+endif()
 configure(program_found "" -DBUILD_TESTING=OFF -DSNX_TEST_PKG_CONFIG:FILEPATH=/usr/bin/pkg-config)
 
 file(READ "${SRC}/CMakePresets.json" json)

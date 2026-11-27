@@ -184,6 +184,12 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, SWITCH64, mem + SWITCH64, sizeof(switch_words));
         snprintf(what, sizeof(what), "switch, back end %d: snx_recompile: %s", backend, snx_recompiler_error(r));
+        if (!backend) {
+            /* LLVM alone, which there is no more of */
+            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), what);
+            if (m) snx_recompiled_free(m);
+            continue;
+        }
         check(m != NULL, what);
         if (!m) continue;
 #if defined(__x86_64__) && !defined(_WIN32)
@@ -266,6 +272,11 @@ static void switch_past64(struct snx_recompiler* r, uint8_t* mem) {
         char what[160];
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, PAST64, mem + PAST64, sizeof(past_words));
+        if (!backend) {
+            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), "past the cases: LLVM alone is refused");
+            if (m) snx_recompiled_free(m);
+            continue;
+        }
         check(m != NULL, "past the cases: snx_recompile");
         if (!m) continue;
         snx_runtime_defaults(&rt);
@@ -310,8 +321,14 @@ static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, c
     rt.brk = brk64;
     check(rt.ticks && rt.ticks() != 0 && rt.poll && rt.sev && rt.wfe && rt.fpcr_changed && rt.note_hint,
           "snx_runtime_defaults fills the other hooks");
+    /* the IR was LLVM's: a folder for it is refused, naming it, and the code is made all the same */
+    if (keep_ir) {
+        snprintf(what, sizeof(what), "set_keep_ir is refused: %s", snx_recompiler_error(r));
+        check(snx_recompiler_set_keep_ir(r, keep_ir) == -1 && strstr(snx_recompiler_error(r), keep_ir) &&
+                  strstr(snx_recompiler_error(r), "no IR is kept"),
+              what);
+    }
     /* the program as a buffer at its guest address */
-    check(!snx_recompiler_set_keep_ir(r, keep_ir), "set_keep_ir");
     m = snx_recompile(r, CODE64, mem + CODE64, A64_SIZE);
     snprintf(what, sizeof(what), "%s: snx_recompile: %s", backend, snx_recompiler_error(r));
     check(m != NULL, what);
@@ -322,14 +339,9 @@ static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, c
              (unsigned long)snx_recompiled_functions(m));
     check(snx_recompiled_functions(m) == 2, what);
     check(snx_recompiled_fallbacks(m) == 0, "every instruction has an emitter");
-    if (keep_ir) {
-        char* path = snx_path_join(keep_ir, backend[0] == 'l' ? "code_000.ll" : "code_000.c");
-        check(snx_is_file(path), "keep_ir saved the first code unit");
-        free(path);
-        path = snx_path_join(keep_ir, backend[0] == 'l' ? "module.ll" : "module.c");
-        check(snx_is_file(path), "keep_ir saved the descriptor");
-        free(path);
-    }
+    snprintf(what, sizeof(what), "%s: every function the native back end's (%lu of %lu)", backend,
+             (unsigned long)snx_recompiled_x64_functions(m), (unsigned long)snx_recompiled_functions(m));
+    check(snx_recompiled_x64_functions(m) == snx_recompiled_functions(m), what);
     /* a CPU without the hooks is refused */
     memset(&cpu, 0, sizeof(cpu));
     cpu.mem = mem;
@@ -628,45 +640,41 @@ static void progress64(struct snx_recompiler* r, uint8_t* mem) {
     snx_recompiled_free(m);
 }
 
-/* The order of the code units: the heaviest first, by instructions plus four per leader. entry calls wide, 4501
-   instructions in one block, then branchy, 2001 instructions in about 2000 blocks (cbz x1,.+8; add x0,x0,#1, a
-   thousand times). With 4 jobs the units are {entry, wide} and {branchy}: branchy weighs about 10000 to wide's 4500,
-   so it is unit 0 (code_000), though it has fewer instructions and comes later in the code */
+/* The code units, by instructions plus four per leader. entry calls wide, 4501 instructions in one block, then branchy,
+   2001 instructions in about 2000 blocks (cbz x1,.+8; add x0,x0,#1, a thousand times). With 4 jobs the units are
+   {entry, wide} and {branchy}, which weighs about 10000 to wide's 4500 though it has fewer instructions: the progress
+   callback sees each unit's functions and weight as it finishes (which of the two is taken first, the heavier,
+   recompiler_library_schedule checks) */
 #define SCHEDULE64   0x100000u
 #define WIDE_WORDS   4501u
 #define BRANCH_PAIRS 1000u
-/* whether the unit's saved IR defines the guest function at address */
-static int unit_defines(const char* folder, const char* unit, uint64_t address) {
-    char *path = snx_path_join(folder, unit), symbol[40];
-    size_t size = 0;
-    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
-    int found = 0;
-    snprintf(symbol, sizeof symbol, "@F_%llX(", (unsigned long long)address);
-    for (size_t at = 0; text && at < size;) {
-        char* line = text + at;
-        char* end = memchr(line, '\n', size - at);
-        size_t length = end ? (size_t)(end - line) : size - at;
-        if (length > 7 && !strncmp(line, "define ", 7)) {
-            char* hit = strstr(line, symbol);
-            found |= hit && hit < line + length;
-        }
-        at += length + 1;
+/* each unit as it finishes: its functions and its weight, from the progress callback's running totals */
+typedef struct {
+    unsigned calls;
+    unsigned long long weight, functions, unit_weight[4], unit_functions[4];
+} Schedule;
+static void schedule_progress(void* user, unsigned long long weight_done, unsigned long long weight_total,
+                              unsigned long long functions_done, unsigned long long functions_total) {
+    Schedule* s = (Schedule*)user;
+    (void)weight_total, (void)functions_total;
+    if (!functions_done) return; /* the totals, first */
+    if (s->calls < 4) {
+        s->unit_weight[s->calls] = weight_done - s->weight;
+        s->unit_functions[s->calls] = functions_done - s->functions;
     }
-    free(text);
-    free(path);
-    return found;
+    ++s->calls;
+    s->weight = weight_done;
+    s->functions = functions_done;
 }
 static void schedule64(struct snx_recompiler* r) {
     const uint64_t wide = SCHEDULE64 + 3 * 4, branchy = wide + WIDE_WORDS * 4;
     const size_t words = 3 + WIDE_WORDS + 2 * BRANCH_PAIRS + 1;
     uint32_t* code = (uint32_t*)calloc(words, sizeof *code);
     uint8_t* bytes = (uint8_t*)calloc(words, 4);
-    char* folder = snx_temp_dir(NULL);
-    check(code && bytes && folder, "schedule: memory and a folder");
-    if (!code || !bytes || !folder) {
+    check(code && bytes, "schedule: memory");
+    if (!code || !bytes) {
         free(code);
         free(bytes);
-        free(folder);
         return;
     }
     size_t n = 0;
@@ -686,19 +694,23 @@ static void schedule64(struct snx_recompiler* r) {
         bytes[4 * i + 2] = (uint8_t)(code[i] >> 16);
         bytes[4 * i + 3] = (uint8_t)(code[i] >> 24);
     }
+    Schedule s = {0};
     snx_recompiler_set_jobs(r, 4);
-    check(!snx_recompiler_set_keep_ir(r, folder), "schedule: set_keep_ir");
+    snx_recompiler_set_progress(r, schedule_progress, &s);
     struct snx_recompiled* m = snx_recompile(r, SCHEDULE64, bytes, n * 4);
+    snx_recompiler_set_progress(r, NULL, NULL);
     check(m != NULL && snx_recompiled_functions(m) == 3, "schedule: entry, wide and branchy found");
-    check(unit_defines(folder, "code_000.ll", branchy) && !unit_defines(folder, "code_000.ll", wide),
-          "schedule: the branchy function's unit, the heavier, is unit 0");
-    check(unit_defines(folder, "code_001.ll", wide) && unit_defines(folder, "code_001.ll", SCHEDULE64),
-          "schedule: entry and the wide function are unit 1");
+    const unsigned alone = s.unit_functions[0] == 1 ? 0 : 1; /* branchy's unit, whichever finished first */
+    char what[192];
+    snprintf(what, sizeof what,
+             "schedule: 2 units, branchy alone and the heavier (%u: %llu and %llu functions, weights"
+             " %llu and %llu)",
+             s.calls, s.unit_functions[0], s.unit_functions[1], s.unit_weight[0], s.unit_weight[1]);
+    check(s.calls == 2 && s.unit_functions[alone] == 1 && s.unit_functions[!alone] == 2 &&
+              s.unit_weight[alone] > s.unit_weight[!alone],
+          what);
     snx_recompiled_free(m);
-    snx_recompiler_set_keep_ir(r, NULL);
     snx_recompiler_set_jobs(r, 2);
-    snx_remove_tree(folder);
-    free(folder);
     free(bytes);
     free(code);
 }
@@ -771,7 +783,7 @@ static void test_update_code_live(void) {
     const uint32_t program[2] = {0x91000400, 0xd65f03c0}; /* add x0,x0,#1; ret */
     const uint32_t other = 0xd503201f;                      /* nop */
     uint8_t guest[4];
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "update_code live: a recompiler");
     if (!r) return;
     place(mem, CODE64, program, 2);
@@ -793,7 +805,7 @@ static void test_update_code_live(void) {
 static void test_repatch(void) {
     enum { AT = 0x4000, PATCHED = AT + 0x40 }; /* the entry's line and the patched word's line differ */
     static uint8_t mem[MEMORY];
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "repatch: a recompiler");
     if (!r) return;
     uint32_t words[18];
@@ -971,6 +983,14 @@ static void update_elsewhere64(struct snx_recompiler* r, uint8_t* mem) {
 }
 #endif
 
+/* the lines the library says while the old flag is tried */
+static unsigned old_flag_lines;
+static char old_flag_line_text[512];
+static void old_flag_line(const char* line) {
+    ++old_flag_lines;
+    snprintf(old_flag_line_text, sizeof old_flag_line_text, "%s", line);
+}
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -983,13 +1003,27 @@ int main(int argc, char** argv) {
     test_repatch();
     check(snx_recompiler_abi() == SNX_ABI, "the library's ABI is this cpu.h's");
     check(!snx_recompiler_has(0) && !snx_recompiler_new(0), "flags must name a backend");
-    check(!snx_recompiler_has(2) && !snx_recompiler_new(2), "flags must name LLVM");
-    check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM), "LLVM is always built in");
+    check(!snx_recompiler_has(4) && !snx_recompiler_new(4), "flags must name the native back end");
+    {
+        /* earlier versions' name of the flag, LLVM's: the native back end's recompiler, said once */
+        old_flag_lines = 0;
+        snx_error_sink(old_flag_line);
+        struct snx_recompiler* a = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        struct snx_recompiler* b = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        snx_error_sink(NULL);
+        check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM) && a && b, "the old flag makes a recompiler");
+        check(old_flag_lines == 1 && strstr(old_flag_line_text, "SNX_RECOMPILER_FLAG_LLVM (1)") &&
+                  strstr(old_flag_line_text, "SNX_RECOMPILER_FLAG_NATIVE (2)"),
+              "the old flag said once, with both names and values");
+        snx_recompiler_free(a);
+        snx_recompiler_free(b);
+    }
+    check(snx_recompiler_has(SNX_RECOMPILER_FLAG_NATIVE), "this host's native back end makes the code");
     keep_ir = snx_temp_dir(NULL);
     check(keep_ir != NULL, "a folder for the IR");
     cache = snx_temp_dir(NULL);
     check(cache != NULL, "a folder for the caches");
-    r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "snx_recompiler_new(LLVM)");
     if (r) {
         snx_recompiler_set_verbose(r, verbose);
@@ -1002,7 +1036,7 @@ int main(int argc, char** argv) {
                   snx_recompiler_set_a64_target(r, SNX_RECOMPILER_A64_SWITCH) == 0,
               "the Switch and max A64 targets");
         snx_recompiler_set_jobs(r, 2);
-        run64(r, "llvm", mem, keep_ir);
+        run64(r, "native", mem, keep_ir);
         switch64(r, mem);
         switch_past64(r, mem);
         progress64(r, mem);

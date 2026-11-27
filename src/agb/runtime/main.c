@@ -16,6 +16,11 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
+#include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
+#include "common/utilities/state_header.h"
+#include "agb/runtime/state.h"
+#include "common/utilities/hotkeys.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +54,10 @@ static void usage(FILE* out) {
           "  --registers            Print the CPU's registers when the run ends\n"
           "  --gba-color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
           "                         (default), raw as the game writes them\n"
+          "  --controls=0|1|2       The on-screen controls: 1 shown, 0 hidden, 2 (Auto, the default) shown on a touch\n"
+          "                         screen while no gamepad is connected. --controls-scale=N, --controls-snap=0|1,\n"
+          "                         --controls-dpad-slide=0|1, --controls-haptics=0|1 and --controls-<ID>-shown=0|1\n"
+          "                         (ID one of a, b, l, r, plus for Start, minus for Select, dpad) as a Switch game's\n"
           "  --aot-threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot-threads-most=N the same\n"
@@ -57,12 +66,13 @@ static void usage(FILE* out) {
           "once.\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
-          "nothing, which the recompile says. -O is the level of the blocks LLVM compiles (default 2, the setting\n"
-          "opt's): those this computer's native back end does not make, and every one with --keep-ir. --jit-cache\n"
-          "FILE is the map of the blocks runs reached that the recompile starts from, another game folder's\n"
-          "<name>_code.map (default: the game's own), --jit-only plays with no module, every block compiled as the\n"
-          "run reaches it, and --keep-ir has LLVM compile them all and keeps their IR in <name>_build of the game's\n"
-          "folder.\n"
+          "nothing, which the recompile says. --jit-cache FILE is the map of the blocks runs reached that the\n"
+          "recompile starts from, another game folder's <name>_code.map (default: the game's own), and --jit-only\n"
+          "plays with no module, every block compiled as the run reaches it. -O and --keep-ir, LLVM's, went with it:\n"
+          "said, and nothing done.\n"
+          "\n"
+          "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
+          "sized from the bar; Done, Esc, F2 or Back ends it, and <name>.ini keeps it. Back twice quits.\n"
           "\n"
           "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
           "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
@@ -89,6 +99,36 @@ static int write_shot(const char* path, const uint32_t* framebuffer) {
 static int multiboot_rom(const char* path) { return snx_ends_with_nocase(path, ".mb"); }
 
 /* the ROM's file name without its folder and its last extension: the game's folder's name */
+/* the GBA's pair as the window's save states call it */
+typedef struct {
+    AgbBoard* board;
+    AgbCpu* cpu;
+} StateGame;
+static int state_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_agb_state_save(g->board, g->cpu, path, thumb, why, whysize);
+}
+static int state_load(void* game, const char* path, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_agb_state_load(g->board, g->cpu, path, why, whysize);
+}
+/* between two frames: a save states' key asked of host (none without a window), and the unattended saves and loads
+   due at ms of the run's clock, the frame shown their picture */
+static void states_step(AgbHost* host, AgbBoard* board, AgbCpu* cpu, const char* folder, const char* name, double ms) {
+    int ask = host ? agb_host_state_ask(host) : -1;
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
+    uint8_t* thumb = malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4);
+    char* prefix = folder ? snx_format("%s/", folder) : NULL;
+    StateGame game = {board, cpu};
+    SnxVpadStates states = {prefix ? prefix : "./", name, &game, state_save, state_load};
+    if (thumb)
+        snx_state_thumb((const uint8_t*)board->ppu.framebuffer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                        AGB_SCREEN_WIDTH * 4, thumb);
+    if (ask >= 0) snx_vpad_window_states(ask, &states, thumb);
+    snx_vpad_window_states_due((uint64_t)ms, &states, thumb);
+    free(prefix);
+    free(thumb);
+}
 static char* game_name(const char* rom) {
     char* name = snx_strdup(snx_path_leaf(rom));
     char* dot = strrchr(name, '.');
@@ -173,10 +213,11 @@ int snx_agb_main(int argc, char** argv) {
     const char* path = NULL;
     long press_len = 300;
     const char *threads = NULL, *most = NULL; /* the values of aot_threads and aot_threads_most, as given */
-    char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
+    vpad_console(&snx_vpad_gba);
+    snx_vpad_sdl_settings();
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -189,8 +230,15 @@ int snx_agb_main(int argc, char** argv) {
             snx_cli_free(&cli);
             return common < 0 ? 2 : 0;
         }
-        if (common == SNX_CLI_OPT) opt = cli.value[SNX_CLI_OPT][0];
         if (common) continue;
+        /* the on-screen controls' settings, read with the game's own once its folder is known (vpad_settings) */
+        int controls = vpad_arg(argv[i], error, sizeof error);
+        if (controls < 0) {
+            fprintf(stderr, "scarletnx-agb: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        if (controls) continue;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
         const char* value = settings_arg(argv[i], key, sizeof key);
@@ -373,19 +421,11 @@ int snx_agb_main(int argc, char** argv) {
             if (jobs >= 0) printf("--jobs %d: a ROM's code is one module, compiled on 1 thread\n", jobs);
             if (asked.chunk) printf("--chunk %d: a ROM's code is one module, compiled as one unit\n", asked.chunk);
             error[0] = 0;
-            recomp.opt = opt;
-            if (asked.keep_ir &&
-                (!(recomp.keep_ir = snx_format("%s/%s_build", folder, name)) || snx_mkdirs(recomp.keep_ir))) {
-                char why[256];
-                fprintf(stderr, "scarletnx-agb: cannot make the folder of the IR --keep-ir keeps, %s: %s\n",
-                        recomp.keep_ir ? recomp.keep_ir : "(out of memory)", snx_os_error(why, sizeof why));
-                goto done;
-            }
             if (agb_recomp_build(&recomp, &board, error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
                 goto done;
             }
-            snx_arm_aot_report(&recomp.made, "scarletnx-agb", asked.quiet);
+            snx_arm_aot_report(&recomp.made, asked.quiet ? NULL : stdout);
             if (!asked.quiet) printf("Built %zu blocks\n", recomp.count);
         }
         /* the game's copy of the runtime and its .ini, so the launcher's Games plays it as any game made */
@@ -420,9 +460,12 @@ int snx_agb_main(int argc, char** argv) {
         }
         audio = (int16_t*)malloc(2 * sizeof(int16_t) * AGB_APU_RATE);
         if (!audio) goto done;
+        /* the window's settings, and a run's with none (state_save, state_load) */
+        vpad_set_say(agb_host_say);
+        vpad_settings(folder, name, argc, argv);
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
-            host = agb_host_open(title, fullscreen, error, sizeof error);
+            host = agb_host_open(title, ini, fullscreen, error, sizeof error);
             free(title);
             if (!host) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
@@ -446,6 +489,11 @@ int snx_agb_main(int argc, char** argv) {
             uint32_t written = 0;
             uint16_t keys = 0;
             if (host && !agb_host_poll(host, &keys)) break;
+            if (host && agb_host_held(host, board.ppu.framebuffer)) { /* paused: the board stopped */
+                states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
+                --frame;
+                continue;
+            }
             keys |= (uint16_t)snx_script_held(presses, press_count, (double)frame * FRAME_MS, (uint32_t)press_len);
             agb_board_keys(&board, keys);
             /* a cartridge's clock keeps the host's local time, as the console's keeps its own on the cartridge's battery */
@@ -464,6 +512,7 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
+            states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&
                 agb_save_size(&board)) {

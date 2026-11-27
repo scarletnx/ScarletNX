@@ -4,9 +4,9 @@
    probabilities the frame decodes with, as a table: the context it starts from, adapted by the frames before it,
    with its compressed header's updates applied. Only a decoder knows that context, so FFmpeg's VP9 decoder, as
    released (no SNXV context), decodes the vector one frame at a time and its state after each frame is read into
-   the job, field by field as nvtegra (the homebrew FFmpeg backend for the console, nvtegra_vp9.c) and edenprobe's
+   the job, field by field as nvtegra (the homebrew FFmpeg backend for the console, nvtegra_vp9.c) and Amberlith's
    tools/vp9-jobs.py fill them. Each surface is the lowest one no reference slot holds and the frame before did not
-   take, as edenprobe hands them out. This reads FFmpeg's private VP9Context, so it builds against the source and
+   take, as Amberlith hands them out. This reads FFmpeg's private VP9Context, so it builds against the source and
    configuration FFmpeg was built from (cmake/ffmpeg.cmake) */
 #include "nvdec_vp9_jobs.h"
 #include <stdarg.h>
@@ -207,7 +207,7 @@ static void snx_vp9j_put16(uint8_t* s, uint32_t at, int v) {
 /* nvdec_vp9_pic_s, as nvtegra_vp9_prepare_frame_setup fills it from FFmpeg's state. The pitches come once the
    vector's largest frame is known. ref_w and ref_h: the size of the picture each reference slot named holds, 0 for
    an empty one. 0x74 holds the chroma AC delta and 0x75 the DC one, as NVIDIA's header names the two bytes (nvtegra
-   writes them the other way round; edenprobe's vp9_two_frames runs both) */
+   writes them the other way round; Amberlith's vp9_two_frames runs both) */
 static void snx_vp9j_setup(uint8_t* s, const VP9Context* x, int prev_shown, uint32_t body_len, const uint32_t* ref_w,
                            const uint32_t* ref_h) {
     const VP9BitstreamHeader* h = &x->s.h;

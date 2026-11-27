@@ -54,7 +54,9 @@ recompiles on the phone, then the game opens.
   from a game folder on the shared storage, which maps nothing executable, the runtime loads a copy in the app's
   cache. The back button opens the
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
-  settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
+  settings, the touch screen's, and *Exit*; back again returns to the game. A GBA, DS or Vita game has no menu: the
+  back button edits the layout of its on-screen controls, and a second one within 3 seconds, which a line over the game
+  says, closes it. Leaving a game for the home screen keeps it:
   its window is made anew when it comes back.
 - **A game by its title ID**: the intent `org.scarletnx.action.PLAY` (`PlayActivity`), its extra `title_id` the
   game's title ID, plays the recompiled game whose folder that ID names (`recompiled/<title ID>/`) as *Play* on its
@@ -110,12 +112,13 @@ recompiles on the phone, then the game opens.
   10 and later) and of Battery Saver.
 
 The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
-the code of the device it runs on, with arm64's or x86-64's native back end, and LLVM what that refuses. It installs
+the code of the device it runs on, with arm64's or x86-64's native back end. It installs
 from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without it (Android 5.0 and 6.0 have no Vulkan at all)
 the menu still prepares games, and a game says what it lacks. The fingers reach a game's touch screen (*Touch screen*,
 in the game's menu or the Settings, turns them off or adds a mouse). The buttons and sticks are on the screen, over
 the game ([Usage](../user/usage.md#on-screen-controls)), and a gamepad works beside them; the menu's *On-screen
-controls* item hides them.
+controls* item hides them. A GBA, DS or Vita game has its console's, which its own Settings (*Settings* at the foot of
+Games) hide.
 
 ## Keys
 
@@ -131,23 +134,16 @@ the keys it installed, so it does not name these.
 
 ## Building
 
-LLVM's libraries for each ABI, once (about 10 minutes each on 12 cores):
+The APK, from the native build of each ABI given (one APK holds them all; Android installs the device's):
 
 ```sh
-scripts/android-llvm.sh arm64-v8a ~/android-llvm/arm64-v8a
-scripts/android-llvm.sh x86_64 ~/android-llvm/x86_64
-```
-
-Then the APK, from the native build of each ABI given (one APK holds them all; Android installs the device's):
-
-```sh
-scripts/android-apk.sh ~/android-build ~/android-llvm arm64-v8a x86_64
+scripts/android-apk.sh ~/android-build arm64-v8a x86_64
 adb install -r ~/android-build/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk
 ```
 
 They need the NDK (`ANDROID_NDK_ROOT`, else the newest under `$ANDROID_HOME/ndk`), the SDK (`ANDROID_HOME`),
 Gradle 9 (`GRADLE`, default `gradle`) and a JDK 17 or newer (`JAVA_HOME`). Extra CMake arguments go after `--`.
-`ANDROID_API` (default 21) is the oldest Android both scripts build for, the app's `minSdk`.
+`ANDROID_API` (default 21) is the oldest Android the script builds for, the app's `minSdk`.
 `android-apk.sh` installs each build into `<out>/stage` (the libraries, SDL's Java classes and the icon), which
 `dist/android/build.gradle` packs with the two activities; Gradle's own output goes there too. The CI does the same
 on every push (`.github/workflows/build.yml`): an APK per ABI, and one holding both.

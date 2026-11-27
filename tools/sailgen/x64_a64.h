@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's x86-64 back end, A64's part of its own (after mach_a64.h, which keeps the guest's registers, its memory
-   and its branches): the floating point (the SSE instruction behind the LLVM back end's guards, the exact helper on
+   and its branches): the floating point (the SSE instruction behind guards, the exact helper on
    a cold path), the exclusives' stores, the LSE atomics and CRC32 inline with their inputs in fixed registers, the
    barriers as x86's ordering asks, and the ABI's bytes. The state's address is in RBX.
 
@@ -11,12 +11,12 @@
 
 /* ---- the hot paths ----
    Each operation is the SSE instruction's, and the exact helper's (snx_x64_fp_*) on a cold path where the result
-   may not be the console's: the guards are the LLVM back end's (llvm.h's sg_fp_fast_*). FPCR rounds to nearest
+   may not be the console's. The guards: FPCR rounds to nearest
    (DN matters to NaNs only, which go cold), under FZ no operand is a denormal (sgx_fp_flushed: many games run with FZ
    set, and a guard of FZ clear sent all of their arithmetic to the helpers), FPSR's IXC is set already where the
    operation may be inexact (the inline code doesn't raise it), and the result is a normal number above the smallest
    (no underflow, overflow or NaN: no flag but IXC, and nothing FZ flushes) or a zero that is exact. The host's MXCSR
-   is its default, round to nearest without FTZ or DAZ, as the runtime keeps it */
+   is its default, round to nearest without FTZ or DAZ, as such a function's entry makes it (SNX_X64_MXCSR_ENTRY) */
 
 #define SGX_FPCR_RMODE (3u << 22)
 #define SGX_FPCR_FZ (1u << 24)
@@ -79,7 +79,7 @@ static inline int sgx_fp_bound(SgCtx* g, SgD fpcr, unsigned w) {
     return g->fp_bound[w == 64] = b.v;
 }
 /* and of the test for a denormal operand (w 32 or 64) that FPCR.FZ flushes, raising IDC (SGX_T_DENORMAL): the helpers'
-   case (llvm.h's sg_fp_unflushed). The doubled smallest normal less 2 where FZ is set, 0 where it is clear (never), a
+   case. The doubled smallest normal less 2 where FZ is set, 0 where it is clear (never), a
    register made once a region, so the test costs a MOVD, LEA, CMP and Jcc */
 static inline int sgx_fp_dbound(SgCtx* g, SgD fpcr, unsigned w) {
     SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull;
@@ -107,7 +107,7 @@ static inline int sgx_fp_tests(SgCtx* g, SgXTest* t, SgD fpcr, unsigned w, int n
     return n;
 }
 /* the cold path of an operation sgx_fp_tests tests: the helper's call where a test holds, but a zero result the hot
-   path's where FPCR rounds to nearest, under FZ no operand is a denormal (llvm.h's sg_fp_unflushed: many games run with
+   path's where FPCR rounds to nearest, under FZ no operand is a denormal (many games run with
    FZ set and compute zeros), and (zargs, a mask of ops) one of those operands is a zero (none: any zero is exact, as a
    sum's is) */
 static inline SgD sgx_fp_cold_z(SgCtx* g, const SgXTest* t, int nt, SgD fast, const char* sym, SgD* ops, int nops,
@@ -511,33 +511,24 @@ static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
 static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, sev), 0, NULL, 0, 0); }
 static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
 /* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
-   CRC32 instruction; CRC32 of a word or a doubleword by Barrett's reduction, two PCLMULQDQs: x, the value XOR the
-   accumulator at the top of 64 bits, times the low 64 bits of x^96 / P reflected, whose low half times P reflected has
-   the remainder in bits 95:64 (both linear: equal on a basis of x, the task's proof); of a byte or a halfword a byte at a
-   time through x64_helpers.c's table (SGX_M_CRC) */
+   CRC32 instruction, or where the host has no SSE4.2 a byte at a time through its own table in x64_helpers.c; CRC32
+   of a halfword, a word or a doubleword by x64_helpers.c's slicing tables, a lookup a byte of the value XOR the
+   accumulator, all at once (SGX_M_CRC), of a byte through the first table */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {SGX_RAX, SGX_RDX};
     SgD in[2];
-    if (poly.v == 0x04C11DB7u && size >= 32 && (sgx(g)->features & SGX_F_PCLMUL)) {
-        SgX* x = sgx(g);
-        int k = sgx_xconst(x, 0xB4E5B025F7011641ull, 0x1DB710641ull), t, vin[4] = {0, 0, 0, 0};
-        SgD v = sg_d_xor(g, sg_d_zext(g, acc_bits, 64), sg_d_zext(g, value_bits, 64));
-        if (size == 32) v = sg_d_lsl(g, v, 32);
-        vin[1] = sgx_reg(x, &v);
-        t = sgx_vins(x, &sgx_v_movq_xr, 0, 0, vin, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x00);
-        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x10);
-        vin[1] = t;
-        return sgx_val(32, sgx_vins(x, &sgx_v_pextrd, 0, 0, vin, 2, 0, SGX_VM_NONE, 0, 0, 0, 0, 0));
-    }
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
-    return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4,
-                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), 31, 0);
+    const int c = poly.v == 0x1EDC6F41u, sse42 = (sgx(g)->features & SGX_F_SSE42) != 0, slices = !c && size >= 16;
+    return sg_d_slice(
+        g,
+        sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (c && sse42) << 4 | (c && !sse42) << 5 | slices << 6,
+                 1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11 | (slices && size == 64 ? 1u << SGX_R8 : 0u), 1, 64),
+        31, 0);
 }
 
 /* an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with other loads, nor stores with older
-   loads); a release store is MFENCE after it, as the sequentially consistent store the LLVM back end makes (Arm's
+   loads); a release store is MFENCE after it, a sequentially consistent store (Arm's
    store-release orders it with a later load-acquire, which x86's store buffer alone would not) */
 static inline void sgx_acquire(SgCtx* g) { (void)g; }
 static inline void sgx_release(SgCtx* g, int after) {
@@ -647,6 +638,23 @@ static inline void sgx_m_status(SgXBuf* b, const size_t* fail) {
     sgx_patch32(b, done);
     sgx_bytes(b, "C7 83"), sgx_d32(b, offsetof(CPU, excl_on)), sgx_imm(b, 0, 4); /* mov dword [rbx + excl_on], 0 */
 }
+/* the general-purpose registers each inline sequence below writes, its result's included (RBX, pushed or exchanged,
+   is put back): what its sg_ function declares, sgx_machine_declares checks */
+static inline unsigned sgx_machine_writes(const SgXIns* i) {
+    const unsigned rax = 1u << SGX_RAX, rcx = 1u << SGX_RCX, rdx = 1u << SGX_RDX, r11 = 1u << SGX_R11;
+    unsigned bytes = (unsigned)(i->imm & 15), op = (unsigned)(i->imm >> 2);
+    switch (i->op) {
+        case SGX_M_STX: return rax | rcx;
+        case SGX_M_STXP: return rax | rcx | rdx | ((i->imm & 3) == 2 ? 0u : r11);
+        case SGX_M_CAS: return rax;
+        case SGX_M_CASP: return rax | rcx | rdx | r11;
+        case SGX_M_RMW: return op == 0 || op == 8 ? rax : rax | rcx | (op >= 4 ? r11 : 0u);
+        case SGX_M_CRC:
+            if (i->imm & 16) return rax; /* SSE4.2's CRC32 */
+            return rax | rcx | rdx | r11 | ((i->imm & 64) && bytes == 8 ? 1u << SGX_R8 : 0u);
+        default: return 0;
+    }
+}
 static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
     SgXBuf* b = a->b;
     unsigned sz = (unsigned)(i->imm & 3);
@@ -715,15 +723,43 @@ static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
             return;
         }
         /* the table's address in R11: a relocation of the object's, or the address resolve gives */
+        const char* table = i->imm & 32 ? "snx_x64_crc32c_table" : "snx_x64_crc32_table";
         if (a->reloc) {
             sgx_bytes(b, "4C 8D 1D"); /* lea r11, [rip + table] */
-            a->reloc(a->machine, b->n, "snx_x64_crc32_table", -4);
+            a->reloc(a->machine, b->n, table, -4);
             sgx_imm(b, 0, 4);
         } else {
-            SnxU64 t = a->resolve ? a->resolve("snx_x64_crc32_table") : 0;
+            SnxU64 t = a->resolve ? a->resolve(table) : 0;
             if (!t) sg_fail("a table nothing resolves", 0, 0);
             sgx_bytes(b, "49 BB"); /* mov r11, imm64 */
             sgx_imm(b, (long long)t, 8);
+        }
+        if ((i->imm & 64) && bytes == 8) {
+            /* a doubleword: x = acc XOR value, its low half's bytes through tables 7 to 4 into R8D and its high half's
+               (in EDX) through 3 to 0 into EAX, two chains, then XORed. xor rax, rdx; mov rdx, rax; shr rdx, 32; then
+               movzx ecx, al; mov r8d, [r11 + rcx*4 + 7168]; movzx ecx, ah; xor r8d, [... + 6144]; shr eax, 16; the
+               same of 5120 and 4096; then of DL and DH into EAX from 3072, shr edx, 16, down to 0; xor eax, r8d */
+            sgx_bytes(b, "48 31 D0 48 89 C2 48 C1 EA 20 0F B6 C8 45 8B 84 8B 00 1C 00 00");
+            sgx_bytes(b, "0F B6 CC 45 33 84 8B 00 18 00 00 C1 E8 10 0F B6 C8 45 33 84 8B 00 14 00 00");
+            sgx_bytes(b, "0F B6 CC 45 33 84 8B 00 10 00 00");
+            sgx_bytes(b, "0F B6 CA 41 8B 84 8B 00 0C 00 00 0F B6 CE 41 33 84 8B 00 08 00 00");
+            sgx_bytes(b, "C1 EA 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B 44 31 C0");
+            return;
+        }
+        if ((i->imm & 64) && bytes == 2) {
+            /* a halfword: x = acc XOR value in EDX, (acc >> 16, x's) XOR table 1's of x's low byte XOR table 0's of the
+               next. xor edx, eax; shr eax, 16; movzx ecx, dl; xor eax, [r11 + rcx*4 + 1024]; movzx ecx, dh; xor eax,
+               [r11 + rcx*4] */
+            sgx_bytes(b, "31 C2 C1 E8 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B");
+            return;
+        }
+        if (i->imm & 64) {
+            /* a word: x = acc XOR value in EDX, its bytes from the first up through tables 3, 2, 1 and 0 into EAX. xor
+               edx, eax; movzx ecx, dl; mov eax, [r11 + rcx*4 + 3072]; movzx ecx, dh; xor eax, [r11 + rcx*4 + 2048];
+               shr edx, 16; movzx ecx, dl; xor eax, [r11 + rcx*4 + 1024]; movzx ecx, dh; xor eax, [r11 + rcx*4] */
+            sgx_bytes(b, "31 C2 0F B6 CA 41 8B 84 8B 00 0C 00 00 0F B6 CE 41 33 84 8B 00 08 00 00");
+            sgx_bytes(b, "C1 EA 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B");
+            return;
         }
         for (k = 0; k < bytes; ++k)
             /* mov ecx, eax; xor cl, dl; movzx ecx, cl; shr eax, 8; xor eax, [r11 + rcx*4]; shr rdx, 8 */
@@ -791,7 +827,10 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CAS:
         case SGX_M_CASP:
         case SGX_M_RMW:
-        case SGX_M_CRC: sgx_machine_inline(a, i); return;
+        case SGX_M_CRC:
+            sgx_machine_declares(a, at, sgx_machine_writes(i));
+            sgx_machine_inline(a, i);
+            return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             sgx_call_room(a);

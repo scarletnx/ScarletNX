@@ -121,6 +121,36 @@ uint32_t vita_net_offline_error(const char* library);
 void vita_net_free(VitaProcess* p);
 /* trophy.c: the trophy contexts, freed with the process */
 void vita_trophy_free(VitaProcess* p);
+/* what a save state can't hold, which a save is refused while the game has: mp4 files, video decoders, sockets */
+unsigned vita_mp4_in_use(const VitaProcess* p);
+unsigned vita_videodec_in_use(const VitaProcess* p);
+unsigned vita_net_in_use(const VitaProcess* p);
+/* Save states (vita/runtime/state.c) of SceGxm (gxm.c), SceNgs (ngs.c) and the trophies (trophy.c): each into io (0, or
+   -1 with why where it can refuse); its layout's hash; a state's read and checked (NULL with why), which install puts
+   in the running one's place and drop frees unused */
+struct StateIo;
+uint64_t vita_gxm_state_schema(void);
+int vita_gxm_state_save(VitaProcess* p, struct StateIo* io, char* why, size_t whysize);
+void* vita_gxm_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_gxm_state_install(VitaProcess* p, void* staged);
+void vita_gxm_state_drop(void* staged);
+uint64_t vita_ngs_state_schema(void);
+int vita_ngs_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_ngs_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_ngs_state_install(VitaProcess* p, void* staged);
+void vita_ngs_state_drop(void* staged);
+uint64_t vita_trophy_state_schema(void);
+int vita_trophy_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_trophy_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_trophy_state_install(VitaProcess* p, void* staged);
+void vita_trophy_state_drop(void* staged);
+/* audiodec.c's: each decoder made again from its configuration by a load (the first frame decoded after it without
+   what the decoder kept of the frames before) */
+uint64_t vita_audiodec_state_schema(void);
+int vita_audiodec_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_audiodec_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_audiodec_state_install(VitaProcess* p, void* staged);
+void vita_audiodec_state_drop(void* staged);
 /* io.c: the files the game left open */
 void vita_io_close_all(VitaProcess* p);
 /* sceIoOpen's and sceIoClose's work, for SceLibc's stdio: a descriptor or an error; a descriptor's host file, NULL
@@ -130,8 +160,23 @@ uint32_t vita_io_file_close(VitaProcess* p, uint32_t fd);
 FILE* vita_io_file(VitaProcess* p, uint32_t fd);
 /* the host path of a guest path (app0: with the update's files over it, ux0:), the caller's to free; NULL for none */
 char* vita_io_host_path(VitaProcess* p, uint32_t address);
+/* Save states (vita/runtime/state.c): the files, folders and archives open, as their paths and places; a state's
+   opened again (NULL with why: one that isn't there any more is named), which install puts in the running ones'
+   place and drop closes unused */
+int vita_io_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_io_state_open(VitaProcess* p, struct StateIo* io, char* why, size_t whysize);
+void vita_io_state_install(VitaProcess* p, void* staged);
+void vita_io_state_drop(void* staged);
 /* audio.c: the ports' output device; their state is freed with the process */
 void vita_audio_free(VitaProcess* p);
+/* Save states (vita/runtime/state.c): the ports into io; their layout's hash; a state's read (NULL with why), which
+   install puts in the running ports' place, their streams opened again, and free() drops unused; a port's time its
+   queued sound plays until, which the state holds apart (NULL past the ports, or with no sound yet) */
+uint64_t vita_audio_state_schema(void);
+int vita_audio_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_audio_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_audio_state_install(VitaProcess* p, void* staged);
+uint64_t* vita_audio_state_time(VitaProcess* p, unsigned port);
 /* gxm.c: the display queue's thread asking for its next entry (VITA_SVC_DISPLAY_NEXT), and done with it */
 void vita_gxm_display_next(VitaProcess* p, VitaThread* t);
 void vita_gxm_display_done(VitaProcess* p, VitaThread* t);

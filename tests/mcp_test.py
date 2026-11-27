@@ -33,7 +33,7 @@ LOG = """[   0.00] ScarletNX - Some Game
 """
 
 
-# the parts of an edenprobe checkout the scaffold writes into, as edenprobe lays them out
+# the parts of an Amberlith checkout the scaffold writes into, as Amberlith lays them out
 CHECKOUT = {
     'source/serviceref.h': (
         'typedef enum {\n    SERVICE_RANDOM, ///< csrng: two asks fill their buffers, differently\n'
@@ -345,7 +345,7 @@ def main():
         nro.write_bytes(make_nro())
         # a clone on Windows has CRLF lines (git's autocrlf): the scaffold keeps each file's ending. Written as bytes,
         # so every system writes the same
-        checkout, crlf, broken = Path(tmp) / 'edenprobe', Path(tmp) / 'crlf', Path(tmp) / 'broken'
+        checkout, crlf, broken = Path(tmp) / 'amberlith', Path(tmp) / 'crlf', Path(tmp) / 'broken'
         for root, ending in ((checkout, '\n'), (crlf, '\r\n'), (broken, '\n')):
             for rel, text in CHECKOUT.items():
                 (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -383,16 +383,16 @@ def main():
             call('disassemble', game=str(nro), start='8000000', end='8000094'),
             call('disassemble', 'no_range', game=str(nro)),
             call('symbolize', 'no_game', game='0100000000000001', addresses=['1']),
-            call('edenprobe_scaffold', 'scaffold', checkout=str(checkout), **hold),
-            call('edenprobe_scaffold', 'again', checkout=str(checkout), **hold),
-            call('edenprobe_scaffold', 'crlf', checkout=str(crlf), **hold),
-            call('edenprobe_scaffold', 'broken', checkout=str(broken), **hold),
-            call('edenprobe_scaffold', 'bad_id', checkout=str(checkout), **dict(hold, id='hold')),
-            call('edenprobe_scaffold', 'cpu', checkout=str(checkout), **dict(hold, family='cpu')),
-            call('edenprobe_check', 'no_host', checkout=str(data)),
-            call('edenprobe_run', 'no_nro', nro=str(data / 'none.nro'), mode='quick notime service', filter='hid'),
+            call('amberlith_scaffold', 'scaffold', checkout=str(checkout), **hold),
+            call('amberlith_scaffold', 'again', checkout=str(checkout), **hold),
+            call('amberlith_scaffold', 'crlf', checkout=str(crlf), **hold),
+            call('amberlith_scaffold', 'broken', checkout=str(broken), **hold),
+            call('amberlith_scaffold', 'bad_id', checkout=str(checkout), **dict(hold, id='hold')),
+            call('amberlith_scaffold', 'cpu', checkout=str(checkout), **dict(hold, family='cpu')),
+            call('amberlith_check', 'no_host', checkout=str(data)),
+            call('amberlith_run', 'no_nro', nro=str(data / 'none.nro'), mode='quick notime service', filter='hid'),
             call(
-                'edenprobe_finding',
+                'amberlith_finding',
                 'finding',
                 issue=345,
                 suite='hid-style',
@@ -402,8 +402,21 @@ def main():
                 source='reden answers what SetNpadJoyHoldType set.',
             ),
             call(
-                'edenprobe_finding', 'passing', issue=345, suite='hid-style', name=NAME, scarletnx_report=str(passing)
+                'amberlith_finding', 'passing', issue=345, suite='hid-style', name=NAME, scarletnx_report=str(passing)
             ),
+            # the names before Amberlith's 1.0.0: the first answer of each says the new one
+            call(
+                'edenprobe_finding', 'old_finding', issue=345, suite='hid-style', name=NAME, scarletnx_report=str(passing)
+            ),
+            call(
+                'edenprobe_finding',
+                'old_finding_again',
+                issue=345,
+                suite='hid-style',
+                name=NAME,
+                scarletnx_report=str(passing),
+            ),
+            call('edenprobe_check', 'old_no_host', checkout=str(data)),
             call('gdb_threads', 'gdb_none'),
             call('gdb_command', 'gdb_command_none', command='bt'),
             call('gdb_attach', 'gdb_bad_port', port=0),
@@ -465,10 +478,10 @@ def main():
             'state_info',
             'symbolize',
             'disassemble',
-            'edenprobe_scaffold',
-            'edenprobe_check',
-            'edenprobe_run',
-            'edenprobe_finding',
+            'amberlith_scaffold',
+            'amberlith_check',
+            'amberlith_run',
+            'amberlith_finding',
             'gdb_attach',
             'gdb_command',
             'gdb_threads',
@@ -516,10 +529,18 @@ def main():
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
-    dis = text('disassemble')
-    if 'no A64 disassembler' not in dis:
-        check('b\t0x80' in dis.replace(' ', '\t') or '8000080' in dis.splitlines()[0], f'the first branch:\n{dis}')
-        check('svc' in dis and 'adr' in dis, f'the code disassembled:\n{dis}')
+    # make_nro's words, each the A64 decoder's: B over the headers, then ADR X0, MOV X1, SVC #0x27, SVC #7 and BRK
+    dis = text('disassemble').splitlines()
+    check('A64 decoder' in tools['disassemble']['description'], 'disassemble says how it writes an instruction')
+    check(dis[0].startswith('  8000000:  14000020  B imm=128  ; 8000080'), f'the first branch: {dis}')
+    for want in (
+        '  8000080:  10000400  ADR rd=0 imm=128  ; 8000100',
+        'MOVZ rd=1 sf=1 imm=',
+        'SVC imm=39',
+        'SVC imm=7',
+        '  8000090:  d4200000  BRK imm=0',
+    ):
+        check(any(want in line for line in dis), f'{want} in the code disassembled: {dis}')
     check(failed('no_range') and 'name a function, or a range' in text('no_range'), 'disassemble without a target')
     check(failed('no_game') and 'title ID' in text('no_game'), 'a title ID with no game')
     # without a game under the stub (and on Windows, where they are UNIX only) the GDB tools fail, saying why
@@ -534,7 +555,7 @@ def main():
     check(gdb_fails('gdb_detach_none', 'gdb_attach'), 'gdb_detach without GDB')
     check(failed('nope'), 'an unknown tool')
     check(by_id['method']['error']['code'] == -32601, 'an unknown method')
-    # the scaffold: each part where edenprobe keeps it, the call at its runner's end, the new suite's ui.c row
+    # the scaffold: each part where Amberlith keeps it, the call at its runner's end, the new suite's ui.c row
     check(not failed('scaffold') and 'Left to write' in text('scaffold'), text('scaffold'))
     h, c = written['source/serviceref.h'], written['source/serviceref.c']
     check(h.index('    SERVICE_HID_HOLD_TYPE, ///< hid-style: ') < h.index('    SERVICE_CASES'), 'the enum entry')
@@ -569,8 +590,19 @@ def main():
         failed('broken') and 'nothing was written' in text('broken') and untouched, 'an unknown layout, no file changed'
     )
     check(failed('bad_id') and failed('cpu'), 'a bad id, a family the scaffold does not write')
-    check(failed('no_host') and 'host.mk' in text('no_host'), 'edenprobe_check outside a checkout')
-    check(failed('no_nro') and 'cannot be read' in text('no_nro'), 'edenprobe_run without its NRO')
+    check(failed('no_host') and 'host.mk' in text('no_host'), 'amberlith_check outside a checkout')
+    check(failed('no_nro') and 'cannot be read' in text('no_nro'), 'amberlith_run without its NRO')
+    old = 'edenprobe_finding is the old name of amberlith_finding: it answered as that; call amberlith_finding\n\n'
+    check(
+        text('old_finding') == old + text('passing') and text('old_finding_again') == text('passing'),
+        'an old name answers as the new one, its first answer saying the new name',
+    )
+    check(
+        failed('old_no_host')
+        and text('old_no_host').startswith('edenprobe_check is the old name of amberlith_check')
+        and 'host.mk' in text('old_no_host'),
+        "an old name's first answer, an error, says the new name and stays an error",
+    )
 
     # the finding: ScarletNX's line and the reference's, the subject's length said, warnings when they don't differ
     finding = text('finding')

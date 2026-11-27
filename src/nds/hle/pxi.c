@@ -11,8 +11,11 @@
 #include "nds/hle/pxi.h"
 #include "nds/bios/bios.h"
 #include "common/platform/time.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/state_header.h"
 #include "common/online/wfc.h"
+#include "common/utilities/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -433,4 +436,44 @@ void nds_pxi_free(NdsBoard* board) {
     free(board->pxi);
     free(board->save);
     board->pxi = NULL, board->save = NULL;
+}
+
+/* ---- save states (runtime/state.c): the ARM7's side as it is, its firmware's flash after it ---- */
+typedef struct {
+    NdsPxi pxi;
+    unsigned char flash[FLASH_SIZE];
+} PxiStaged;
+
+uint64_t nds_pxi_state_schema(const NdsBoard* board) {
+    uint64_t h = SNX_FNV_BASIS ^ sizeof(PxiStaged);
+    __builtin_dump_struct(board->pxi, snx_state_schema_out, &h);
+    return h;
+}
+int nds_pxi_state_save(const NdsBoard* board, StateIo* io) {
+    NdsPxi copy;
+    memcpy(&copy, board->pxi, sizeof copy); /* its padding too, which goes in the file */
+    copy.flash = NULL;
+    return io_put(io, &copy, sizeof copy) || io_put(io, board->pxi->flash, FLASH_SIZE) ? -1 : 0;
+}
+void* nds_pxi_state_parse(StateIo* io, char* why, size_t whysize) {
+    PxiStaged* s = malloc(sizeof *s);
+    if (!s)
+        snprintf(why, whysize, "out of memory for the state's ARM7 (%zu bytes)", sizeof *s);
+    else if (io_get(io, &s->pxi, sizeof s->pxi) || io_get(io, s->flash, sizeof s->flash))
+        snprintf(why, whysize, "its ARM7's section is damaged or cut short");
+    else if (s->pxi.touch_samples > sizeof s->pxi.touch_lines / sizeof *s->pxi.touch_lines)
+        snprintf(why, whysize, "its ARM7 samples the touch screen %u times a frame, past the %zu it can",
+                 s->pxi.touch_samples, sizeof s->pxi.touch_lines / sizeof *s->pxi.touch_lines);
+    else
+        return s;
+    free(s);
+    return NULL;
+}
+void nds_pxi_state_install(NdsBoard* board, void* staged) {
+    PxiStaged* s = staged;
+    unsigned char* flash = board->pxi->flash;
+    memcpy(board->pxi, &s->pxi, sizeof s->pxi);
+    board->pxi->flash = flash;
+    memcpy(flash, s->flash, FLASH_SIZE);
+    free(s);
 }

@@ -1709,24 +1709,18 @@ int snx_driver(int argc, char** argv) {
                 help = 1;
                 rest[n++] = argv[i]; /* -x's and -r's own help */
                 break;
-            /* the recompile's, as -r and a played dump's recompile take them: -O LEVEL, --jobs N... */
+            /* LLVM's level and IR, gone with it: said by snx_cli_match, and nothing done */
             case SNX_CLI_OPT:
+            case SNX_CLI_KEEP_IR: break;
+            /* the recompile's, as -r and a played dump's recompile take them: --jobs N... */
             case SNX_CLI_JOBS:
             case SNX_CLI_CHUNK:
             case SNX_CLI_JIT_CACHE:
-                rest[n++] = common == SNX_CLI_OPT     ? "-O"
-                            : common == SNX_CLI_JOBS  ? "--jobs"
-                            : common == SNX_CLI_CHUNK ? "--chunk"
-                                                      : "--jit-cache";
+                rest[n++] = common == SNX_CLI_JOBS ? "--jobs" : common == SNX_CLI_CHUNK ? "--chunk" : "--jit-cache";
                 rest[n++] = (char*)arg.value;
                 break;
             case SNX_CLI_JIT_ONLY:
-            case SNX_CLI_KEEP_IR:
-            case SNX_CLI_QUIET:
-                rest[n++] = common == SNX_CLI_JIT_ONLY  ? "--jit-only"
-                            : common == SNX_CLI_KEEP_IR ? "--keep-ir"
-                                                        : "--quiet";
-                break;
+            case SNX_CLI_QUIET: rest[n++] = common == SNX_CLI_JIT_ONLY ? "--jit-only" : "--quiet"; break;
             case SNX_CLI_FULLSCREEN:
                 flags &= ~(unsigned)(SNX_FULLSCREEN | SNX_WINDOWED); /* the last given wins */
                 flags |= arg.value[0] == '1' ? SNX_FULLSCREEN : SNX_WINDOWED;
@@ -1766,12 +1760,14 @@ int snx_driver(int argc, char** argv) {
 #endif
         if (parsed) continue;
         if (!strcmp(argv[i], "--backend") || !strncmp(argv[i], "--backend=", 10)) {
-            /* LLVM is the only code generator: older scripts name it */
+            /* the host's native back end is the only code generator; LLVM, which older scripts name, went */
             const char* backend = argv[i][9] ? argv[i] + 10 : i + 1 < argc ? argv[++i] : "";
             if (strcmp(backend, "llvm")) {
-                result = snx_error("--backend %s: LLVM is the only backend", backend);
+                result = snx_error("--backend %s: the host's native back end is the only one", backend);
                 goto done;
             }
+            snx_error("--backend llvm went with LLVM: the host's native back end makes the code "
+                      "(docs/user/deprecations.md)");
             continue;
         }
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) help = 1;
@@ -1840,6 +1836,12 @@ int snx_driver(int argc, char** argv) {
                 char key[64];
                 const char* value = settings_arg(rest[i], key, sizeof key);
                 int recompiles = value && snx_recompile_setting(key), plays = value && snx_setting_known(key);
+                if (!recompiles && !plays && value && ini_deprecated(key)) { /* an older version's: said, dropped */
+                    snx_error("settings: %s=%s, deprecated, %s (docs/user/deprecations.md)", key, value,
+                              ini_deprecated(key));
+                    ++taken;
+                    continue;
+                }
                 if (!recompiles && !plays) {
                     result = snx_error("unknown option: %s", rest[i]);
                     goto done;
@@ -1847,7 +1849,7 @@ int snx_driver(int argc, char** argv) {
                 rest[i] = spelled + at;
                 at += ini_option(rest[i], room - at, key, value) + 1;
                 if (recompiles) recompile[recompiling++] = rest[i];
-                if (plays) setting[settings++] = rest[i]; /* both for one both take (slp_vectorizer) */
+                if (plays) setting[settings++] = rest[i]; /* both for one both take */
                 ++taken;
             } else
                 rest[i - taken] = rest[i];

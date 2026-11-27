@@ -26,10 +26,10 @@
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 
 #define MAX_QUADS 4096
 static SnxUiQuad g_quads[MAX_QUADS];
@@ -633,8 +633,19 @@ static int ui_list(const int safe[4]) {
     else {
         int px, py, scale;
         overlay_place(sw, sh, &px, &py, &scale); /* the menu's letters */
-        vpad_draw(&list, safe, scale);
-        vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now), scale);
+        {
+            SNX_ZONE(z_vpad, "plat vpad draw");
+            const int before = list.n, how = vpad_draw(&list, safe, scale);
+            SNX_ZONE_VALUE(z_vpad, how);
+            if (how != VPAD_DRAW_HIDDEN) SNX_PLOT("plat vpad quads", (double)(list.n - before));
+        }
+        {
+            SNX_ZONE(z_show, "plat vpad showcase draw");
+            const int before = list.n,
+                      how = vpad_showcase_draw(&list, safe, vpad_showcase_fps(g_vk_present, now), scale);
+            SNX_ZONE_VALUE(z_show, how);
+            if (how != 2) SNX_PLOT("plat vpad showcase quads", (double)(list.n - before));
+        }
         stats_draw(&list, safe, scale, now);
     }
     {

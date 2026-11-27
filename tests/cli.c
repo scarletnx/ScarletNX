@@ -134,25 +134,30 @@ int main(void) {
     }
     /* the recompile's: -O's level after its letter or apart and --opt's both forms, --jobs from 0 (Auto), --chunk
        from 1, each value they do not take refused with it, and their older names said once */
+    /* -O, LLVM's level, gone with it: any value taken and said once, the first with it, nothing refused but a level
+       missing */
     {
         char *a[] = {"-O", "2", NULL}, *b[] = {"-Os", NULL}, *c[] = {"--opt=z", NULL}, *d[] = {"--opt", "0", NULL};
+        int before = g_test.said_count;
         CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_OPT && i == 1 && !strcmp(arg.value, "2"),
               "-O 2: %s", error);
+        CHECK(g_test.said_count == before + 1 &&
+                  strstr(g_test.said[before], "-O 2, LLVM's level, went with LLVM: the native back ends make the code "
+                                              "with no optimization level (docs/user/deprecations.md)"),
+              "-O 2 said: %s", g_test.said[before]);
         CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_OPT && i == 0 && !strcmp(arg.value, "s"),
               "-Os: %s", error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_OPT && i == 0 && !strcmp(arg.value, "z"),
               "--opt=z: %s", error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, d) == SNX_CLI_OPT && i == 1 && !strcmp(arg.value, "0"),
               "--opt 0: %s", error);
+        CHECK(g_test.said_count == before + 1, "-O said %d times", g_test.said_count - before);
     }
     {
         char *a[] = {"-O5", NULL}, *b[] = {"--opt=22", NULL}, *c[] = {"-O", NULL}, *d[] = {"-O", "-x", NULL};
-        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_ERROR &&
-                  !strcmp(error, "scarletnx-test: -O 5: not 0, 1, 2, 3, s or z"),
-              "-O5: %s", error);
-        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_ERROR &&
-                  !strcmp(error, "scarletnx-test: --opt 22: not 0, 1, 2, 3, s or z"),
-              "--opt=22: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, a) == SNX_CLI_OPT && !strcmp(arg.value, "5"), "-O5: %s", error);
+        CHECK(match(ALL, &i, &arg, error, sizeof error, b) == SNX_CLI_OPT && !strcmp(arg.value, "22"), "--opt=22: %s",
+              error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, c) == SNX_CLI_ERROR &&
                   !strcmp(error, "scarletnx-test: -O requires a level"),
               "-O: %s", error);
@@ -192,9 +197,13 @@ int main(void) {
         CHECK(match(ALL, &i, &arg, error, sizeof error, f) == SNX_CLI_KEEP_IR, "--keep-c: %s", error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, f) == SNX_CLI_KEEP_IR, "--keep-c again: %s", error);
         CHECK(match(ALL, &i, &arg, error, sizeof error, g) == SNX_CLI_JIT_ONLY, "--interp-only: %s", error);
-        CHECK(g_test.said_count == before + 2 && strstr(g_test.said[before], "--keep-c is --keep-ir now") &&
-                  strstr(g_test.said[before + 1], "--interp-only is --jit-only now"),
-              "%d renamed lines: %s", g_test.said_count - before, g_test.said[before]);
+        /* --keep-ir, LLVM's IR, gone with it: said once, then --keep-c's older name */
+        CHECK(g_test.said_count == before + 3 &&
+                  strstr(g_test.said[before], "--keep-ir went with LLVM's IR: the native back ends keep none "
+                                              "(docs/user/deprecations.md)") &&
+                  strstr(g_test.said[before + 1], "--keep-c is --keep-ir now") &&
+                  strstr(g_test.said[before + 2], "--interp-only is --jit-only now"),
+              "%d lines: %s", g_test.said_count - before, g_test.said[before]);
     }
     /* a run's options together: --update given again, each kept */
     {
@@ -213,10 +222,10 @@ int main(void) {
         CHECK(cli.flags == (SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_QUIET)), "flags %#x", cli.flags);
         CHECK(cli.value[SNX_CLI_OPT] && !strcmp(cli.value[SNX_CLI_OPT], "3") && cli.jobs == 0 && cli.chunk == 7,
               "-O3 --jobs 0 --chunk=7");
-        /* as a driver's compiler reads them, the first of them given named */
+        /* as a driver's compiler reads them, the first of them given named: -O, gone with LLVM, is none of them */
         SnxCliRecompile asked = snx_cli_recompile(&cli);
-        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.keep_ir && !asked.jit_cache &&
-                  asked.given && !strcmp(asked.given, "-O"),
+        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.jit_cache && asked.given &&
+                  !strcmp(asked.given, "--jobs"),
               "the run's recompile options: %s", asked.given ? asked.given : "none given");
         CHECK(cli.fullscreen == 0 && cli.seconds == 3 && cli.frames == -1 && own == 1, "values");
         CHECK(cli.value[SNX_CLI_GAME] && !strcmp(cli.value[SNX_CLI_GAME], "g"), "--game g");

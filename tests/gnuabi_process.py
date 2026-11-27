@@ -184,14 +184,30 @@ def main():
         run(["-L", root, *jit, "--linux-host-page=12288"], {}, 2, refused)
         run(["-L", root, *jit, "--linux-host-page=0"], {}, 42)  # the host's, as no --host-page is
         run(["-L", root, *jit, "--linux-strace=2"], {}, 2, "linux_strace=2 is not a whole number from 0 to 1")
-        run(["-L", root, *jit, "--linux-jit-opt=9"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 9")
-        run(["-L", root, *jit, "--jit-opt=12"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 12")
+        # LLVM's level, which went with it: its setting and its option said with the value given, and nothing done
+        run(["-L", root, *jit, "--linux-jit-opt=9"], {}, 42, "settings: linux_jit_opt=9, deprecated, went with LLVM")
+        run(["-L", root, *jit, "--jit-opt=12"], {}, 42, "settings: jit_opt=12, deprecated, went with LLVM")
         run(["-L", root, *jit, "--linux-nosuch=1"], {}, 2, "unknown option --linux-nosuch=1")
         run(["-L", root, *jit, "--linux_strace=1"], {}, 42, "--linux_strace is the old spelling of --linux-strace")
         # the recompile's options every driver shares (common/utilities/cli.h): -O is the JIT's level, --jit-cache
         # the folder its code is kept in, in either form, and --jit-only what it does anyway; the others refused, named
         run(["-L", root, "--jit-cache", cache, "-O0", "--jit-only"], {}, 42)
-        run(["-L", root, *jit, "-O5"], {}, 2, "scarletnx-gnuabi: -O 5: not 0, 1, 2, 3, s or z")
+        # what only LLVM left in the JIT's cache folder (an older version's runtime library, a relocatable object): said
+        # with where the launcher deletes it, and kept, as the runtime deletes none of it
+        old = os.path.join(folder, "old-cache")
+        os.makedirs(old)
+        rtlib = os.path.join(old, "rtlib-" + "0123456789abcdef" * 2 + ".o")
+        with open(rtlib, "wb") as f:
+            f.write(b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<H", 1) + bytes(46))
+        said = (
+            f"scarletnx-gnuabi: 1 file, 0.0 MB of LLVM's old caches in {old}, which nothing reads now: the launcher "
+            "deletes them in Settings > App > Move Old Files"
+        )
+        run(["-L", root, "--jit-cache=" + old], {}, 42, said)
+        if not os.path.isfile(rtlib):
+            print(f"the runtime deleted {rtlib}")
+            failures += 1
+        run(["-L", root, *jit, "-O5"], {}, 42, "-O 5, LLVM's level, went with LLVM")
         run(["-L", root, *jit, "--jobs", "2"], {}, 2, "scarletnx-gnuabi does not take --jobs")
         run(["-L", root, *jit, "--keep-ir"], {}, 2, "scarletnx-gnuabi does not take --keep-ir")
         # the variables an older version read (docs/user/deprecations.md), still read

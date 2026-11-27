@@ -3877,7 +3877,7 @@ static Surf* tex_check_memory(Surf* t, u64 gva) {
            submission or the end of a stream wait reaches the next sample, as with write tracking. The frame's schedule
            below alone misses that (the write and the sample come between two presents, and a headless run presents
            nothing). Expiring every texture at the cache invalidation methods did it before, and isn't enough either:
-           edenprobe rewrites texels with only the sampler and header caches invalidated after, never the texture data
+           Amberlith rewrites texels with only the sampler and header caches invalidated after, never the texture data
            cache. A settled texture is left to the schedule: epochs start at every submission, and hashing every
            texture in each took half the GPU thread (FreeBSD) */
         if (epoch && !tex_settled(t)) {

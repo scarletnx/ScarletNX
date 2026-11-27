@@ -798,8 +798,6 @@ int snx_ctr_main(int argc, char** argv) {
             ini_read(ini_find(g_ctr_run_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
             ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
-        else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot-threads= is: the last given counts */
-            ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         else if (common == SNX_CLI_JOBS)
             g_settings.aot_threads = cli.jobs;
         if (common) continue;
@@ -974,7 +972,7 @@ int snx_ctr_main(int argc, char** argv) {
     /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
     char said[192];
     int pace = snx_ctr_clock_pace();
-    (void)snx_ctr_clock_parse(g_settings.fps_limit, &pace, said, sizeof said);
+    (void)snx_pace_parse(g_settings.fps_limit, &pace, said, sizeof said);
     if (said[0]) fprintf(stderr, "settings: %s\n", said);
     snx_ctr_clock_set_pace(pace);
     if (old_trace)

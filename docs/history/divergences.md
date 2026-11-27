@@ -7,9 +7,9 @@ changed since, and the page is not kept up to date.*
 
 This report is the audit of the instruction semantics the recompiler took from C templates, against Unicorn. The
 templates and the audit harness are retired: the LLVM emitters are ported from QEMU's `translate-a64.c` and keyed
-on the decoder generated from QEMU's `a64.decode` and `a64.profile`, and `tests/llvm_qemu_differential.c` checks them
+on the decoder generated from QEMU's `a64.decode` and `a64.profile`, and `tests/native_qemu_differential.c` checks them
 against `qemu-aarch64` instruction by instruction, with the groups still known to differ in
-`tests/llvm_qemu_expected.txt`. The figures below are the old audit's, kept for its findings on system and memory
+`tests/native_qemu_expected.txt`. The figures below are the old audit's, kept for its findings on system and memory
 behavior.
 
 ## Index
@@ -31,7 +31,7 @@ behavior.
 application recompiler implements most A64 instruction families, but the intentionally virtualized
 machine/system behavior and memory-model limitations prevent that claim. The FP counterexamples below record
 an older audit; current stateful helpers and guarded fast paths supersede those implementations, and
-`tests/llvm_qemu_expected.txt` has no expected FP mismatch group. Passing samples are not a proof
+`tests/native_qemu_expected.txt` has no expected FP mismatch group. Passing samples are not a proof
 for every operand or encoding.
 
 This audit targets the **base Cortex-A57 A64 ISA**, not later ARMv8 revisions,
@@ -194,7 +194,7 @@ The dedicated `5ea1d820` FRECPE control sweep reports 2,176 differing executions
 out of 3,072 AOT/interpreter comparisons.
 
 The raw-bit/stateful backend now implements these semantics, including the guest's estimate algorithm. The
-vector FRSQRTE fast path has directed table-bin and mixed-lane tests in `tests/llvm_rsqrte.c`. Exactness tests
+vector FRSQRTE fast path has directed table-bin and mixed-lane tests in `tests/native_rsqrte.c`. Exactness tests
 remain necessary when extending any fast path; no title-specific workaround or masked result comparison replaces them.
 
 ## System and memory-model limitations

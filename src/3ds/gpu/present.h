@@ -5,6 +5,7 @@
 #include "3ds/memory/ctr_memory.h"
 #include <stdbool.h>
 #include <stdint.h>
+struct SDL_Window; /* SDL's window, as SDL_video.h names it */
 /* The window's arrangements (ctr_screen_layout), numbered as Azahar's LayoutOption (src/common/settings.h at
    11eceda5): the top screen above the bottom one, one screen alone, the large screen with the other at its own size
    over 2.25 (Azahar's Android default), centred vertically at the large one's right, side by side, or separate windows
@@ -68,6 +69,18 @@ uint64_t snx_ctr_present_frames(void);
    layout or swap, on black. A screen that never decoded is absent. The GPU is waited for; false when the file cannot be
    written or no frame was decoded */
 bool snx_ctr_present_shot(const char* path);
+/* the game's folder (its captures/ for F3) and its .ini (the on-screen controls' and the runtime keys' settings): the
+   window then takes the runtime's keys, as every console's (common/utilities/vpad_sdl.h). A windowless run keeps none */
+void snx_ctr_present_game(const char* folder, const char* ini);
+/* a save state's picture (common/utilities/state_header.h's SNX_STATE_THUMB_W x _H, RGBA) of both screens as --shot
+   lays them out, into thumb: false, thumb as it was, where no frame was decoded */
+bool snx_ctr_present_thumb(uint8_t* thumb);
+/* the runtime's keys taken in window (the game's, or a test's), ini as above: what snx_ctr_present_game opens */
+void snx_ctr_present_keys(struct SDL_Window* window, const char* ini);
+/* a save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), -1 for none */
+int snx_ctr_present_state_ask(void);
+/* whether the thread dump's key (F5) was pressed since the last call: the run lists its threads between dispatches */
+bool snx_ctr_present_dump_asked(void);
 /* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
    the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
 void snx_ctr_present_report(void);

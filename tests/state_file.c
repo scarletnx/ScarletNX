@@ -5,7 +5,7 @@
    section's data, or a state that wasn't written to its end, is refused; and a save that fails leaves the state that
    was at the path */
 #define _POSIX_C_SOURCE 200809L /* pread, fileno, ftruncate */
-#include "nx/runtime/state_file.h"
+#include "common/utilities/state_file.h"
 #include "nx/runtime/platform/plat.h"
 #include <pthread.h>
 #include <stdarg.h>

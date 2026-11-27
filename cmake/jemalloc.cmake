@@ -5,7 +5,7 @@
 # from the release source in cmake/dependencies.cmake with jemalloc's own configure and make, as OpenSSL is, and
 # linked whole into the program (target snx_jemalloc), on Android the driver's executable (libscarletnx-run.so, src/nx).
 # On Linux, FreeBSD and Android it defines malloc, free and the rest, and the dynamic linker binds every library's calls
-# to the program's definitions, the C library's own, LLVM's and the GPU driver's among them; on macOS, where its
+# to the program's definitions, the C library's own and the GPU driver's among them; on macOS, where its
 # functions carry a je_ prefix, it puts its zone in front of the system's default one at startup.
 # Only the library is built: no programs, docs or C++ operators (the C++ library's new calls malloc, which is
 # jemalloc's). jemalloc is BSD-2-Clause. It needs GNU make (gmake on the BSDs).

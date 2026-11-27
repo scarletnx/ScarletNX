@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw,
-   and controls=2's Auto by the device's touch screen and gamepads */
-#include "nx/runtime/platform/vpad.h"
+/* The on-screen controls (common/utilities/vpad.c, and the showcase of them, common/utilities/vpad_showcase.c): what
+   fingers on them press, edit mode, the .ini keys, the draw, and controls=2's Auto by the device's touch screen and
+   gamepads */
+#include "common/utilities/vpad_showcase.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <math.h>
@@ -20,7 +21,6 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 
 /* ui.c's warning for a picture that does not draw */
-/* vpad.c's check of settings.txt's keys against its controls: a mismatch fails the test */
 void fatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -46,6 +46,9 @@ void logf_(int lvl, const char* fmt, ...) {
     vsnprintf(logged, sizeof logged, fmt, ap);
     va_end(ap);
 }
+
+/* the controls' own line, the runtime's log's as any */
+static void said(const char* line) { snprintf(logged, sizeof logged, "%s\n", line); }
 
 /* a theme's 0xRRGGBB as a quad's colour, R G B A from the low byte, opaque */
 #define THEME(rgb) (0xFF000000u | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
@@ -139,11 +142,15 @@ static const SnxUiQuadView* drawn(const SnxUiList* l, int look) {
     return NULL;
 }
 
+/* a setting's line, said as an error (snx_error), the Switch's log's WARN line */
+static void error_line(const char* line) { snprintf(logged, sizeof logged, "%s\n", line); }
 int main(void) {
+    snx_error_sink(error_line);
     SnxVpadConfig d;
     SnxUiList l;
     i32 st[4];
     vpad_set_store(store);
+    vpad_set_say(said);
     vpad_defaults(&d);
     assert(g_settings.controls_scale == 50 && g_settings.relative_stick_center &&
            g_settings.d_pad_slide && g_settings.haptics && !g_settings.snap_to_grid);
@@ -404,20 +411,24 @@ int main(void) {
             draw(&bar);
             assert(bar.n == n && bar_says(&bar, s, " Right stick 100% "));
         }
-        /* the bar in the menu's letters, whatever the picture's size: at 3 its row is 24 pixels down and its letters
-           24 by 48, and a press lands on it where it was last drawn */
+        /* the bar in the menu's letters, whatever the picture's size: at 3 its letters are 24 by 48, and minus and plus
+           are in its way at the top, so it goes under them, a fortieth of the picture's height apart; a press lands
+           on it where it was last drawn */
         {
             SnxUiList big = {quads, 0, 512};
-            float at = 0;
+            float at = 0, box[4], minus[4];
             vpad_draw(&big, safe, 3);
+            assert(vpad_edit_bar(safe, box));
+            vpad_box(SNX_VPAD_MINUS, safe, minus);
+            assert(box[1] >= minus[1] + minus[3] + 0.025f * (float)safe[3]);
             for (i = 0; i < big.n; ++i)
-                if (qv(&big.q[i]).ink == UI_GLYPH && qv(&big.q[i]).glyph == '+' && qv(&big.q[i]).y == 24) {
+                if (qv(&big.q[i]).ink == UI_GLYPH && qv(&big.q[i]).glyph == '+' && qv(&big.q[i]).y == box[1] + 12) {
                     assert(qv(&big.q[i]).w == 24 && qv(&big.q[i]).h == 48);
                     at = qv(&big.q[i]).x;
                 }
             assert(at > 0);
             stores = 0;
-            assert(vpad_down(17, at + 2, 24 + 40, safe) && vpad_up(17) && stores == 1);
+            assert(vpad_down(17, at + 2, box[1] + 12 + 16, safe) && vpad_up(17) && stores == 1);
             assert(vpad_config()->at[SNX_VPAD_STICK_R].size == 110);
             draw(&bar); /* at 2 again */
         }

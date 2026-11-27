@@ -36,6 +36,10 @@ void snx_path_native(char* path);
 /* fmt's path into out, of size bytes, its separators the system's (snx_path_native). 0; -1 when it does not fit,
    said with snx_error, out empty */
 int snx_path_format(char* out, size_t size, const char* fmt, ...);
+/* a screenshot's file in prefix's captures/ (prefix a folder's path ending with its separator, as the runtime's g_exedir
+   does), the folder made where it is missing: <prefix>captures/screenshot_YYYYMMDD_HHMMSS by the local time, without
+   its extension, into out (size bytes) */
+void snx_capture_path(char* out, size_t size, const char* prefix);
 /* says a line of error, "scarletnx: " and the line on stderr, or to the sink given to snx_error_sink. Returns 1 */
 int snx_error(const char* fmt, ...);
 /* an option given by the name an older version had, old (a literal), said once a run with its name now */
@@ -275,6 +279,9 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* how many host CPUs the process may run on, for workers that run on any of them: plat_cpus's where it lists them
+   (desktop Linux, whose affinity a taskset narrows), else the system's every one (snx_cpu_count). At least 1 */
+int plat_cpu_count(void);
 /* the threads an AOT pass (a game's recompile) is given when its count is left open: the physical cores where the
    system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
    part of the computer stays free; at least 1, never more than snx_cpu_count() */

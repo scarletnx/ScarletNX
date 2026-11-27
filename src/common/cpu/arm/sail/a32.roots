@@ -2,7 +2,7 @@
 # generates, the dispatcher that tries each instruction set's clauses, and the names the generator maps or lowers
 # itself and arm.sail's fixups, which are neither followed nor copied.
 
-# Thumb's 16-bit instructions (llvm_thumb.inc's T16 forms): every __DecodeT16 clause, tried in their order, but HLT's
+# Thumb's 16-bit instructions: every __DecodeT16 clause, tried in their order, but HLT's
 # and UDF's: with no clause their halfwords stay UNDEFINED, UDF's whatever an IT block's condition, as the Thumb decoder
 # has them (it gives them no instruction, and the code discovery that reads it ends there)
 decoder sg_decode_t16 __DecodeT16
@@ -98,7 +98,7 @@ fixup decode_aarch32_legacy_BX
 # and Thumb-2's unallocated hints, NOPs (sail-arm's fetch, not its decode, makes them so)
 fixup decode_aarch32_unallocated_hint_T1
 
-# A32's data processing and branches (llvm.c's data(), B, BL, BX, BLX, MOVW, MOVT): these roots' clauses of
+# A32's data processing and branches (B, BL, BX, BLX, MOVW, MOVT): these roots' clauses of
 # __DecodeA32_DataProMisc and __DecodeA32_BranchBlock; a word no clause of theirs takes stays the block compiler's
 decoder sg_decode_a32 __DecodeA32_DataProMisc __DecodeA32_BranchBlock
 root decode_aarch32_instrs_ADC_i_A1enc_A_txt

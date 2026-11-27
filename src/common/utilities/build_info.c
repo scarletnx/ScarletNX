@@ -62,6 +62,8 @@ const char* snx_build_log_line(void) {
            " " SNX_ARCH ")";
 }
 const char* snx_build_commit(void) { return SNX_COMMIT; }
+const char* snx_build_branch(void) { return SNX_BRANCH; }
+const char* snx_build_committed(void) { return SNX_COMMIT_DATE; }
 void snx_run_log_line(char out[SNX_RUN_LOG_LINE], long long now) {
     /* the day of the Gregorian calendar from the days since 1970-01-01 (Howard Hinnant's civil_from_days): the C
        library's gmtime keeps one answer for every thread */

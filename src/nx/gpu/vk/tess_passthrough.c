@@ -21,32 +21,36 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
     u32 input_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, vec4),
         output_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_OUTPUT, vec4);
     u32 interfaces[74], in[33] = {0}, out[33] = {0}, count = 0;
-    for (u32 i = 0; i < 33; i++) {
-        if (i && !(attributes & (1u << (i - 1)))) continue;
-        in[i] = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, vec4, u32_type, 32, i ? SPV_NOT_BUILTIN : 0,
-                                            i ? i - 1 : 0, 0);
-        out[i] = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, vec4, u32_type, vertices, i ? SPV_NOT_BUILTIN : 0,
-                                             i ? i - 1 : 0, 0);
+    /* the attributes at their locations (in[i] for location i - 1); the built-ins in a gl_PerVertex block each way */
+    for (u32 i = 1; i < 33; i++) {
+        if (!(attributes & (1u << (i - 1)))) continue;
+        in[i] = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, vec4, u32_type, 32, SPV_NOT_BUILTIN, i - 1, 0);
+        out[i] =
+            spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, vec4, u32_type, vertices, SPV_NOT_BUILTIN, i - 1, 0);
         interfaces[count++] = in[i];
         interfaces[count++] = out[i];
     }
-    u32 point_in = 0, point_out = 0, clips_in = 0, clips_out = 0;
+    u32 members[3] = {vec4}, builtins[3] = {SPV_BUILT_IN_POSITION}, member_count = 1, point_member = 0, clip_member = 0;
     if (point_size) {
         spv_emit_capability(&e, SPV_CAPABILITY_TESSELLATION_POINT_SIZE);
-        point_in = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, f32, u32_type, 32, 1, 0, 0);
-        point_out = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, vertices, 1, 0, 0);
-        interfaces[count++] = point_in;
-        interfaces[count++] = point_out;
+        point_member = member_count;
+        members[member_count] = f32, builtins[member_count++] = SPV_BUILT_IN_POINT_SIZE;
     }
     u32 clip_count = clip_mask ? 8 : 0;
     if (clip_count) {
         spv_emit_clip_distance_capability(&e);
-        u32 array = spv_emit_type_array(&e, f32, clip_count);
-        clips_in = spv_emit_interface_variable(&e, SPV_STORAGE_INPUT, array, u32_type, 32, 3, 0, 0);
-        clips_out = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, array, u32_type, vertices, 3, 0, 0);
-        interfaces[count++] = clips_in;
-        interfaces[count++] = clips_out;
+        clip_member = member_count;
+        members[member_count] = spv_emit_type_array(&e, f32, clip_count);
+        builtins[member_count++] = SPV_BUILT_IN_CLIP_DISTANCE;
     }
+    u32 block_in = spv_emit_variable(
+        &e, SPV_STORAGE_INPUT,
+        spv_emit_type_array(&e, spv_emit_type_builtin_block(&e, members, builtins, member_count), 32));
+    u32 block_out = spv_emit_variable(
+        &e, SPV_STORAGE_OUTPUT,
+        spv_emit_type_array(&e, spv_emit_type_builtin_block(&e, members, builtins, member_count), vertices));
+    interfaces[count++] = block_in;
+    interfaces[count++] = block_out;
     u32 outer = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, 4, 11, 0, 1);
     u32 inner = spv_emit_interface_variable(&e, SPV_STORAGE_OUTPUT, f32, u32_type, 2, 12, 0, 1);
     u32 invocation = spv_emit_builtin_input_u32(&e, u32_type, SPV_BUILT_IN_INVOCATION_ID);
@@ -64,19 +68,23 @@ u32* vk_tess_passthrough_spirv_full(u32 vertices, u32 attributes, int point_size
     spv_emit_function_void(&e, void_type, fn, fn_type);
     spv_emit_label(&e, spv_emit_id(&e));
     u32 vertex = spv_emit_load(&e, u32_type, invocation);
+    /* a member of this invocation's vertex, in and out: its built-in, then a component of an array */
+    u32 position = spv_emit_constant_u32(&e, u32_type, 0);
+    spv_emit_store(&e, SPV(&e, SPV_OP_ACCESS_CHAIN, output_ptr, block_out, vertex, position),
+                   spv_emit_load(&e, vec4, SPV(&e, SPV_OP_ACCESS_CHAIN, input_ptr, block_in, vertex, position)));
+    u32 f32_in = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, f32),
+        f32_out = spv_emit_type_pointer(&e, SPV_STORAGE_OUTPUT, f32);
     if (point_size) {
-        u32 in_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_INPUT, f32),
-            out_ptr = spv_emit_type_pointer(&e, SPV_STORAGE_OUTPUT, f32);
-        u32 value = spv_emit_load(&e, f32, SPV(&e, SPV_OP_ACCESS_CHAIN, in_ptr, point_in, vertex));
-        spv_emit_store(&e, SPV(&e, SPV_OP_ACCESS_CHAIN, out_ptr, point_out, vertex), value);
+        u32 member = spv_emit_constant_u32(&e, u32_type, point_member);
+        spv_emit_store(&e, SPV(&e, SPV_OP_ACCESS_CHAIN, f32_out, block_out, vertex, member),
+                       spv_emit_load(&e, f32, SPV(&e, SPV_OP_ACCESS_CHAIN, f32_in, block_in, vertex, member)));
     }
     for (u32 i = 0; i < clip_count; i++) {
-        u32 index = spv_emit_constant_u32(&e, u32_type, i);
-        u32 source = spv_emit_interface_scalar_pointer(&e, SPV_STORAGE_INPUT, f32, clips_in, vertex, index);
-        u32 destination = spv_emit_interface_scalar_pointer(&e, SPV_STORAGE_OUTPUT, f32, clips_out, vertex, index);
-        spv_emit_store(&e, destination, spv_emit_load(&e, f32, source));
+        u32 member = spv_emit_constant_u32(&e, u32_type, clip_member), index = spv_emit_constant_u32(&e, u32_type, i);
+        spv_emit_store(&e, SPV(&e, SPV_OP_ACCESS_CHAIN, f32_out, block_out, vertex, member, index),
+                       spv_emit_load(&e, f32, SPV(&e, SPV_OP_ACCESS_CHAIN, f32_in, block_in, vertex, member, index)));
     }
-    for (u32 i = 0; i < 33; i++) {
+    for (u32 i = 1; i < 33; i++) {
         if (!in[i]) continue;
         u32 source = SPV(&e, SPV_OP_ACCESS_CHAIN, input_ptr, in[i], vertex);
         u32 destination = SPV(&e, SPV_OP_ACCESS_CHAIN, output_ptr, out[i], vertex);

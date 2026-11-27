@@ -9,7 +9,6 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/loader/code_loader_int.h"
 #include "common/cpu/recompiler/object/elf_object.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/runtime/interface.h"
@@ -17,7 +16,7 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #ifdef SNX_TEST_UNICORN
 #include "support/host_unicorn.h"
 #endif
@@ -55,7 +54,7 @@ static int build(const char* output, const char* triple) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild llvm = {0};
+    SnxModuleBuild job = {0};
     image.name = "test";
     image.base = SNX_CODE_BASE;
     image.size = sizeof g_ios_pack.memory;
@@ -74,12 +73,12 @@ static int build(const char* output, const char* triple) {
     options.abi = SNX_ABI;
     options.quiet = 1;
     options.chunk_instrs = 1; /* each function a unit */
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
-    llvm.triple = triple;
-    return snx_build_module_llvm(&loaded, &options, &llvm);
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
+    job.triple = triple;
+    return snx_build_module_a64(&loaded, &options, &job);
 }
 
 /* the pack's objects loaded as the app does (main.c's load_pack: the JIT loader's arena of the regions they need): the
@@ -168,8 +167,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "the pack was not built\n");
         return 1;
     }
-    /* LLVM made none of it: never started */
-    CHECK(!snx_ir_started());
     data = (unsigned char*)snx_read_file(argv[1], &size);
     inputs = data ? snx_objects_unpack(data, size, "pack", &count) : NULL;
     CHECK(inputs && count >= 3); /* the descriptor, f0's unit and f1's, with f2 in it or of its own */

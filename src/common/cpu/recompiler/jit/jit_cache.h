@@ -31,17 +31,22 @@ typedef struct {
     size_t object_size;
 } SnxJitCacheRecord;
 
-/* What the objects depend on beyond the code: the ABI, the IR object version,
-   the host target triple, LLVM, the runtime library, the host CPU and its
-   features, the -O level, hooked direct calls, direct SVCs, SLP vectorization,
-   FPSR flag exactness, volatile guest accesses, the guest's A64 features (0: the
-   Switch's) and the decoder's tables. The profile run and the AOT build must
-   pass the same. */
+/* What the objects depend on beyond the code: the ABI, the native back end that
+   makes them, the version of its code (mach/native.h's snx_native_code) and the
+   host's features it makes the code for, the runtime library, the -O level the
+   launcher reads (gui/aot.c), hooked direct calls, direct SVCs, the guest's A64
+   features (0: the Switch's) and the decoder's tables. The profile run and the
+   AOT build must pass the same. */
 char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 features);
+/* How the key a file was made with (was, length bytes) and key differ, the
+   first field where they do, into out (size bytes): "made for opt=3, and this
+   build makes opt=2" */
+void snx_jit_cache_key_change(const char* was, size_t length, const char* key, char* out, size_t size);
 
-/* Opens and validates the whole file: a wrong key, a corrupt record, or a
-   trailing unfinished record returns NULL with the reason in error. An empty
-   cache (the header and no records) opens with count 0. */
+/* Opens and validates the whole file: a wrong key (the error says the field it
+   differs in), a corrupt record, or a trailing unfinished record returns NULL
+   with the reason in error. An empty cache (the header and no records) opens
+   with count 0. */
 SnxJitCache* snx_jit_cache_open(const char* path, const char* key, char* error, size_t error_size);
 void snx_jit_cache_close(SnxJitCache* cache);
 size_t snx_jit_cache_count(const SnxJitCache* cache);

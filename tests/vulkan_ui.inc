@@ -9,9 +9,9 @@
    holds every kind of change */
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/overlay.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include "nx/gpu/vk/vk.h"
 #include "support/ui_shape_ref.h"
 #include <math.h>

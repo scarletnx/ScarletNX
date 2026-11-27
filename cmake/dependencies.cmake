@@ -107,6 +107,9 @@ if(SNX_BUILD_NX OR SNX_BUILD_3DS OR BUILD_TESTING)
                                    HAS_INET_PTON=1 HAS_INET_NTOP=1 HAS_MSGHDR_FLAGS=1 HAS_SOCKLEN_T=1)
     endif()
     snx_quiet(snx_enet)
+endif()
+# zstd for the GBA's, the DS's and the Vita's save states too (src/common/utilities/state_file.c)
+if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_AGB OR SNX_BUILD_NDS OR SNX_BUILD_VITA OR BUILD_TESTING)
     AddJsonPackage(NAME zstd DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     file(GLOB snx_zstd_sources "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/compress/*.c"
          "${zstd_SOURCE_DIR}/lib/decompress/*.c")
@@ -155,12 +158,12 @@ if(TARGET OpenSSL::SSL)
     include("${PROJECT_SOURCE_DIR}/cmake/cacert.cmake")
 endif()
 
-# jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's LLVM threads
+# jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's threads
 # spend less time in malloc and free than with the C library's. On by default where the program's malloc is every
 # library's: Linux and FreeBSD (whose libc's is an older jemalloc), and Android's driver, the executable the menu runs
 # recompiles in (libscarletnx-run.so, src/nx), whose C library calls malloc through the program's as glibc does, and
 # macOS through jemalloc's zone, which it puts in front of the system's. Windows' C runtime is a DLL with a heap of its
-# own, which LLVM's DLL and the C runtime's strdup allocate from, and an iOS app keeps the system's. The sanitizers
+# own, which the C runtime's strdup allocates from, and an iOS app keeps the system's. The sanitizers
 # bring their own malloc
 # Android's program is the Switch driver's executable, which a build without the runtime does not make
 if(ANDROID AND (NOT SNX_BUILD_NX OR SNX_TOOLS_ONLY))
@@ -184,7 +187,7 @@ if(SNX_JEMALLOC)
     if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Darwin|Android)$")
         message(FATAL_ERROR "SNX_JEMALLOC=ON on ${CMAKE_SYSTEM_NAME}: jemalloc takes the program's malloc on Linux, "
                             "FreeBSD, macOS and Android only. On Windows the C runtime DLL keeps its own heap, which "
-                            "LLVM's DLL and its strdup allocate from, and an iOS app keeps the system's. Configure "
+                            "its strdup allocates from, and an iOS app keeps the system's. Configure "
                             "with -DSNX_JEMALLOC=OFF.")
     endif()
     if(NOT snx_jemalloc_has_program)

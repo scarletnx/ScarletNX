@@ -64,7 +64,6 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
-        "SNX_LLVM_CONFIG": "${sourceDir}/scripts/cross-llvm-config.sh",
         "SNX_DEPLOY": "OFF"
       }
     },
@@ -82,25 +81,6 @@
         "CMAKE_C_COMPILER_TARGET": "powerpc64le-linux-gnu",
         "CMAKE_CXX_COMPILER_TARGET": "powerpc64le-linux-gnu",
         "CMAKE_CROSSCOMPILING_EMULATOR": "qemu-ppc64le;-L;$env{SNX_SYSROOT}"
-      }
-    },
-    {
-      "name": "linux-ppc64-cross",
-      "displayName": "Linux ppc64 big-endian with glibc (ELFv1, Debian ports), cross-built with Clang, linked with GNU ld (binutils-powerpc64-linux-gnu: LLD takes no ELFv1)",
-      "inherits": "linux-cross-base",
-      "environment": {
-        "PKG_CONFIG_LIBDIR": "$env{SNX_SYSROOT}/usr/lib/powerpc64-linux-gnu/pkgconfig:$env{SNX_SYSROOT}/usr/lib/pkgconfig:$env{SNX_SYSROOT}/usr/share/pkgconfig",
-        "PKG_CONFIG_SYSROOT_DIR": "$env{SNX_SYSROOT}",
-        "QEMU_LD_PREFIX": "$env{SNX_SYSROOT}"
-      },
-      "cacheVariables": {
-        "CMAKE_SYSTEM_PROCESSOR": "ppc64",
-        "CMAKE_C_COMPILER_TARGET": "powerpc64-linux-gnu",
-        "CMAKE_CXX_COMPILER_TARGET": "powerpc64-linux-gnu",
-        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=bfd",
-        "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=bfd",
-        "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=bfd",
-        "CMAKE_CROSSCOMPILING_EMULATOR": "qemu-ppc64;-L;$env{SNX_SYSROOT}"
       }
     },
     {
@@ -122,12 +102,8 @@
     },
     {
       "name": "linux-ppc64-g5-cross",
-      "displayName": "Linux ppc64 big-endian with glibc (ELFv2), for the PowerPC 970 (PowerMac G5) and POWER4 on, cross-built with Clang, linking the LLVM of scripts/linux-llvm.sh ppc64 (the system root's is built for POWER8)",
-      "inherits": "linux-ppc64-elfv2-cross",
-      "cacheVariables": {
-        "LLVM_DIR": "${sourceDir}/.cache/llvm/ppc64/lib/cmake/llvm",
-        "SNX_LLVM_CONFIG": ""
-      }
+      "displayName": "Linux ppc64 big-endian with glibc (ELFv2), for the PowerPC 970 (PowerMac G5) and POWER4 on, cross-built with Clang: the ELFv2 build, named for the G5",
+      "inherits": "linux-ppc64-elfv2-cross"
     },
     {
       "name": "linux-ppc64-musl-cross",
@@ -266,7 +242,6 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
-        "LLVM_DIR": "$env{SNX_SYSROOT}/usr/pkg/lib/cmake/llvm",
         "SNX_DEPLOY": "OFF"
       }
     },
@@ -286,7 +261,7 @@
     },
     {
       "name": "ios",
-      "displayName": "iOS, cross-built on a Mac with Xcode (docs/hosts/apple.md); LLVM_DIR names scripts/apple-llvm.sh's",
+      "displayName": "iOS, cross-built on a Mac with Xcode (docs/hosts/apple.md)",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {
@@ -309,7 +284,7 @@
     },
     {
       "name": "ios-simulator",
-      "displayName": "The iOS simulator on Apple silicon, built like the ios preset; LLVM_DIR names scripts/apple-llvm.sh iossim's",
+      "displayName": "The iOS simulator on Apple silicon, built like the ios preset",
       "inherits": "ios",
       "cacheVariables": {
         "CMAKE_OSX_SYSROOT": "iphonesimulator",
@@ -333,10 +308,6 @@
     {
       "name": "linux-ppc64le-cross",
       "configurePreset": "linux-ppc64le-cross"
-    },
-    {
-      "name": "linux-ppc64-cross",
-      "configurePreset": "linux-ppc64-cross"
     },
     {
       "name": "linux-ppc64-elfv2-cross",
@@ -391,16 +362,6 @@
     {
       "name": "linux-ppc64le-cross",
       "configurePreset": "linux-ppc64le-cross",
-      "output": {
-        "outputOnFailure": true
-      },
-      "execution": {
-        "timeout": 900
-      }
-    },
-    {
-      "name": "linux-ppc64-cross",
-      "configurePreset": "linux-ppc64-cross",
       "output": {
         "outputOnFailure": true
       },

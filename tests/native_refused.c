@@ -2,14 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* An instruction a native back end has no code for (SnxNativeOptions.without: here a word of SHA512 and one of SM4, each
    in a function that never runs it and in one that does), and what is said of it. Of every machine's back end, on any
-   host:
-   - beside another back end (alone 0) the function is left, and the line at the recompile names the function, the op,
-     its word, its address, the feature and the target, once a function, and counts it;
-   - with none (alone 1) the function is made, and the line says it raises an undefined instruction.
-   On an x86-64 host the code made alone runs: the function that never reaches its word returns, the other calls the
+   host, the function is made, and the line at the recompile names the function, the op, its word, its address, the
+   feature and the target, once a function, says it raises an undefined instruction, and counts it.
+   On an x86-64 host the code made runs: the function that never reaches its word returns, the other calls the
    runtime's undef with the instruction's pc and word, whose text (snx_a64_word_text) names the op and the feature. And
-   through the library, with words LLVM has no code for (FP8's): the lines and their count, and the undefined
-   instruction where one runs */
+   through the library, whose code is the native back end's alone: each function made, the lines and their count, and
+   the undefined instruction where one runs */
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/la64/la64_codegen.h"
@@ -137,7 +135,7 @@ static const struct {
                   {"ppc64le", make_ppc64},   {"ppc64", make_ppc64be},    {"mips64el", make_mips64},
                   {"mips64", make_mips64be}, {"loongarch64", make_la64}, {"s390x", make_s390x}};
 
-/* a machine's back end beside another and alone; its object made alone in *alone (the caller's) */
+/* a machine's back end; its object in *alone (the caller's) */
 static void machine(const char* name, MakeObject make, SnxCodegen* cg, unsigned char** alone, size_t* alone_size) {
     SnxNativeOptions options = {0};
     unsigned char made[FUNCTIONS], *object = NULL;
@@ -146,18 +144,7 @@ static void machine(const char* name, MakeObject make, SnxCodegen* cg, unsigned 
     options.refused = &refused;
     options.without = k_without;
     options.without_count = sizeof k_without / sizeof *k_without;
-    snprintf(of, sizeof of, "%s beside another back end", name);
-    g_test.count = 0;
-    check(make(cg, &options, made, &object, &size, error, sizeof error) >= 0, error, of);
-    for (f = 0; f < FUNCTIONS; ++f)
-        check(made[f] == !k_functions[f].word, "leaves the functions with one, no other", of);
-    check(refused == REFUSED, "counts them", of);
-    check_lines(of, ": LLVM makes the function");
-    free(object);
-    object = NULL;
-    snprintf(of, sizeof of, "%s alone", name);
-    options.alone = 1;
-    refused = 0;
+    snprintf(of, sizeof of, "%s", name);
     g_test.count = 0;
     check(make(cg, &options, made, &object, &size, error, sizeof error) >= 0, error, of);
     for (f = 0; f < FUNCTIONS; ++f) check(made[f], "makes every function", of);
@@ -241,10 +228,10 @@ int main(void) {
                 !snx_x64_cached_object(&cg, 0, FUNCTIONS, &options, made, &object, &size, &reused, error, sizeof error),
                 error, "the unit cache");
             check(!reused && refused == REFUSED, "made each time, and counted", "the unit cache");
-            check_lines("the unit cache", ": LLVM makes the function");
+            check_lines("the unit cache", ": it raises an undefined instruction where it runs");
             free(object);
         }
-        /* the code made alone, run */
+        /* the code made, run */
         SnxCodeLoader* loader = snx_code_loader_new(0, error, sizeof error);
         SnxLinkInput input = {0};
         const char* names[FUNCTIONS];
@@ -272,7 +259,7 @@ int main(void) {
                 check_run(&c, f, k_functions[f].word && k_functions[f].runs, of);
             }
         snx_code_loader_free(loader);
-        /* and through the library: words LLVM has no code for either, undefined where they run */
+        /* and through the library: its functions all the native back end's, the words undefined where they run */
         for (f = 0; f < REFUSED; ++f) {
             uint32_t w = f < 2 ? F1CVTL : FSCALE;
             size_t at = f * EACH + (k_functions[f].runs ? 0 : 4);
@@ -281,7 +268,7 @@ int main(void) {
             k_functions[f].feature = "FEAT_FP8";
             for (unsigned b = 0; b < 4; ++b) mem[CODE + at + b] = (uint8_t)(w >> (8 * b));
         }
-        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
         struct snx_code_range range = {CODE, mem + CODE, sizeof g_code};
         struct snx_recompiled* made = NULL;
         g_test.count = 0;
@@ -293,19 +280,22 @@ int main(void) {
         else {
             char last[128];
             check(g_test.count == REFUSED + 1, "a line each and their count", "the library");
-            snprintf(last, sizeof last, "%u of %u functions have an instruction it has no code for: LLVM made them",
+            snprintf(last, sizeof last,
+                     "%u of %u functions have an instruction it has no code for: each made, the instruction undefined "
+                     "where it runs",
                      REFUSED, FUNCTIONS);
             check(g_test.count && strstr(g_test.lines[g_test.count - 1], last) != NULL, "the count, at the end",
                   "the library");
             if (g_test.count) --g_test.count;
-            check_lines("the library", ": LLVM makes the function");
-            check(snx_recompiled_x64_functions(made) == 1, "LLVM makes the ones with one", "the library");
+            check_lines("the library", ": it raises an undefined instruction where it runs");
+            check(snx_recompiled_x64_functions(made) == FUNCTIONS, "the native back end makes every one",
+                  "the library");
             for (f = 0; f < FUNCTIONS; ++f) {
                 CPU c;
                 run_begin(&c, &rt, mem);
                 check(!snx_recompiled_bind(made, &c), "bound", "the library");
                 snx_recompiled_run(made, &c, g_hints[f], STOP);
-                check_run(&c, f, k_functions[f].word && k_functions[f].runs, "the library's LLVM code");
+                check_run(&c, f, k_functions[f].word && k_functions[f].runs, "the library's code");
             }
             snx_recompiled_free(made);
         }

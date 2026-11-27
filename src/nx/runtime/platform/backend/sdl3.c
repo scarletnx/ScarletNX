@@ -26,12 +26,13 @@
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
+#include "common/utilities/vpad_sdl.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/joycon2.h"
 #include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_mouse */
 #include "nx/runtime/platform/help.h"
-#include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/audio_volume.h"
@@ -104,7 +105,7 @@ static struct {
     _Atomic u32 generation;         /* the window's surface came back this many times */
     _Atomic u32 window_changes;     /* the app's, the displays' and the window's events (backend_window_changes) */
     u64 touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid.touch */
-    int touch_lift; /* backend_touch_mode_set asks video_poll to lift what the touch screen no longer takes */
+    int touch_lift; /* touch_changed asks video_poll to lift what the touch screen no longer takes */
     /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
        to another display, read by the renderer's threads */
     _Atomic u64 refresh_ns;
@@ -381,11 +382,7 @@ static void touch_set(int how, u64 id, const int picture[4], float px, float py)
 /* the touch screen's setting changed (the .ini's setter, on the main thread): the fingers or the mouse it no longer
    takes are lifted by the next video_poll, under the input_lock it holds already. Not here: the in-game menu sets it
    from inside video_poll (overlay_controls), where taking the lock again would hang the thread */
-void backend_touch_mode_set(const IniOpt* o, const char* v) {
-    (void)o;
-    (void)v;
-    g_sdl3.touch_lift = 1;
-}
+static void touch_changed(void) { g_sdl3.touch_lift = 1; }
 static void touch_lift(void) { /* under input_lock */
     if (!g_sdl3.touch_lift) return;
     g_sdl3.touch_lift = 0;
@@ -599,35 +596,10 @@ void backend_controller_hide(u32 ticket) {
 
 /* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) { ui_atlas_build(); }
-/* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected (vpad_auto) */
+static void controls_say(const char* line) { LOG("%s\n", line); }
+/* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected */
 static int g_touch_seen;
-static void controls_auto(void) {
-    int n = 0, pads = 0, touch = g_touch_seen;
-    SDL_TouchID* t = SDL_GetTouchDevices(&n);
-    SDL_JoystickID* g = SDL_GetGamepads(&pads);
-    for (int i = 0; t && i < n && !touch; i++) touch = SDL_GetTouchDeviceType(t[i]) == SDL_TOUCH_DEVICE_DIRECT;
-    SDL_free(t);
-    SDL_free(g);
-    vpad_auto(touch, pads);
-}
-/* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
-static void buzzer_open(void) {
-#ifdef __ANDROID__
-    int n = 0;
-    SDL_HapticID* ids;
-    if (!SDL_InitSubSystem(SDL_INIT_HAPTIC)) return;
-    ids = SDL_GetHaptics(&n);
-    for (int i = 0; ids && i < n && !g_sdl3.buzzer; i++) {
-        const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_sdl3.buzzer = SDL_OpenHaptic(ids[i]);
-    }
-    SDL_free(ids);
-    if (g_sdl3.buzzer && !SDL_InitHapticRumble(g_sdl3.buzzer)) {
-        SDL_CloseHaptic(g_sdl3.buzzer);
-        g_sdl3.buzzer = NULL;
-    }
-#endif
-}
+static void controls_auto(void) { snx_vpad_sdl_auto(g_touch_seen); }
 
 /* the renderer's start failed: what it says of why, with its values, else the log has it. A start that failed for
    another reason than the device's Vulkan version was said as that before */
@@ -689,14 +661,8 @@ void video_init(const char* title, const char* addons) {
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
         return;
     }
-#ifdef __ANDROID__
-    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1"); /* back opens the game's menu (overlay.c), not leaves */
-#endif
-    /* a finger and the mouse each reach the touch screen once: SDL would also send each as the other, and a pen as both
-       (it stays a finger) */
-    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
+    /* a finger and the mouse each reach the touch screen once, and Android's Back opens the game's menu (overlay.c) */
+    snx_vpad_sdl_hints();
     snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
@@ -734,9 +700,11 @@ void video_init(const char* title, const char* addons) {
     overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
 #endif
     controls_atlas();
+    vpad_set_say(controls_say);
+    vpad_set_touch(touch_changed);
     controls_auto();
     vpad_set_store(ini_set);
-    buzzer_open();
+    g_sdl3.buzzer = snx_vpad_sdl_buzzer();
     SDL_GetWindowSizeInPixels(g_sdl3.win, &w, &h);
     LOG("video: a window of %dx%d pixels, the display's scale %.2f\n", w, h, SDL_GetWindowDisplayScale(g_sdl3.win));
     wsize_set(w, h);
@@ -744,8 +712,10 @@ void video_init(const char* title, const char* addons) {
     refresh_set();
     if (!g_renderer->start()) renderer_failed("Vulkan could not start");
     LOG("renderer: Vulkan\n");
-    /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
-    if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
+    if (unattended_fullscreen(g_settings.fullscreen, g_cli_fullscreen))
+        set_fullscreen(1);
+    else if (g_settings.fullscreen)
+        LOG("video: windowed, as a timed run starts (-f or --fullscreen=1 makes it fullscreen)\n");
 #ifdef _WIN32
     /* keep the display and the system awake while playing (it was set with the crash handler, headless runs too) */
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
@@ -1272,15 +1242,10 @@ static void title_paused(int paused) {
     SDL_SetWindowTitle(g_sdl3.win, title);
 }
 static void menu_open(int open);
-/* a key's modifiers as hotkeys.h counts them, either side's */
-static unsigned key_mods(SDL_Keymod m) {
-    return (m & SDL_KMOD_CTRL ? HOTKEY_CTRL : 0u) | (m & SDL_KMOD_ALT ? HOTKEY_ALT : 0u) |
-           (m & SDL_KMOD_SHIFT ? HOTKEY_SHIFT : 0u) | (m & SDL_KMOD_GUI ? HOTKEY_GUI : 0u);
-}
 /* the runtime's key a key press is (hotkeys.h's action), -1 for none: a key two actions are set to does the first's,
    which the log says */
 static int key_action(const SDL_KeyboardEvent* k) {
-    int also, a = hotkey_find(k->key, key_mods(k->mod), &also);
+    int also, a = hotkey_find(k->key, hotkey_mods(k->mod), &also);
     if (a >= 0 && also >= 0 && !k->repeat)
         WARN_LIMIT(4, "input: %s is %s's and %s's: it does %s's\n", hotkey_text(a), hotkey_row(a)->key,
                    hotkey_row(also)->key, hotkey_row(a)->key);
@@ -1387,11 +1352,7 @@ static void hotkey(int action) {
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open, and the keyboard's box
    while it shows and the menu doesn't. Back, Home and the menu's key (hotkey_menu, F2) open and close the menu, and
    they and Esc end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its thread */
-/* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
-   give a first finger and any finger may have, and no real finger's id sets bit 63 */
-static u64 finger_id(const SDL_TouchFingerEvent* f) {
-    return (u64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
-}
+static u64 finger_id(const SDL_TouchFingerEvent* f) { return snx_vpad_sdl_finger(f); }
 static void menu_open(int open) {
     if (overlay_shown() != open) overlay_toggle();
     vpad_release();
@@ -1433,7 +1394,7 @@ static int keyboard_event(const SDL_Event* e, int action) {
         return 1;
     }
     if ((action == HOTKEY_FULLSCREEN || action == HOTKEY_FULLSCREEN_2) &&
-        (key_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
+        (hotkey_mods(e->key.mod) & (HOTKEY_CTRL | HOTKEY_ALT | HOTKEY_GUI)))
         return 0;
     switch (e->key.key) {
         case SDLK_BACKSPACE: overlay_keyboard_key(OVERLAY_KEY_BACKSPACE); break;
@@ -1504,7 +1465,7 @@ static int menu_event(const SDL_Event* e, int action) {
     float d;
     /* the Shortcuts page's wait: any key is the one it waits for, the menu's too */
     if (e->type == SDL_EVENT_KEY_DOWN && overlay_shortcut_listening()) {
-        if (!e->key.repeat) overlay_shortcut_key(e->key.key, key_mods(e->key.mod));
+        if (!e->key.repeat) overlay_shortcut_key(e->key.key, hotkey_mods(e->key.mod));
         return 1;
     }
     if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || action == HOTKEY_MENU)) ||
@@ -1643,12 +1604,7 @@ static void touch_finger(const SDL_Event* e) {
     py = e->tfinger.y * (float)h;
     backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
     ui_lock();
-    if (e->type == SDL_EVENT_FINGER_DOWN)
-        taken = vpad_down(finger_id(&e->tfinger), px, py, safe);
-    else if (e->type == SDL_EVENT_FINGER_MOTION)
-        vpad_move(finger_id(&e->tfinger), px, py, safe);
-    else
-        vpad_up(finger_id(&e->tfinger));
+    taken = snx_vpad_sdl_pointer(e, px, py, safe);
     ui_unlock();
     if (taken || !g_settings.touch_screen) return;
     touch_window(picture);
@@ -1739,17 +1695,14 @@ static void touch_mouse(const SDL_Event* e) {
     if (e->type == SDL_EVENT_MOUSE_MOTION) {
         if (e->motion.which == SDL_TOUCH_MOUSEID) return;
         ui_lock();
-        vpad_move(SNX_TOUCH_MOUSE, e->motion.x * d, e->motion.y * d, safe);
+        (void)snx_vpad_sdl_pointer(e, e->motion.x * d, e->motion.y * d, safe);
         ui_unlock();
         touch_window(picture);
         if (g_settings.touch_screen == 2 && (e->motion.state & SDL_BUTTON_LMASK))
             touch_set(TOUCH_MOVE, SNX_TOUCH_MOUSE, picture, e->motion.x * d, e->motion.y * d);
     } else if (e->button.which != SDL_TOUCH_MOUSEID && e->button.button == SDL_BUTTON_LEFT) {
         ui_lock();
-        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-            taken = vpad_down(SNX_TOUCH_MOUSE, e->button.x * d, e->button.y * d, safe);
-        else
-            taken = vpad_up(SNX_TOUCH_MOUSE);
+        taken = snx_vpad_sdl_pointer(e, e->button.x * d, e->button.y * d, safe);
         ui_unlock();
         if (taken || g_settings.touch_screen != 2) return;
         touch_window(picture);
@@ -1958,10 +1911,12 @@ static void window_event(const SDL_Event* e) {
             overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
             break;
         case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+            LOG("video: the window is fullscreen\n");
             g_sdl3.fullscreen = 1;
             wsafe_set();
             break;
         case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+            LOG("video: the window is no longer fullscreen\n");
             g_sdl3.fullscreen = 0;
             wsafe_set();
             break;
@@ -2484,7 +2439,7 @@ void video_poll(void) {
             ry = vs[3];
         }
         if (acts & SNX_VPAD_DO_SHOT) g_sdl3.shot_req = 1;
-        if ((acts & SNX_VPAD_DO_BUZZ) && g_sdl3.buzzer) SDL_PlayHapticRumble(g_sdl3.buzzer, 0.5f, 15);
+        if (acts & SNX_VPAD_DO_BUZZ) snx_vpad_sdl_buzz(g_sdl3.buzzer);
     }
     input_stick_clamp(&lx, &ly);
     input_stick_clamp(&rx, &ry);
@@ -2589,17 +2544,7 @@ void frontend_frame(void) {
     if (g_sdl3.shot_req) {
         g_sdl3.shot_req = 0;
         SNX_ZONE_T(z_shot, "plat screenshot", "hotkey");
-        time_t now = time(NULL);
-        struct tm t;
-#ifdef _WIN32
-        localtime_s(&t, &now);
-#else
-        localtime_r(&now, &t);
-#endif
-        snprintf(p, sizeof p, "%scaptures", g_exedir);
-        plat_mkdir(p);
-        snprintf(p, sizeof p, "%scaptures/screenshot_%04d%02d%02d_%02d%02d%02d", g_exedir, t.tm_year + 1900,
-                 t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+        snx_capture_path(p, sizeof p, g_exedir);
         g_renderer->screenshot(p);
         toast(HOTKEY_SCREENSHOT, "Screenshot saved in captures");
     }

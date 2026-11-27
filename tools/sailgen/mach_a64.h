@@ -253,7 +253,7 @@ enum {
     SGX_M_CAS,  /* CAS: imm log2; the old value */
     SGX_M_CASP, /* CASP of doublewords: the old pair */
     SGX_M_RMW,  /* LDADD...SWP: imm op << 2 | log2 (x64_helpers.c's snx_x64_rmw's); the old value */
-    SGX_M_CRC,  /* CRC32, CRC32C: imm bytes | castagnoli << 4; the result */
+    SGX_M_CRC,  /* CRC32, CRC32C: imm bytes | SSE4.2's CRC32C << 4 | CRC32C's table << 5 | CRC32's slices << 6 */
     SGX_M_FENCE_LD, /* a barrier of loads alone (a machine whose loads are no acquires) */
     SGX_M_FENCE_ST, /* of stores alone */
     SGX_M_FPENTER,  /* the guest's FPCR into the host's, its FPSR cleared (a machine running the guest's own floating
@@ -300,7 +300,7 @@ static inline void sgx_simple(SgCtx* g, int op) {
 /* ---- the SIMD&FP registers and floating point ----
    _V's elements are CPU.v's (two doublewords each, the low first), read and written a doubleword at a time; a write
    is of all 128 bits, as nx.sail's register file has it (a scalar's result zero-extended). FPCR is CPU.fpcr. The
-   arithmetic the Sail lowers (FPAdd...) calls cpu.h's helpers, the exact ones LLVM's slow paths call, through
+   arithmetic the Sail lowers (FPAdd...) calls cpu.h's helpers, the exact ones, through
    x64_helpers.c's snx_x64_fp_* (the state first, FPSR's flags ORed in there): bits the operation takes as constants
    of the instruction are packed in desc, and a run-time path (FCCMP's) turns into FPCR's bit 32, the helper then
    doing nothing */
@@ -463,7 +463,7 @@ static inline SgD sgx_fp(SgCtx* g, const char* sym, SgB path, SgD fpcr, SgD* ops
 /* ---- floating point every machine's back end makes the same way ----
    FPRoundingMode is the back end's own (the mode FPCR holds when the guest runs); FRINT32/64 (FPRoundIntN), FJCVTZS
    and BFCVT are the exact helpers' (x64_helpers.c) */
-#define SG_FP_ROUNDING_FPCR 6 /* llvm.h's: FPRoundingMode's, past FPRounding's 0-5 */
+#define SG_FP_ROUNDING_FPCR 6 /* FPRoundingMode's, past FPRounding's 0-5 */
 static inline int sg_FPRoundingMode(SgCtx* g, SgB path, SgD fpcr) {
     (void)g, (void)path, (void)fpcr;
     return SG_FP_ROUNDING_FPCR;
@@ -773,8 +773,8 @@ static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD val
     i->side = 1; /* a store: kept though nothing reads a result */
 }
 
-/* the machine's ordering of an acquire load after it and of a release store (before and after it: the sequentially
-   consistent store the LLVM back end makes, which orders it with a later load-acquire too) */
+/* the machine's ordering of an acquire load after it and of a release store (before and after it: a sequentially
+   consistent store, which orders it with a later load-acquire too) */
 static inline void sgx_acquire(SgCtx* g);
 static inline void sgx_release(SgCtx* g, int after);
 /* GuestMemRead(address, size, acquire): 16 bytes are two of 8 */
@@ -930,6 +930,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     b.index = -1;
     memset(&a, 0, sizeof a);
     a.x = &g->x;
+    b.features = host_features;
     a.b = &b;
     a.resolve = g->resolve;
     sgx_prologue(&a);

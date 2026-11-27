@@ -93,6 +93,28 @@ void nds_vk_capture_land(NdsBoard* board) {
     memcpy(bank, g_frame.capture_read.map + first, bytes - first);
 }
 
+uint32_t nds_vk_capture_pending(unsigned* bank, uint32_t* offset, const unsigned char** data) {
+    NdsVk* v = nds_vk();
+    if (!v || !g_frame.captured.pending || !snx_vk_ring_wait(&v->ring, g_frame.captured.serial, UINT64_MAX)) return 0;
+    *bank = g_frame.captured.bank;
+    *offset = g_frame.captured.offset;
+    *data = g_frame.capture_read.map;
+    return g_frame.captured.bytes;
+}
+
+bool nds_vk_capture_pend(unsigned bank, uint32_t offset, const unsigned char* data, uint32_t bytes) {
+    NdsVk* v = nds_vk();
+    if (!v || !g_frame.up) return !bytes;
+    g_frame.captured.pending = bytes != 0;
+    if (!bytes) return true;
+    memcpy(g_frame.capture_read.map, data, bytes);
+    g_frame.captured.serial = 0; /* made already: nothing to wait for */
+    g_frame.captured.bank = bank;
+    g_frame.captured.offset = offset;
+    g_frame.captured.bytes = bytes;
+    return true;
+}
+
 void nds_vk_frame_compose(NdsBoard* board) {
     NdsVk* v = nds_vk();
     if (!v || !g_frame.up) return;
