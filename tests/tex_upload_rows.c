@@ -721,10 +721,6 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
 }
-u64 vk_rt_copies_reclaim(u32 before, u64 want) {
-    (void)before, (void)want;
-    return 0;
-}
 /* surface.c's: a copy's views and image go when the frames are done, and its bytes with them */
 void vk_rt_copy_free(Surf* x) {
     for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);

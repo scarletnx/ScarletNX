@@ -4857,8 +4857,7 @@ void vk_tex_frame(void) {
        presents: it passes over the targets it keeps, and asking whether one holds such a draw can hash its memory.
        Render targets later ones drew all over hold nothing, nor do textures that took targets' pixels where later
        targets drew all over: every 30 presents those unused for a second and eight presents go (a game at a dynamic
-       resolution makes its scene's targets again each frame, at moving offsets of its pool), and so do the copies of
-       targets that no bind asked for in VK_RT_COPY_PRESENTS presents (vk_rt_copies_reclaim) */
+       resolution makes its scene's targets again each frame, at moving offsets of its pool) */
     u32 before = vk_present_before(20000000000ull, 120);
     rt_copy_present();
     vk_surf_ended_frame(); /* those the game ended go sooner */
@@ -4869,7 +4868,6 @@ void vk_tex_frame(void) {
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
     if (g_vk_present % 30 == 0) {
         vk_rt_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);
-        vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
         vk_tex_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);
     }
     if (g_vk_present % 600 == 0) {

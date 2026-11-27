@@ -1870,11 +1870,13 @@ VkImageAspectFlags vk_aspect(const VkFmt* f);
 u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
-/* the presents a copy of a render target (texture.c rt_copy) stays with no bind asking for it */
+/* the presents a copy of a render target (texture.c rt_copy) stays with no bind asking for it, before rt_copy lets it
+   go when its target is asked for another copy */
 #define VK_RT_COPY_PRESENTS 60u
-/* the copies of live render targets no bind asked for since `before`, up to `want` bytes, but a feedback draw's save
-   copy: made again from their target when asked, so lossless. Their bytes */
-u64 vk_rt_copies_reclaim(u32 before, u64 want);
+/* the presents a copy of a live render target stays with no bind asking for it, before a trim under pressure lets it
+   go (surface.c rt_copies_reclaim): a game at a dynamic resolution asks again for the copies of the sizes it goes back
+   to, and at 60 presents one racing game's copies were let go and made again 5,792 times in five minutes, 12 GB */
+#define VK_RT_COPY_TRIM_PRESENTS 600u
 /* a copy of a render target, already off its target's list: its image and views go when the frames are done */
 void vk_rt_copy_free(Surf* x);
 /* the textures that took pixels from targets and whose memory later targets drew all over since, last used before
@@ -1885,8 +1887,8 @@ void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
 /* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
    (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
-   the copies of them (texture.c rt_copy), which go with them, and those let go so far as no bind asked for them
-   (vk_rt_copies_reclaim) */
+   the copies of them (texture.c rt_copy), which go with them, and those a trim let go so far as no bind asked for them
+   (surface.c rt_copies_reclaim) */
 typedef struct {
     u32 n[3], parked[3];
     u64 bytes[3];
