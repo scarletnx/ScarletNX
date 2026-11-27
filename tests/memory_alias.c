@@ -861,8 +861,15 @@ static void test_migrate(void) {
     CHECK(mem_unmigrate(src, 0x4000, NULL) == 0);
     gw32(src, 0x1234abcd);
     CHECK(gr32(dst) == 0x1234abcd && snx_ld_le32(v1) == 0x600d); /* the buffer keeps what it had */
-    /* only the guest's data on the reservation's own pages: not past the mapped pages, not code, not the pool's */
-    CHECK(mem_migrate(a + 2 * size - 0x1000, 0x2000, f1, NULL) == MEM_BADSTATE);
+    /* only the guest's data on the reservation's own pages, not code, not the pool's. A free page past the mapped ones
+       is a hole: the data page moves, the hole stays unmapped (mem_movable_holes), and a range of free pages alone is
+       refused */
+    int holes = 0;
+    CHECK(mem_movable_holes(a + 2 * size - 0x1000, 0x2000, &holes) && holes && !mem_movable(a + 2 * size - 0x1000, 0x2000));
+    g[2 * size - 0x1000] = 0x42;
+    CHECK(mem_migrate(a + 2 * size - 0x1000, 0x2000, f1, NULL) == 0 && g[2 * size - 0x1000] == 0x42);
+    CHECK(mem_unmigrate(a + 2 * size - 0x1000, 0x2000, NULL) == 0 && g[2 * size - 0x1000] == 0x42);
+    CHECK(mem_migrate(a + 2 * size, 0x2000, f1, NULL) == MEM_BADSTATE);
     CHECK(mem_map(a + 4 * size, 0x1000, MS_CODE, PERM_RX) == 0);
     CHECK(!mem_movable(a + 4 * size, 0x1000) && mem_migrate(a + 4 * size, 0x1000, f1, NULL) == MEM_BADSTATE);
     CHECK(!mem_movable(src, 0x4000) && mem_migrate(src, 0x4000, f1, NULL) == MEM_BADSTATE);

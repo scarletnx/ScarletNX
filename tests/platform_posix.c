@@ -636,7 +636,7 @@ static void test_guest_memory(const char* dir) {
         CHECK(lseek(fd, 0, SEEK_END) == 2 << 20, "the buffer isn't 2 MiB");
         CHECK(!plat_vm_commit(g, 2u << 20), "commit failed");
         g[12345] = 0x5A;
-        CHECK(!plat_vm_share(g, fd, 2u << 20) && v[12345] == 0x5A, "guest memory did not move into it with its bytes");
+        CHECK(!plat_vm_share(g, fd, 0, 2u << 20) && v[12345] == 0x5A, "guest memory did not move into it with its bytes");
         g[777] = 0x11;
         v[778] = 0x22;
         CHECK(v[777] == 0x11 && g[778] == 0x22, "guest memory moved into it and its mapping aren't one memory");

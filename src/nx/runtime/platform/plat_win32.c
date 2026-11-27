@@ -288,8 +288,8 @@ void plat_vm_decommit(u8* p, u64 size) {
     (void)plat_mem_decommit(p, size);
     trap_forget(p, size);
 }
-int plat_vm_share(u8* p, int fd, u64 size) {
-    (void)p, (void)fd, (void)size;
+int plat_vm_share(u8* p, int fd, u64 off, u64 size) {
+    (void)p, (void)fd, (void)off, (void)size;
     errno = ENOSYS;
     return -1;
 }

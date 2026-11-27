@@ -176,9 +176,10 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
 /* Guest memory a GPU reads in place from a buffer of its own (gpu/vk/uma.c, where the driver can't import host memory,
    as on Android): [a, a + size), in whole host pages, moves to the pages of fd, a buffer that large, with its bytes,
    pages another buffer had included; mem_unmigrate moves the parts of [a, a + size) still in one back to the
-   reservation's own pages with their bytes. Unmapping or decommitting moved pages, or moving them into the pool, puts
+   reservation's own pages with their bytes. Free pages in [a, a + size) stay as they are, inaccessible, and fd's pages
+   at their offsets unused (mem_movable_holes): each run of data moves to fd at its offset from a. Unmapping or decommitting moved pages, or moving them into the pool, puts
    other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. Pool pages it
-   moves are given back to the pool. 0, MEM_BADSTATE (not all of it is what mem_movable says), or MEM_NOMEM when the
+   moves are given back to the pool. 0, MEM_BADSTATE (not all of it is what mem_movable_holes says), or MEM_NOMEM when the
    host can't share them. view is a mapping of fd's pages in the process (a memfd's), or NULL: own.c reads the CPU's
    bytes of a trapped page through it (mem_ext_read), which the buffer keeps mapped while a run of its pages is:
    a mem_unmigrate that answers MEM_NOMEM leaves some there. *moved (or NULL) is the bytes it moved all the same */
@@ -188,6 +189,9 @@ int mem_unmigrate(u64 a, u64 size, u64* moved);
    that no other address maps (not a view's or its source's, not shared memory's, not those a service maps outside
    the reservation), and not the renderer's placed windows below: what mem_migrate moves */
 int mem_movable(u64 a, u64 size);
+/* what mem_migrate moves: as mem_movable, with free pages allowed between the data, *holes (or NULL) set when there
+   are some. 0 where there is no data, or a block that is neither data nor free (code, I/O, TLS) */
+int mem_movable_holes(u64 a, u64 size, int* holes);
 /* The renderer's GPU memory under the heap and physical memory (gpu/vk/uma.c, VK_EXT_map_memory_placed), a window of
    MEM_PLACED bytes at a time, mapped at its guest address. Each call takes a range within one window, under mem.c's
    lock and the renderer's: commit makes it readable and writable and zero, 0, or -1 when the window isn't the

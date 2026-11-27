@@ -1551,9 +1551,9 @@ void plat_vm_decommit(u8* p, u64 size) {
 #endif
     wp_let(p, size, 0, 1);
 }
-int plat_vm_share(u8* p, int fd, u64 size) {
+int plat_vm_share(u8* p, int fd, u64 off, u64 size) {
 #if defined(__linux__)
-    u8* view = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    u8* view = (u8*)mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)off);
     int r = 0;
     if (view == (u8*)MAP_FAILED) return -1;
     /* frozen, the range is mapped read only until plat_thaw and keeps what the written-page tracking says of it
@@ -1564,7 +1564,7 @@ int plat_vm_share(u8* p, int fd, u64 size) {
     memcpy(view, p, (size_t)size);
     wp_hold(p, size, WP_MAPPED);
     if (mmap(p, (size_t)size, (frozen ? PROT_READ : PROT_READ | PROT_WRITE) | g_vm_exec, MAP_SHARED | MAP_FIXED, fd,
-             0) == MAP_FAILED) {
+             (off_t)off) == MAP_FAILED) {
         /* a failed MAP_FIXED may have taken p's pages with it: fresh ones with the copy */
         r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
                     MAP_FAILED
@@ -1582,7 +1582,7 @@ int plat_vm_share(u8* p, int fd, u64 size) {
     ww_kept(&kept, p, size, !r);
     return r;
 #else
-    (void)p, (void)fd, (void)size;
+    (void)p, (void)fd, (void)off, (void)size;
     errno = ENOSYS;
     return -1;
 #endif
