@@ -23,7 +23,6 @@
 
 VkState g_vk;
 int g_gob_native;
-PFN_vkDestroyShaderModule vkDestroyShaderModule;
 
 /* the allocator: buffers numbered from 1, and the bytes it refuses from (0: none) */
 static struct {
