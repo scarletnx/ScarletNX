@@ -2933,6 +2933,11 @@ static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
 }
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
+/* with no share lock: whether no binding of the draw can share a page with a writable one, which needs no page list
+   (vk_buf_draw_has_alias is 0 then), and vk_buf_draw_prepare of such a draw where this thread's map of a draw with
+   nothing aliased was staged in this split already (0 when the share lock's path must do it) */
+int vk_buf_draw_plain(const VkDrawStorage* draw);
+int vk_buf_draw_prepare_plain(VkDrawStorage* draw);
 /* Why an aliasing draw's group of bindings went to the page atlas, not in place (buffer.c's alias_in_place): the way
    is off (no unified memory, uma_copies=2); a binding not one run of mapped guest memory; the
    group in no one region; a region that a wait would make; an offset off the storage alignment; a write over newer

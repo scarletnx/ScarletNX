@@ -222,6 +222,7 @@ static struct {
     /* the map of a draw with nothing aliased, staged in the frame map_none_frame - 1 (0: never): draw_map_none */
     VkBuffer map_none;
     u64 map_none_off, map_none_frame;
+    u32 map_none_split; /* vk_share_serial() of the split it was last good in, under the share lock: 0 outside one */
 } t_lookup_slot[VK_RC_SLOTS];
 /* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
 #define t_lookup (t_lookup_slot[vk_render_slot()])
@@ -3859,8 +3860,24 @@ static int draw_map_none(VkBuffer* buf, u64* off) {
         snx_le32_array(map, DRAW_MAP_WORDS); /* the shader reads the table little-endian */
         t_lookup.map_none_frame = vk_frame_id() + 1;
     }
+    t_lookup.map_none_split = vk_share_on() ? vk_share_serial() : 0;
     *buf = t_lookup.map_none;
     *off = t_lookup.map_none_off;
+    return 1;
+}
+int vk_buf_draw_plain(const VkDrawStorage* draw) { return !draw_has_writable(draw) || !draw_may_alias(draw); }
+int vk_buf_draw_prepare_plain(VkDrawStorage* draw) {
+    /* the map staged under the share lock in this split: its frame's ring outlives the split, and the frame number
+       that draw_map_none reads changes under the lock */
+    if (!vk_share_on() || !t_lookup.map_none_split || t_lookup.map_none_split != vk_share_serial() ||
+        !vk_buf_draw_plain(draw))
+        return 0;
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
+        if (draw->n[s]) {
+            draw->map_buf[s] = t_lookup.map_none;
+            draw->map_off[s] = t_lookup.map_none_off;
+            draw->map_size[s] = DRAW_MAP_WORDS * 4;
+        }
     return 1;
 }
 int vk_buf_draw_prepare(VkDrawStorage* draw) {

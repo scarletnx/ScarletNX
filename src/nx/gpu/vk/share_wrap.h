@@ -37,6 +37,9 @@ static inline int sh_vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, 
 }
 static inline int sh_vk_buf_draw_has_alias(const VkDrawStorage* draw) {
     if (!vk_share_on()) return vk_buf_draw_has_alias(draw);
+    /* the draw's own bindings and the GPU's page table, which render.c reads with no lock: about 3,700 takes a
+       present in one game's world, nearly all of draws with no binding that can alias */
+    if (vk_buf_draw_plain(draw)) return 0;
     vk_share_lock_at(5);
     int const r = vk_buf_draw_has_alias(draw);
     vk_share_unlock();
@@ -44,6 +47,7 @@ static inline int sh_vk_buf_draw_has_alias(const VkDrawStorage* draw) {
 }
 static inline int sh_vk_buf_draw_prepare(VkDrawStorage* draw) {
     if (!vk_share_on()) return vk_buf_draw_prepare(draw);
+    if (vk_buf_draw_prepare_plain(draw)) return 1;
     vk_share_lock_at(6);
     int const r = vk_buf_draw_prepare(draw);
     vk_share_unlock();
