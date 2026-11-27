@@ -133,6 +133,15 @@ ART allows some things that the JVM verifier does not. The translator rewrites t
   superclass's method. JVM resolution from the superclass finds the default method that it inherits.
 - `fill-array-data` becomes a call to `snx.dalvik.Runtime.fillArrayData` with the payload in string constants.
 
+Some calls of the JDK behave otherwise on Android, and the translator sends them to the framework's own (its remap
+table): `System.loadLibrary` to the native bridge, `ByteBuffer.allocateDirect` to a buffer native code reaches, and
+what prints a double or a float (`Double.toString`, `Float.toString`, `String.valueOf`, `StringBuilder.append` and
+`insert`, `StringBuffer`'s, `PrintStream.print` and `PrintWriter.print`) to `snx.dalvik.Digits`. ART prints OpenJDK's
+digits from before JDK 19 (`Double.toString(1.0E23)` is `9.999999999999999E22`), and the JDK the shortest since
+(`1.0E23`): `Digits` calls the JDK's `jdk.internal.math.FloatingDecimal`, which still has the old ones, and which the
+driver exports to the framework. A box printed through `Object.toString`, `String.valueOf(Object)` or a `Formatter`'s
+`%s` has the JDK's digits.
+
 DEX annotations become JVM attributes, so that reflection finds them: the runtime-visible ones become
 `RuntimeVisibleAnnotations` and `RuntimeVisibleParameterAnnotations`, `dalvik.annotation.Signature` becomes
 `Signature`, and `AnnotationDefault` becomes each element's `AnnotationDefault` (`src/android/dex/annotations.c`).

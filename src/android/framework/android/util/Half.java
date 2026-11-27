@@ -75,7 +75,7 @@ public final class Half extends Number implements Comparable<Half> {
         return (short) (sign | half);
     }
 
-    public static String toString(short h) { return Float.toString(toFloat(h)); }
+    public static String toString(short h) { return snx.dalvik.Digits.toString(toFloat(h)); }
 
     /** As Float.compare: -0 is less than +0, and NaN is greater than each other value. */
     public static int compare(short x, short y) { return Float.compare(toFloat(x), toFloat(y)); }

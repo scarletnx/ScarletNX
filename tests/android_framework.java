@@ -312,6 +312,38 @@ final class AndroidFramework {
         return (Integer) start.invoke(font, glyph + 1) - (Integer) start.invoke(font, glyph);
     }
 
+    /**
+     * A double's and a float's digits as ART prints them, OpenJDK's before JDK 19, where the JDK's are the shortest
+     * since (Amberlith's case on Android 16 gives these): what the translator sends Double.toString,
+     * StringBuilder.append and the others to, and what the framework's JSON prints
+     */
+    private static void digits() throws Exception {
+        check("Double.toString of 2.0E-3, 2.82879384806159E17, 1.0E23 and 0.1 + 0.2, Float.toString of 1.0E10f",
+              "0.002 2.82879384806159008E17 9.999999999999999E22 0.30000000000000004 1.0E10",
+              snx.dalvik.Digits.toString(2.0E-3) + " " + snx.dalvik.Digits.toString(2.82879384806159E17) + " "
+                  + snx.dalvik.Digits.toString(1.0E23) + " " + snx.dalvik.Digits.toString(0.1 + 0.2) + " "
+                  + snx.dalvik.Digits.toString(1.0E10f));
+        check("StringBuilder.append(double), a box's toString", "x9.999999999999999E22 1.0E10",
+              snx.dalvik.Digits.append(new StringBuilder("x"), 1.0E23) + " "
+                  + snx.dalvik.Digits.toString(Float.valueOf(1.0E10f)));
+        check("JSONObject's number and a JsonWriter's", "{\"a\":9.999999999999999E22} [9.999999999999999E22]",
+              new org.json.JSONObject().put("a", 1.0E23).toString() + " " + jsonWriter(1.0E23));
+        Throwable got = null;
+        try {
+            snx.dalvik.Digits.toString((Double) null);
+        } catch (NullPointerException e) {
+            got = e;
+        }
+        check("Double.toString() of null", "java.lang.NullPointerException: Attempt to invoke virtual method "
+              + "'java.lang.String java.lang.Double.toString()' on a null object reference", thrown(got));
+    }
+    private static String jsonWriter(double value) throws Exception {
+        java.io.StringWriter out = new java.io.StringWriter();
+        android.util.JsonWriter w = new android.util.JsonWriter(out);
+        w.beginArray().value(value).endArray().close();
+        return out.toString();
+    }
+
     public static void main(String[] args) throws Exception {
         mainLoopEnds();
         logIsLoggable();
@@ -320,6 +352,7 @@ final class AndroidFramework {
         plurals();
         pdfDraws();
         pdfFontSubset();
+        digits();
         if (failures != 0) System.exit(1);
         System.out.println("android_framework: ok");
     }

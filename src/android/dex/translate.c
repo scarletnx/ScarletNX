@@ -1125,7 +1125,8 @@ static void store_result(Method* m, uint32_t pc, const Insn* in, const char* ret
 /* Calls of the JDK that behave otherwise on Android, sent to the runtime's own. An instance method becomes a static
    one with the receiver as its first parameter. System.loadLibrary must load the app's native libraries through the
    native bridge (docs/platforms/android-apps/native.md), not HotSpot's loader. ByteBuffer.allocateDirect gives a buffer that native
-   code reaches, which for 32-bit libraries must be in their window */
+   code reaches, which for 32-bit libraries must be in their window. A double or a float printed has ART's digits,
+   which the JDK's are not since JDK 19 (snx.dalvik.Digits) */
 typedef struct {
     const char *owner, *name, *desc;
     const char *to_owner, *to_name;
@@ -1136,6 +1137,28 @@ static const Remap remaps[] = {
     {"Ljava/lang/Runtime;", "loadLibrary", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoadLibrary"},
     {"Ljava/lang/Runtime;", "load", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoad"},
     {"Ljava/nio/ByteBuffer;", "allocateDirect", "(I)Ljava/nio/ByteBuffer;", "Lsnx/dalvik/Runtime;", "allocateDirect"},
+    {"Ljava/lang/Double;", "toString", "(D)Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/Double;", "toString", "()Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/Float;", "toString", "(F)Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/Float;", "toString", "()Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/String;", "valueOf", "(D)Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/String;", "valueOf", "(F)Ljava/lang/String;", "Lsnx/dalvik/Digits;", "toString"},
+    {"Ljava/lang/StringBuilder;", "append", "(D)Ljava/lang/StringBuilder;", "Lsnx/dalvik/Digits;", "append"},
+    {"Ljava/lang/StringBuilder;", "append", "(F)Ljava/lang/StringBuilder;", "Lsnx/dalvik/Digits;", "append"},
+    {"Ljava/lang/StringBuffer;", "append", "(D)Ljava/lang/StringBuffer;", "Lsnx/dalvik/Digits;", "append"},
+    {"Ljava/lang/StringBuffer;", "append", "(F)Ljava/lang/StringBuffer;", "Lsnx/dalvik/Digits;", "append"},
+    {"Ljava/lang/StringBuilder;", "insert", "(ID)Ljava/lang/StringBuilder;", "Lsnx/dalvik/Digits;", "insert"},
+    {"Ljava/lang/StringBuilder;", "insert", "(IF)Ljava/lang/StringBuilder;", "Lsnx/dalvik/Digits;", "insert"},
+    {"Ljava/lang/StringBuffer;", "insert", "(ID)Ljava/lang/StringBuffer;", "Lsnx/dalvik/Digits;", "insert"},
+    {"Ljava/lang/StringBuffer;", "insert", "(IF)Ljava/lang/StringBuffer;", "Lsnx/dalvik/Digits;", "insert"},
+    {"Ljava/io/PrintStream;", "print", "(D)V", "Lsnx/dalvik/Digits;", "print"},
+    {"Ljava/io/PrintStream;", "print", "(F)V", "Lsnx/dalvik/Digits;", "print"},
+    {"Ljava/io/PrintStream;", "println", "(D)V", "Lsnx/dalvik/Digits;", "println"},
+    {"Ljava/io/PrintStream;", "println", "(F)V", "Lsnx/dalvik/Digits;", "println"},
+    {"Ljava/io/PrintWriter;", "print", "(D)V", "Lsnx/dalvik/Digits;", "print"},
+    {"Ljava/io/PrintWriter;", "print", "(F)V", "Lsnx/dalvik/Digits;", "print"},
+    {"Ljava/io/PrintWriter;", "println", "(D)V", "Lsnx/dalvik/Digits;", "println"},
+    {"Ljava/io/PrintWriter;", "println", "(F)V", "Lsnx/dalvik/Digits;", "println"},
 };
 static const Remap* remap_of(const char* owner, const char* name, const char* desc) {
     for (size_t i = 0; i < sizeof remaps / sizeof *remaps; ++i)
