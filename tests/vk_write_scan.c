@@ -100,6 +100,8 @@ void pc_init(PCond* c) {}
 void pc_signal(PCond* c) { abort(); }
 void pend_add_pages(PendPages* t, u64 first, u64 last, int delta) { abort(); }
 int pend_hit(const PendPages* t, u64 gva, u64 size) { abort(); }
+void pend_lock(void) { abort(); }
+void pend_unlock(void) { abort(); }
 u8* plat_alias_mirror(void) { abort(); }
 uint64_t plat_ns(void) { return 0; }
 int plat_thread(PThreadFn fn, void* arg, size_t stack) { return -1; } /* scanner_pass runs it */
