@@ -8,7 +8,7 @@
    reads the strip's (astc.c bc7_choices_in) and its own come back once its submission is done (vk_bc7_choices_put).
    They are written to the game's file at the exit (vk_bc7_choices_save) and read as the next run starts
    (vk_bc7_choices_load), so a level an earlier run encoded skips the search from its first use. Everything here is
-   the GPU thread's */
+   the GPU thread's but the exit's save, which copies them under vk_lock */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -193,23 +193,31 @@ u64 vk_bc7_choices_load(const char* path) {
 
 void vk_bc7_choices_save(void) {
     const char* path = g_bc7_choices.path;
-    if (!*path || !g_bc7_choices.used) return; /* a run that encoded nothing keeps the last run's file */
+    if (!*path) return;
     const u64 t0 = plat_ns();
-    const u64 raw = (u64)g_bc7_choices.used * sizeof(Bc7ChoicesRecord) + g_bc7_choices.bytes;
+    /* the levels copied as they stand under vk_lock, and the head counts the copied ones: the exit's save runs on a
+       thread of its own (main.c save_renderer) while the GPU thread still puts its last landings' choices in, and a
+       save that counted them apart from walking them wrote 16045 levels in its head over 15832 records */
+    vk_lock();
+    const u64 cap_raw = (u64)g_bc7_choices.used * sizeof(Bc7ChoicesRecord) + g_bc7_choices.bytes;
+    u8* rec = g_bc7_choices.used ? malloc((size_t)cap_raw) : NULL;
+    u64 raw = 0, levels = 0;
+    for (u32 i = 0; rec && i < g_bc7_choices.cap; i++) {
+        const Bc7ChoiceLevel* e = &g_bc7_choices.map[i];
+        if (!e->n || cap_raw - raw < sizeof(Bc7ChoicesRecord) + e->n * 2) continue;
+        const Bc7ChoicesRecord r = {{e->key[0], e->key[1]}, e->n};
+        memcpy(rec + raw, &r, sizeof r);
+        memcpy(rec + raw + sizeof r, e->words, (size_t)e->n * 2);
+        raw += sizeof r + e->n * 2;
+        levels++;
+    }
+    const u32 used = g_bc7_choices.used;
+    vk_unlock();
+    if (!used) return; /* a run that encoded nothing keeps the last run's file */
     const size_t bound = ZSTD_compressBound((size_t)raw);
-    u8* rec = malloc((size_t)raw);
     u8* out = malloc(sizeof(Bc7ChoicesHead) + bound);
     size_t packed = 0;
     int ok = rec && out;
-    u64 at = 0;
-    for (u32 i = 0; ok && i < g_bc7_choices.cap; i++) {
-        const Bc7ChoiceLevel* e = &g_bc7_choices.map[i];
-        if (!e->n) continue;
-        const Bc7ChoicesRecord r = {{e->key[0], e->key[1]}, e->n};
-        memcpy(rec + at, &r, sizeof r);
-        memcpy(rec + at + sizeof r, e->words, (size_t)e->n * 2);
-        at += sizeof r + e->n * 2;
-    }
     if (ok) {
         packed = ZSTD_compress(out + sizeof(Bc7ChoicesHead), bound, rec, (size_t)raw, BC7_CHOICES_ZSTD);
         ok = !ZSTD_isError(packed);
@@ -218,8 +226,7 @@ void vk_bc7_choices_save(void) {
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE* f = ok ? fopen(tmp, "wb") : NULL;
     if (ok) {
-        Bc7ChoicesHead h = {
-            .encoder = VK_BC7_ENCODER_VERSION, .levels = g_bc7_choices.used, .raw = raw, .packed = packed};
+        Bc7ChoicesHead h = {.encoder = VK_BC7_ENCODER_VERSION, .levels = levels, .raw = raw, .packed = packed};
         memcpy(h.magic, BC7_CHOICES_MAGIC, sizeof BC7_CHOICES_MAGIC);
         memcpy(out, &h, sizeof h);
         ok = f && fwrite(out, 1, sizeof h + packed, f) == sizeof h + packed;
@@ -231,11 +238,11 @@ void vk_bc7_choices_save(void) {
         remove(tmp);
         WARN("vulkan: the BC7 encoder's choices of %u levels (%llu KB) could not be written to %s: it keeps the last "
              "run's\n",
-             g_bc7_choices.used, (unsigned long long)(raw >> 10), path);
+             used, (unsigned long long)(cap_raw >> 10), path);
         return;
     }
-    LOG("vulkan: the BC7 encoder's choices of %u levels (%llu KB, %llu KB packed by zstd level %d) went to %s in %.0f "
-        "ms, for the next run to skip their search\n",
-        g_bc7_choices.used, (unsigned long long)(raw >> 10), (unsigned long long)(packed >> 10), BC7_CHOICES_ZSTD, path,
-        (double)(plat_ns() - t0) / 1e6);
+    LOG("vulkan: the BC7 encoder's choices of %llu levels (%llu KB, %llu KB packed by zstd level %d) went to %s in "
+        "%.0f ms, for the next run to skip their search\n",
+        (unsigned long long)levels, (unsigned long long)(raw >> 10), (unsigned long long)(packed >> 10),
+        BC7_CHOICES_ZSTD, path, (double)(plat_ns() - t0) / 1e6);
 }

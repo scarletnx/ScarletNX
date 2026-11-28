@@ -3,8 +3,9 @@
 /* The BC7 encoder's choices (gpu/vk/bc7_choices.c), without a GPU: a level's words are made zero, a strip's come back
    at its place, and a level of another count under the same key starts over. The game's file written at the exit,
    packed by zstd into less than its records, gives the same words back in the next run; a file of another encoder's
-   version, one cut short and one whose frame is not zstd's are said with both values and read none. A run that kept
-   none leaves the last run's file as it was */
+   version, one cut short and one whose frame is not zstd's are said with both values and read none. The levels are
+   copied under the renderer's lock, as the exit's save runs beside the GPU thread. A run that kept none leaves the
+   last run's file as it was */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,21 @@ void logf_(int lvl, const char* fmt, ...) {
     va_end(ap);
     fputs(line, stdout);
     strncat(g_said, line, sizeof g_said - strlen(g_said) - 1);
+}
+
+/* the renderer's lock, which the exit's save copies the levels under (its own thread beside the GPU thread's puts) */
+static int g_locked, g_lock_calls, g_put_on_unlock;
+void vk_lock(void) {
+    g_locked++;
+    g_lock_calls++;
+}
+void vk_unlock(void) {
+    g_locked--;
+    if (g_put_on_unlock) { /* the GPU thread's put the moment the save lets the lock go */
+        g_put_on_unlock = 0;
+        static const u64 late[2] = {9, 9};
+        vk_bc7_choices_take(late, 3);
+    }
 }
 
 static unsigned checks;
@@ -63,11 +79,14 @@ int main(void) {
     CHECK(!vk_bc7_choices_find(a, 50));
     /* written at the exit, read as the next run starts: the same words */
     CHECK(vk_bc7_choices_load(path) == 0); /* no file yet: the first run */
+    const int calls = g_lock_calls;
+    g_put_on_unlock = 1; /* a level put while the save packs and writes: not in this file, nor in its head's count */
     vk_bc7_choices_save();
+    CHECK(g_lock_calls > calls && g_locked == 0 && g_bc7_choices.used == 3); /* copied under the lock, let go */
     forget_all();
     CHECK(!vk_bc7_choices_find(a, 100));
     g_said[0] = 0;
-    CHECK(vk_bc7_choices_load(path) == 2);
+    CHECK(vk_bc7_choices_load(path) == 2 && !strstr(g_said, "its head says"));
     CHECK(strstr(g_said, "choices of 2 levels ("));
     w = vk_bc7_choices_find(a, 100);
     w2 = vk_bc7_choices_find(b, 7);
