@@ -1720,6 +1720,41 @@ static void check_drain_unfit(void) {
     check_counts(0);
 }
 
+/* A request larger than half a block (> 32 MiB on a 64 MiB block cap) takes dedicated memory from the start even when
+   a block has a free run that large, so freeing it returns its memory straight to the driver instead of leaving a huge
+   hole pinned by smaller allocations; one of half a block or less still takes a block's free run */
+static void check_half_block(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, 4 * GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0, blk = 0;
+    for (;;) {
+        CHECK(n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS);
+        const u32 b = g_devmem.rec[g_dh[n++].mem - 1].block;
+        if (!blk && g_devmem.block[b - 1].size == 64 * MIB) blk = b;
+        if (blk && g_devmem.block[blk - 1].free.used == g_devmem.block[blk - 1].free.units) break;
+    }
+    /* free the last 12 of 16 images in the 64 MiB block: 16 MiB stays, 48 MiB contiguous free */
+    u32 kept = 0;
+    for (u32 i = 0; i < n; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == blk && ++kept > 4) unmake(&g_dh[i]);
+    CHECK(g_devmem.block[blk - 1].free.largest * DM_UNIT == 48 * MIB);
+    const u64 used0 = g_drv.used[0];
+    Held big, mid;
+    CHECK(make(1, 40 * MIB, 4096, ~0u, 0, tex, &big) == VK_SUCCESS);
+    CHECK(alone_of(&big) && g_drv.used[0] == used0 + 40 * MIB);
+    unmake(&big);
+    CHECK(g_drv.used[0] == used0);
+    /* half a block or less (20 MiB <= 32 MiB) still takes the block's free run with no driver allocation */
+    const u32 calls = g_drv.allocations;
+    CHECK(make(1, 20 * MIB, 4096, ~0u, 0, tex, &mid) == VK_SUCCESS);
+    CHECK(!alone_of(&mid) && g_drv.allocations == calls && g_devmem.rec[mid.mem - 1].block == blk);
+    unmake(&mid);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) unmake(&g_dh[i]);
+    check_counts(0);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1748,6 +1783,7 @@ int main(void) {
     check_drain_room();
     check_drain_pace();
     check_drain_unfit();
+    check_half_block();
     check_kinds();
     check_kind_fallback();
     check_keep();

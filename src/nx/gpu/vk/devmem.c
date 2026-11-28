@@ -833,14 +833,14 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
        being emptied (drain_can). A move goes to the blocks of what moves */
     if (g_devmem.drain.on && heap_capped(g_devmem.mp.memoryTypes[type].heapIndex) && !want->moves && !want->existing)
         image |= DM_KIND_FIXED | (want->brief ? DM_KIND_BRIEF : 0);
-    /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
-       to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
-       a request of a block's share or less opens a new block */
-    int fits = !alone && cap && req->size <= cap && align <= cap;
+    /* a request of up to half a block takes a free run of one, and only one of a block's share or less opens a new
+       block: one larger than half a block cannot share a block with another its size, keeps its block past
+       drain_pick's half-full limit while live, and leaves a large hole pinned by smaller allocations when freed */
+    int fits = !alone && cap && req->size <= cap / 2 && align <= cap;
     int shared = fits && req->size <= cap / DM_OWN_SHARE;
     if (fits) {
         units = (u32)units64;
-        slot = block_find(type, image, low, units, (u32)align_units, &at); /* a block of its class */
+        slot = block_find(type, image, low, units, (u32)align_units, &at);             /* a block of its class */
         if (!slot) slot = block_adopt(type, image, low, units, (u32)align_units, &at); /* an empty one of the other */
         u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
         int full = g_devmem.full_frame[type] && g_devmem.frame + 1 - g_devmem.full_frame[type] < 120 &&
@@ -957,7 +957,7 @@ static int drain_holds(const Block* d, const VkMemoryRequirements* req, const De
     if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
         align < g_vk.props.limits.nonCoherentAtomSize)
         align = g_vk.props.limits.nonCoherentAtomSize;
-    if (!cap || req->size > cap || align > cap) return 0;
+    if (!cap || req->size > cap / 2 || align > cap) return 0;
     u64 units = (req->size + DM_UNIT - 1) / DM_UNIT;
     const u64 align_units = align > DM_UNIT ? align / DM_UNIT : 1;
     if (want->sized) units = class_units(units, cap);
