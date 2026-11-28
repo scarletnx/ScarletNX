@@ -1013,6 +1013,8 @@ static inline void sh_vk_vrs_keep(VkCommandBuffer cb) {
 }
 static inline int sh_vk_written_since(const u8* host, u64 len, u32 since) {
     if (!vk_share_on()) return vk_written_since(host, len, since);
+    const int quick = vk_written_since_nolock(host, len, since); /* no lock where nothing needs taking in */
+    if (quick != -2) return quick;
     vk_share_lock_at(136);
     int const r = vk_written_since(host, len, since);
     vk_share_unlock();
@@ -1058,17 +1060,16 @@ static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, c
    vk_written_since writes under the lock on the other thread. Called with no lock, the two raced */
 static inline int sh_vk_ww_take(const u8* host, u64 len) {
     if (!vk_share_on()) return vk_ww_take(host, len);
+    if (vk_ww_settled(host, len)) return 0; /* no lock where nothing needs taking in */
     vk_share_lock_at(141);
     int const r = vk_ww_take(host, len);
     vk_share_unlock();
     return r;
 }
 static inline u32 sh_vk_ww_now(void) {
-    if (!vk_share_on()) return vk_ww_now();
-    vk_share_lock_at(142);
-    u32 const r = vk_ww_now();
-    vk_share_unlock();
-    return r;
+    /* no share lock: one atomic load of the clock. A clock read just before the other thread moves it is an older
+       baseline, which finds more writes, never fewer */
+    return vk_ww_now();
 }
 /* The list of surfaces written that a pass's begin turns into barriers (vk_surf_written_flush: it drops entries and
    records their barriers), the table slots' last frame (vk_table_touch: a lost stamp lets the table give a slot
@@ -1093,11 +1094,8 @@ static inline void sh_vk_table_touch(u32 image_slot) {
     vk_share_unlock();
 }
 static inline u32 sh_vk_tex_tags(void) {
-    if (!vk_share_on()) return vk_tex_tags();
-    vk_share_lock_at(145);
-    u32 const r = vk_tex_tags();
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns (texture.c's g_tex_tags is _Thread_local) */
+    return vk_tex_tags();
 }
 static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_buf_copy", "vk_buf_copy_writable", "vk_buf_copy_writable_word", "vk_buf_draw_has_alias", "vk_buf_draw_prepare", "vk_buf_get_at", "vk_buf_get_input", "vk_buf_get_storage", "vk_buf_get_uniform_at", "vk_buf_get_window", "vk_buf_get_window_input", "vk_buf_mem_need", "vk_buf_own_got", "vk_buf_own_holds", "vk_buf_owned", "vk_buf_pending", "vk_buffer_address", "vk_buffer_create", "vk_buffer_image", "vk_capture_clear", "vk_capture_get", "vk_capture_get_mixed_targets", "vk_capture_mixed_resolve", "vk_capture_mixed_source", "vk_capture_resolve", "vk_compute_gpu_src", "vk_compute_mem_need", "vk_compute_pending", "vk_conservative_dilation", "vk_defer_buffer", "vk_defer_buffer_view", "vk_depth_shadow_aliases", "vk_depth_shadow_cancel", "vk_depth_shadow_finish", "vk_depth_shadow_prepare", "vk_depth_shadow_range_aliases", "vk_depth_shadow_reserve", "vk_descriptor_heaps_get_stats", "vk_descriptor_heaps_invalidate", "vk_descriptor_heaps_pipeline_state", "vk_descriptors_bind", "vk_descriptors_bind_compute", "vk_descriptors_write", "vk_draw_texture_fragment", "vk_draw_texture_vertex", "vk_format_minmax_filter", "vk_frame_check", "vk_gfx_image_after", "vk_gfx_image_pending", "vk_gfx_image_pending_besides", "vk_gfx_image_record", "vk_gfx_image_unrecorded", "vk_gpuprof_op_begin", "vk_gpuprof_op_end", "vk_gpuprof_pass_begin", "vk_gpuprof_pass_end", "vk_host_shader", "vk_indirect_quads", "vk_mem_track", "vk_mirror_holds", "vk_mirror_pending", "vk_module_spv", "vk_module_spv_location", "vk_null_buffer_image", "vk_null_header_first", "vk_null_storage", "vk_null_view", "vk_own_res_unref", "vk_pages_read", "vk_pipe_unwritten_targets", "vk_pipeline_get", "vk_pipeline_get_deferred", "vk_pipeline_layout", "vk_pipeline_now", "vk_pipeline_ready", "vk_playout_compute", "vk_pointer_windows", "vk_predraw_drawn", "vk_predraw_fragment", "vk_predraw_next", "vk_predraw_pass_begin", "vk_predraw_reserve", "vk_predraw_view", "vk_query_pass_end", "vk_rec_new_set", "vk_rt_array", "vk_rt_attachment", "vk_rt_copy_drawn", "vk_rt_drawn", "vk_rt_drawn_full", "vk_rt_find", "vk_rt_note_read", "vk_rt_save", "vk_rt_snapshot", "vk_sampler", "vk_shader_cb_hold", "vk_shader_chosen", "vk_shader_fold_top", "vk_shader_get", "vk_shader_get_ex", "vk_shader_mesh", "vk_stage", "vk_stage_output", "vk_stage_upload", "vk_submits", "vk_surf_batch_begin", "vk_surf_batch_end", "vk_surf_can_writeback", "vk_surf_epoch_at", "vk_surf_guest_size", "vk_surf_keep_begin", "vk_surf_view_reset", "vk_surf_wrote", "vk_table_set", "vk_table_words", "vk_tc_index", "vk_tc_restride", "vk_tess_passthrough", "vk_tex_from_tic", "vk_tex_from_tic_guest", "vk_tex_from_tic_raw", "vk_tex_from_tic_storage", "vk_tex_is_copy_of", "vk_tex_recheck", "vk_tex_storage_view", "vk_tex_view", "vk_tex_view_format", "vk_tex_view_refusal", "vk_tic_names_none", "vk_uma_pending", "vk_varying_geometry", "vk_view_type_name", "vk_vrs_draw", "vk_vrs_keep", "vk_written_since", "vk_xfb_control_buffer", "vk_xfb_indirect", "vk_zt_array", "vk_shader_fold_draw", "vk_ww_take", "vk_ww_now", "vk_surf_written_flush", "vk_table_touch", "vk_tex_tags"};
 #define vk_all_barrier_by sh_vk_all_barrier_by
