@@ -65,6 +65,11 @@ static u32 g_last_transform;
    race there was after vk_unlock below, before the write, too */
 static int before_write_needed(u64 gva, u64 size) {
     if (!size || vk_uma()) return 1;
+    /* a thread holding vk_lock reads the tables as they are, as vkr_mem_pending does: every change holds vk_lock too.
+       The release thread writes each report under vk_lock, about 1,300 a frame in one game, and took the tables' lock
+       for each: when a game thread held it for a read, the release thread waited with vk_lock held, and the renderer
+       thread waited behind it, about 0.9 ms a frame */
+    if (vk_lock_held()) return pend_hit(&g_pend_any, gva, size) || vk_rt_pages_hit(gva, size);
     pend_lock();
     int hit = pend_hit(&g_pend_any, gva, size) || vk_rt_pages_hit(gva, size);
     pend_unlock();

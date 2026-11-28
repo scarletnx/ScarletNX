@@ -35,6 +35,7 @@ int vk_compute_pending(u64, u64);
 int vk_gfx_image_pending(u64, u64);
 int vk_uma_pending(u64, u64);
 void vk_uma_before_write(u64, u64);
+void vk_uma_front_batch(int);
 int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
@@ -278,6 +279,7 @@ void vk_uma_before_write(u64 a, u64 n) {
     (void)a;
     (void)n;
 }
+void vk_uma_front_batch(int on) { (void)on; }
 int vk_buf_pending_unsubmitted(void) { return unsubmitted; }
 /* a submit: what was recorded becomes the last submission */
 void vk_submit(u64 a, u64 b, u64 c) {
