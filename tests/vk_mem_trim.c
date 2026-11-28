@@ -12,7 +12,8 @@
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
    nowhere (flush_land). The copies of a live target that no bind asked for in VK_RT_COPY_TRIM_PRESENTS go under the
    trims' pressure, and stay with none (rt_copies_reclaim). A trim for an allocation counts the heap's own use, where
-   the caches count the free space inside its blocks as room. No Vulkan loader, device or GPU is used:
+   the caches count the free space inside its blocks as room. A target set aside or moved into system memory lets its
+   copies go, but a save copy. No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -569,6 +570,53 @@ static int forced_in_pieces(void) {
     return went;
 }
 
+/* A target with pixels memory lacks that the age's walk sets aside (VK_RECLAIM_IDLE; its image can't move here) lets
+   its copies go, a corner's and a feedback draw's snapshot: a bind makes them again from the target. Its save copy
+   (predraw) stays, as the trim's sweep leaves it (rt_copies_reclaim). The report counts the copies held by what they
+   were made for. Copies of a target set aside or moved into system memory stayed in the GPU's memory: 1.9 GB of them
+   in a racing game whose heap was at its budget. 1 when the two went and the save copy stayed */
+static int copies_go_aside(void) {
+    g_vk.mem_model = VK_MEM_SMALL_BAR;
+    g_vk_present += 1000;
+    Surf* s = target(0x71000000, 4 << 20, 1);
+    s->last_used = g_vk_present - 100;
+    static const int why[3] = {VK_RT_COPY_CROP, VK_RT_COPY_FEEDBACK, VK_RT_COPY_FEEDBACK};
+    Surf* save = NULL;
+    for (int i = 0; i < 3; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = s->gva;
+        c->bytes = (u64)(i + 1) << 20;
+        c->last_used = g_vk_present - 100;
+        c->copy_why = (u8)why[i];
+        c->predraw = i == 2;
+        c->next = s->crop;
+        s->crop = c;
+        if (i == 2) save = c;
+    }
+    VkRtKinds was, now;
+    vk_rt_kinds(&was);
+    const int counted = was.copies == 3 && was.copies_by[VK_RT_COPY_CROP] == 1 &&
+                        was.copy_bytes_by[VK_RT_COPY_CROP] == 1 << 20 && was.copies_by[VK_RT_COPY_FEEDBACK] == 2 &&
+                        was.copy_bytes_by[VK_RT_COPY_FEEDBACK] == 5 << 20;
+    g_deferred = 0;
+    g_guest = 1;
+    vk_surf_reclaim(VK_LRU_RT, g_vk_present, ~0ull, VK_RECLAIM_IDLE);
+    g_guest = 0;
+    vk_rt_kinds(&now);
+    const int went = targets_held() == 1 && s->aside && s->crop == save && !save->next && g_deferred == 3 << 20 &&
+                     now.copies == 1 && now.copies_by[VK_RT_COPY_FEEDBACK] == 1 && !now.copies_by[VK_RT_COPY_CROP] &&
+                     now.copies_gone - was.copies_gone == 2;
+    if (!counted || !went)
+        fprintf(stderr,
+                "copies_go_aside: %u copies held before (%u corners), %u after, %llu bytes deferred, set aside %d\n",
+                was.copies, was.copies_by[VK_RT_COPY_CROP], now.copies, (unsigned long long)g_deferred, s->aside);
+    surf_evict(s);
+    CHECK(targets_held() == 0);
+    return counted && went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -597,6 +645,8 @@ int main(void) {
     CHECK(copies_go(0) && copies_go(1) && copies_go(2));
     /* a trim for an allocation with the heap's free space in pieces reaches the lossy steps */
     CHECK(forced_in_pieces());
+    /* a target set aside lets its copies go, but its save copy */
+    CHECK(copies_go_aside());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
@@ -604,7 +654,8 @@ int main(void) {
         "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
         "target's storage result landed nothing; the copies of a live target that no bind asked for in 600 presents "
         "went under the trims' pressure, the others stayed, and none went with no pressure; a trim for an allocation "
-        "took a target with pixels memory lacks though the heap's free space was in pieces\n");
+        "took a target with pixels memory lacks though the heap's free space was in pieces, and a target set aside "
+        "let its copies go but its save copy\n");
     return 0;
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */

@@ -212,6 +212,7 @@ void vk_surf_touch(Surf* s) {
     lru_link(r, kind);
 }
 static int lossless(const Surf* s);
+static u64 rt_copies_let_go(Surf* s, u32 before, u64 want);
 /* s's pixels can be had again now (written back, loaded, or left undefined) and are taken out of the aged list, else
    a lossless eviction wouldn't find it and the idle one would keep it for five minutes. Into its first list in order
    of last use: near the old end, as everything there was used after everything aged, past only the others relisted */
@@ -3252,7 +3253,7 @@ static int tex_superseded(const Surf* s) {
     return !s->is_rt && s->took_drawn && s->size && span_drawn_over(s, s->gva, s->size, s->took_wseq);
 }
 void vk_tex_took(Surf* t) { t->took_wseq = g_wseq; }
-static u64 g_copies_gone, g_copies_gone_bytes; /* rt_copies_reclaim's, so far: for the statistics */
+static u64 g_copies_gone, g_copies_gone_bytes; /* rt_copies_let_go's, so far: for the statistics */
 void vk_rt_kinds(VkRtKinds* k) {
     *k = (VkRtKinds){.copies_gone = g_copies_gone, .copies_gone_bytes = g_copies_gone_bytes};
     for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
@@ -3529,7 +3530,11 @@ static u64 rt_give_way(Surf* s, int lossy) {
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch());
         return surf_evict(s);
     }
-    if (s->demoted) return 0;
+    /* its copies go whichever way it stays: a bind that asks for one makes it again from s (rt_copy), and none asked
+       while s went unused this long. They stayed in the GPU's memory with s set aside or moved: a game at a dynamic
+       resolution held 1.9 GB of copies while its heap was at the budget */
+    const u64 copies = rt_copies_let_go(s, g_vk_present + 1, ~0ull);
+    if (s->demoted) return copies;
     const char* no = "";
     const u64 moved = rt_demote(s, &no);
     if (moved || lossy != VK_RECLAIM_ANY) {
@@ -3537,7 +3542,7 @@ static u64 rt_give_way(Surf* s, int lossy) {
         SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: %s", s->w, s->h,
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch(),
                    moved ? "moved to system memory, set aside" : "idle, set aside");
-        return moved;
+        return moved + copies;
     }
     g_rt_sys.lost++;
     g_rt_sys.lost_bytes += s->bytes;
@@ -3548,7 +3553,7 @@ static u64 rt_give_way(Surf* s, int lossy) {
         s->w, s->h, (unsigned long long)(s->gva & ~(1ull << 63)), s->fkey, (unsigned long long)(s->bytes >> 10), no);
     SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: under budget pressure, pixels only here", s->w,
                s->h, (unsigned long long)(s->bytes >> 10), vk_ww_epoch());
-    return surf_evict(s);
+    return copies + surf_evict(s);
 }
 static u64 surf_evict(Surf* s) {
     if (s->row && lru_kind(s->row) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later counts */
@@ -3659,22 +3664,29 @@ void vk_rt_copy_free(Surf* x) {
    that samples its targets whole again at full size asks for none: the copies of its corners at the 15 to 20 sizes
    it went through stayed until the targets went, 270 of them and 848 MB where three were in use each frame. A trim
    under pressure lets go of those no bind asked for in VK_RT_COPY_TRIM_PRESENTS, as a lossless step */
+/* s's copies no bind asked for since `before`, up to want bytes: their bytes. Not a feedback draw's save copy
+   (predraw) */
+static u64 rt_copies_let_go(Surf* s, u32 before, u64 want) {
+    u64 freed = 0;
+    for (Surf** pp = &s->crop; *pp && freed < want;) {
+        Surf* x = *pp;
+        if (x->predraw || (i32)((u32)x->last_used - before) >= 0) {
+            pp = &x->next;
+            continue;
+        }
+        *pp = x->next;
+        freed += x->bytes;
+        g_copies_gone++;
+        g_copies_gone_bytes += x->bytes;
+        vk_rt_copy_free(x);
+    }
+    return freed;
+}
 static u64 rt_copies_reclaim(u32 before, u64 want) {
     u64 freed = 0;
     for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED && freed < want; lru += LRU_AGED)
         for (u32 r = g_rows.lists[lru].head; r && freed < want; r = g_rows.lru[r].next)
-            for (Surf** pp = &g_rows.surf[r]->crop; *pp && freed < want;) {
-                Surf* x = *pp;
-                if (x->predraw || (i32)((u32)x->last_used - before) >= 0) {
-                    pp = &x->next;
-                    continue;
-                }
-                *pp = x->next;
-                freed += x->bytes;
-                g_copies_gone++;
-                g_copies_gone_bytes += x->bytes;
-                vk_rt_copy_free(x);
-            }
+            freed += rt_copies_let_go(g_rows.surf[r], before, want - freed);
     return freed;
 }
 u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
