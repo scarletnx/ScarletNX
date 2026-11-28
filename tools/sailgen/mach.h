@@ -130,10 +130,20 @@ typedef struct {
     unsigned char cstate, cfpcr, ckat, cw32, zacc;
     /* and its tests: what kind of, the float in[of], the limit in[limit] (6 or 7, 0 for none), the width */
     unsigned char ntests;
-    struct {
-        unsigned char kind, of, limit, w;
-    } test[SGX_TESTS];
+    union {
+        struct {
+            unsigned char kind, of, limit, w;
+        } test[SGX_TESTS];
+        /* SGX_K_MACHINE, a piece of what the machine wrote between regions (mpins): the pins its emitter reads, as
+           they were where the piece was made: the selected general registers and the dirty and the selected vector
+           ones here, in the tests' room, which a piece has none of, and the dirty general ones in kv[1] */
+        struct {
+            SnxU64 psel;
+            SnxU32 pvdirty, pvsel;
+        };
+    };
     unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] and kv[0] what is dead where it goes (sgx_dead_words') */
+    unsigned char mpins; /* SGX_K_MACHINE: a piece with its pins (kv[1], psel, pvdirty, pvsel) */
     /* a compare whose flags are no fsel's (sgx_cold_cmp's): Arm's flag f (0 N ... 3 V) the AND of the bools (SgB)
        fb[f][0] and fb[f][1] (0: none), condition codes on its flags until those change (then SETcc's registers) */
     int fb[4][2];
@@ -3106,7 +3116,8 @@ enum {
     SGX_PK_CADD_K,
     SGX_PK_COLD,
     SGX_PK_FB,
-    SGX_PK_WIDTH
+    SGX_PK_WIDTH,
+    SGX_PK_PINS
 };
 /* a width's code in the kind's byte: 0, 8, 16, 32, 64 and 128 bits, 7 for another (SGX_PK_WIDTH has it) */
 static inline unsigned sgx_pk_width(unsigned w) {
@@ -3162,6 +3173,7 @@ static inline size_t sgx_pack(SgX* x) {
         map |= (SnxU64)(s->def2 != 0) << SGX_PK_DEF2 | (SnxU64)(s->cadd_k != 0) << SGX_PK_CADD_K;
         map |= (SnxU64)(s->cstate || s->cfpcr || s->ckat || s->cw32 || s->zacc || s->ntests) << SGX_PK_COLD;
         map |= (SnxU64)(fbs != 0) << SGX_PK_FB | (SnxU64)(sgx_pk_width(s->w) == 7) << SGX_PK_WIDTH;
+        map |= (SnxU64)(s->mpins != 0) << SGX_PK_PINS;
         sgx_pk_u(x, (SnxU64)(i - last - 1));
         last = i;
         {
@@ -3200,6 +3212,16 @@ static inline size_t sgx_pack(SgX* x) {
         }
         if (s->kv[0]) sgx_pk_raw(x, &s->kv[0], sizeof s->kv[0]);
         if (s->kv[1]) sgx_pk_raw(x, &s->kv[1], sizeof s->kv[1]);
+        if (s->mpins) {
+            /* which of the three are not what they mostly are (every pin selected, no vector one dirty), then those;
+               the dirty general ones went with kv[1] */
+            const unsigned char which =
+                (unsigned char)((s->psel != ~(SnxU64)0) | (s->pvdirty != 0) << 1 | (s->pvsel != ~(SnxU32)0) << 2);
+            sgx_pk_raw(x, &which, 1);
+            if (which & 1) sgx_pk_u(x, s->psel);
+            if (which & 2) sgx_pk_u(x, s->pvdirty);
+            if (which & 4) sgx_pk_u(x, s->pvsel);
+        }
         if (s->sym) sgx_pk_raw(x, &s->sym, sizeof s->sym);
         if (map >> SGX_PK_FIXED & 1) sgx_pk_raw(x, s->fixed, sizeof s->fixed);
         if (s->mclobber) sgx_pk_u(x, s->mclobber);
@@ -3285,6 +3307,14 @@ static inline void sgx_unpack(SgX* x, const unsigned char* c) {
         }
         if (map >> SGX_PK_KV0 & 1) sgx_un_raw(&c, &s->kv[0], sizeof s->kv[0]);
         if (map >> SGX_PK_KV1 & 1) sgx_un_raw(&c, &s->kv[1], sizeof s->kv[1]);
+        if (map >> SGX_PK_PINS & 1) {
+            unsigned char which;
+            sgx_un_raw(&c, &which, 1);
+            s->mpins = 1;
+            s->psel = which & 1 ? sgx_un_u(&c) : ~(SnxU64)0;
+            s->pvdirty = which & 2 ? (SnxU32)sgx_un_u(&c) : 0;
+            s->pvsel = which & 4 ? (SnxU32)sgx_un_u(&c) : ~(SnxU32)0;
+        }
         if (map >> SGX_PK_SYM & 1) sgx_un_raw(&c, &s->sym, sizeof s->sym);
         if (map >> SGX_PK_FIXED & 1) sgx_un_raw(&c, s->fixed, sizeof s->fixed);
         if (map >> SGX_PK_MCLOBBER & 1) s->mclobber = (unsigned)sgx_un_u(&c);
