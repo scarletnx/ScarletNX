@@ -100,12 +100,13 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   arguments are the function's under AAPCS32 as written (a `usize` for a `size_t`, never a `u64`), and its handler
   reads nothing whose layout differs in the 32-bit SDK. A hook that `uses` a struct can't be one: a struct's layout
   is one SDK's. A `@version` after that `a32` gives the versions the declaration holds for in a 32-bit game, in place
-  of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`. The 32-bit SDKs a function was read in
-  are not the 64-bit ones, and the runtime's own specs name them on every declaration for a 32-bit game
+  of the hook's own: `hook SYMBOL() -> u32 = handler a32 @version(< 1.0.0)`, and several give one group each, any of
+  which holds, for SDKs read apart: `a32 @version(< 1.0.0) @version(== 4.4.0)`. The 32-bit SDKs a function was read
+  in are not the 64-bit ones, and the runtime's own specs name them on every declaration for a 32-bit game
   (`tests/nn_*.c` check each family's). A 32-bit game of another SDK then has no hook, and stops when its SDK opens
   a service the runtime answers only natively ("Versions", below).
 - A line that begins with `a32` declares a hook for a 32-bit game alone: `a32 hook SYMBOL(...) ...`, with a
-  `@version` before it and `uses` after its handler as any hook. It is for a function whose declaration differs
+  `@version` before it (or several, one group each) and `uses` after its handler as any hook. It is for a function whose declaration differs
   there. A 32-bit SDK mangles a `size_t` as `j` where the 64-bit one has `m` (and an `int64_t` as `x` for `l`), so a
   function with one in its signature has another symbol. AAPCS32 returns a class of more than 4 bytes through a
   pointer the caller passes in r0, where AAPCS64 returns one of 8 bytes in x0, so `nn::time`'s `now()` is
@@ -184,7 +185,8 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
 ```
 
 - `@version(...)` goes on the line before the hook, or at the start of its line. It holds comparisons (`>=`, `>`,
-  `<=`, `<`, `==`) joined by commas, all of which must hold, and a key before them: `sdk` when none is given.
+  `<=`, `<`, `==`) joined by commas, all of which must hold, and a key before them: `sdk` when none is given. A
+  declaration takes one, but one for a 32-bit game, which takes a group for each 32-bit SDK read apart (above).
 - `sdk` is the module's SDK version. An SDK-built module carries middleware labels in its read-only data, of the
   form `SDK MW+<vendor>+<vendor>SDK_nnSdk-<x>_<y>_<z>` (and `..._NVN-...` for the NVN library). `hook_install`
   reads each module's when the game starts (`hook_label_version`, packed `x << 16 | y << 8 | z`, each part at most

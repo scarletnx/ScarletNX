@@ -2130,7 +2130,10 @@ foreach(bad IN ITEMS
         a32_keyword 3 "expected 'hook' after a32"
         a32_pure 3 "verify mode checks no hook of a 32-bit program"
         a32_versions_overlap 4 "f's versions overlap line 3's"
-        a32_versions_malformed 3 "malformed version '2.x'")
+        a32_versions_malformed 3 "malformed version '2.x'"
+        a32_groups_overlap 3 "f's version groups for a 32-bit program overlap"
+        a32_groups_keys 3 "f's version groups for a 32-bit program take two keys"
+        version_twice 3 "two @version for one declaration: only one for a 32-bit program alone")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)

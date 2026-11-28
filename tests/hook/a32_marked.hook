@@ -6,8 +6,12 @@ family marked
 hook answer(u32 a, bool b) -> u32 = test_answer a32
 hook thumb_answer(addr out) = test_thumb_answer a32
 hook wide(u64 size) -> u64 = test_wide
-# declared a32 for the versions of a 32-bit SDK it was read in: any version in the table, those in a 32-bit program's
-hook ranged(u32 a) -> u32 = test_ranged a32 @version(< 2.0.0)
+# declared a32 for the versions of the 32-bit SDKs it was read in, two groups apart: any version in the table, those
+# in a 32-bit program's
+hook ranged(u32 a) -> u32 = test_ranged a32 @version(< 2.0.0) @version(== 4.4.0)
+# declared for a 32-bit program alone in two groups, one on each line before it
+@version(< 2.0.0)
+@version(== 4.4.0) a32 hook grouped(u32 a) -> u32 = test_ranged
 # its handler hands the call back to the function's own code
 hook own(u32 a) -> u32 = test_own a32
 # its handler calls another function of the game
