@@ -722,6 +722,8 @@ static int al_choices(void) {
     int over;
     vk_bc7_cache_open(16); /* a cache that keeps no level: the levels get their keys, and the twin is encoded again */
     vk_bc7_choices_stats(&levels0, &bytes0, &given0, &known0);
+    VkBc7LaterTime time0, time1, time2;
+    vk_bc7_later_time(&time0);
     Surf* t = al_make(&x, &c, 6);
     CHECK(t && t->bc7.queued && t->bc7.keyed == (1u << x.tex.d.levels) - 1);
     u64 keys[16][2]; /* the levels' keys, which the texture lets go once its BC7 image is made */
@@ -731,6 +733,7 @@ static int al_choices(void) {
     vk_finish(); /* the choices read back land in their levels' */
     vk_unlock();
     vk_bc7_choices_stats(&levels1, &bytes1, &given1, &known1);
+    vk_bc7_later_time(&time1);
     const u16* level0 = vk_bc7_choices_find(keys[0], 64u * 64u);
     u32 chosen = 0;
     for (u32 i = 0; level0 && i < 64u * 64u; i++) chosen += level0[i] != 0;
@@ -740,10 +743,33 @@ static int al_choices(void) {
     if (twin) al_until_done(twin, &over);
     u64 levels2, bytes2, given2, known2;
     vk_bc7_choices_stats(&levels2, &bytes2, &given2, &known2);
+    vk_lock();
+    vk_finish(); /* the twin's timestamps land */
+    vk_unlock();
+    vk_bc7_later_time(&time2);
+    /* the strips timed on the GPU: the first's with no choice kept, the twin's with the choices it was given; a queue
+       that writes no timestamps times none */
+    const int timed = g_vk.gfx_timestamp_bits != 0;
+    const u64 first_blocks = time1.none_blocks - time0.none_blocks, twin_blocks = time2.blocks - time1.blocks,
+              twin_known = time2.known - time1.known;
+    const int time_failed =
+        timed && (time1.strips == time0.strips || time1.ns == time0.ns || !first_blocks || time1.known != time0.known ||
+                  twin_blocks != given2 - given1 || twin_known != known2 - known1 || time2.untimed != time0.untimed);
+    if (!timed) printf("ASTC as BC7 between frames, %s: the queue writes no timestamps, the encoder untimed\n", c.name);
+    if (time_failed)
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s, timed on the GPU: the first %llu strips, %llu ns, %llu blocks with no "
+                "choice and %llu with one; the twin %llu blocks of %llu given, %llu with a choice of %llu known; %llu "
+                "untimed\n",
+                c.name, (unsigned long long)(time1.strips - time0.strips), (unsigned long long)(time1.ns - time0.ns),
+                (unsigned long long)first_blocks, (unsigned long long)(time1.known - time0.known),
+                (unsigned long long)twin_blocks, (unsigned long long)(given2 - given1), (unsigned long long)twin_known,
+                (unsigned long long)(known2 - known1), (unsigned long long)(time2.untimed - time0.untimed));
     u8* again = twin ? al_image(&x, twin, &twin_size) : NULL;
     const int same = first && again && size == twin_size && !memcmp(first, again, (size_t)size);
     const int failed = levels1 - levels0 != x.tex.d.levels || !level0 || !chosen || !twin || twin == t ||
-                       twin->f.vk != VK_FORMAT_BC7_UNORM_BLOCK || given2 == given1 || known2 == known1 || !same;
+                       twin->f.vk != VK_FORMAT_BC7_UNORM_BLOCK || given2 == given1 || known2 == known1 || !same ||
+                       time_failed;
     if (failed)
         fprintf(stderr,
                 "ASTC as BC7 between frames, %s: %llu levels' choices kept of %u, %u of level 0's 4096 blocks chosen; "
@@ -754,8 +780,11 @@ static int al_choices(void) {
     else
         printf(
             "ASTC as BC7 between frames, %s: %u levels' choices kept (%u of level 0's 4096 blocks), and the same bytes "
-            "elsewhere encoded with them, %llu blocks, the first's blocks bit for bit\n",
-            c.name, x.tex.d.levels, chosen, (unsigned long long)(given2 - given1));
+            "elsewhere encoded with them, %llu blocks, the first's blocks bit for bit; on the GPU %.0f ns a block "
+            "with the search, %.0f with the twin's choices\n",
+            c.name, x.tex.d.levels, chosen, (unsigned long long)(given2 - given1),
+            first_blocks ? (double)(time1.none_ns - time0.none_ns) / (double)first_blocks : 0.0,
+            twin_blocks ? (double)(time2.ns - time1.ns) / (double)twin_blocks : 0.0);
     free(first);
     free(again);
     vk_bc7_cache_close();

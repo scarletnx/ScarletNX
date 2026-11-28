@@ -184,10 +184,16 @@ typedef struct {
        the most pairs taken at once. time_off: the pool could not be made; as_set: the setting's size, nothing timed
        (vk_astc_quick_measure) */
     VkQueryPool time_pool;
-    u64 time_sub[VK_BC7_TIMED], time_texels[VK_BC7_TIMED];
-    u32 time_bits[VK_BC7_TIMED]; /* the valid bits of the queue a pair was written on: the stream's or the graphics' */
+    /* pairs from VK_BC7_TIMED on: the encoder's strips between frames (vk_bc7_later_time), their blocks and how many
+       had a kept choice in time_blocks and time_known */
+    u64 time_sub[2 * VK_BC7_TIMED], time_texels[2 * VK_BC7_TIMED], time_blocks[2 * VK_BC7_TIMED],
+        time_known[2 * VK_BC7_TIMED];
+    u8 time_quick[2 * VK_BC7_TIMED]; /* a fast build's transcode that astc_quick_mtexels follows, between frames too */
+    u32 time_bits[2 *
+                  VK_BC7_TIMED]; /* the valid bits of the queue a pair was written on: the stream's or the graphics' */
     u64 timed_ns, timed_texels, timed, untimed;
     u32 time_busy, time_most;
+    VkBc7LaterTime later_time;
     int time_off, as_set;
     /* uploads that recorded a strip since the last plot (vk_astc_frame_done) */
     u64 uploads;
@@ -581,18 +587,30 @@ void vk_astc_frame_done(u64 sub) {
     if (g_dump.n) dump_landed(sub);
     /* the fast build's transcodes timed in it (bc7_time_begin): no wait, its work is done; one whose results aren't
        there (a submission that failed) is left out */
-    for (u32 i = 0; i < VK_BC7_TIMED; i++) {
+    for (u32 i = 0; i < 2 * VK_BC7_TIMED; i++) {
         u64 ts[2];
         if (!g_astc.time_sub[i] || g_astc.time_sub[i] > sub) continue;
         g_astc.time_sub[i] = 0;
-        g_astc.time_busy--;
+        if (i < VK_BC7_TIMED) g_astc.time_busy--;
         if (vkGetQueryPoolResults(g_vk.dev, g_astc.time_pool, 2 * i, 2, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) !=
             VK_SUCCESS)
             continue;
         const u64 mask = g_astc.time_bits[i] >= 64 ? ~0ull : (1ull << g_astc.time_bits[i]) - 1;
-        g_astc.timed++;
-        vk_astc_quick_timed((u64)((double)((ts[1] - ts[0]) & mask) * g_vk.props.limits.timestampPeriod),
-                            g_astc.time_texels[i]);
+        const u64 ns = (u64)((double)((ts[1] - ts[0]) & mask) * g_vk.props.limits.timestampPeriod);
+        if (g_astc.time_quick[i]) {
+            g_astc.timed++;
+            vk_astc_quick_timed(ns, g_astc.time_texels[i]);
+        }
+        if (i >= VK_BC7_TIMED) {
+            VkBc7LaterTime* l = &g_astc.later_time;
+            const u64 blocks = g_astc.time_blocks[i], known = g_astc.time_known[i];
+            l->strips++;
+            l->ns += ns;
+            l->blocks += blocks;
+            l->known += known;
+            if (known == blocks) l->all_ns += ns, l->all_blocks += blocks;
+            if (!known) l->none_ns += ns, l->none_blocks += blocks;
+        }
     }
     for (u32 i = 0; g_astc.captured && i < g_astc.ncaptures; i++) {
         Bc7Capture* c = &g_astc.captures[i];
@@ -906,36 +924,46 @@ static VkPipeline astc_pipeline(u32 bw, u32 bh) {
    pair of timestamps, each after all the work before it, where the graphics queue has them and a pair is free
    (VK_BC7_TIMED at once: the rest go untimed), and its time goes into the sum that astc_quick_mtexels follows once its
    submission is done (vk_astc_frame_done). bc7_time_begin before its first pass, the pair (-1 untimed); bc7_time_end
-   after its last */
-static int bc7_time_begin(VkCommandBuffer cb, u32 build, u64 texels) {
+   after its last. A strip between frames (later: a level kept for a texture's BC7 image) is timed in the pairs from
+   VK_BC7_TIMED on, for vk_bc7_later_time, and for astc_quick_mtexels too where it is the fast build's */
+static int bc7_time_begin(VkCommandBuffer cb, u32 build, u64 texels, int later) {
     int pair;
     /* the stream's on the compute queue (a pair's two timestamps on one queue), whose family has bits of its own */
     const u32 bits = g_on_stream ? g_vk.compute_timestamp_bits : g_vk.gfx_timestamp_bits;
-    if (build != 1 || texels < SNX_ASTC_QUICK_TIMED_TEXELS || !bits || g_astc.as_set || g_astc.time_off) return -1;
+    const int quick = build == 1 && texels >= SNX_ASTC_QUICK_TIMED_TEXELS && !g_astc.as_set;
+    if (!bits || g_astc.time_off || (!later && !quick)) return -1;
     if (!g_astc.time_pool) {
         VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                     .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                    .queryCount = 2 * VK_BC7_TIMED};
+                                    .queryCount = 4 * VK_BC7_TIMED};
         g_astc.time_off = !VK_OK(vkCreateQueryPool(g_vk.dev, &qi, NULL, &g_astc.time_pool));
         if (g_astc.time_off) return -1;
     }
-    for (pair = 0; pair < VK_BC7_TIMED && g_astc.time_sub[pair]; pair++) {}
-    if (pair == VK_BC7_TIMED) {
-        g_astc.untimed++;
+    const int from = later ? VK_BC7_TIMED : 0;
+    for (pair = from; pair < from + VK_BC7_TIMED && g_astc.time_sub[pair]; pair++) {}
+    if (pair == from + VK_BC7_TIMED) {
+        if (later)
+            g_astc.later_time.untimed++;
+        else
+            g_astc.untimed++;
         return -1;
     }
     g_astc.time_bits[pair] = bits;
+    g_astc.time_quick[pair] = (u8)quick;
     rec_CmdResetQueryPool(cb, g_astc.time_pool, 2u * (u32)pair, 2);
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_astc.time_pool, 2u * (u32)pair);
     return pair;
 }
-static void bc7_time_end(VkCommandBuffer cb, int pair, u64 texels) {
+static void bc7_time_end(VkCommandBuffer cb, int pair, u64 texels, u64 blocks, u64 known) {
     if (pair < 0) return;
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g_astc.time_pool, 2u * (u32)pair + 1);
     g_astc.time_sub[pair] = vk_submit_number();
     g_astc.time_texels[pair] = texels;
-    if (++g_astc.time_busy > g_astc.time_most) g_astc.time_most = g_astc.time_busy;
+    g_astc.time_blocks[pair] = blocks;
+    g_astc.time_known[pair] = known;
+    if (pair < VK_BC7_TIMED && ++g_astc.time_busy > g_astc.time_most) g_astc.time_most = g_astc.time_busy;
 }
+void vk_bc7_later_time(VkBc7LaterTime* t) { *t = g_astc.later_time; }
 
 /* the stages and accesses of a scratch buffer's uses: a shader writing it, a shader reading it, a copy reading it */
 enum { USE_WRITE, USE_READ, USE_COPY };
@@ -1043,15 +1071,16 @@ static void choice_barrier(VkCommandBuffer cb, int to) {
     rec_CmdPipelineBarrier2(cb, &d);
 }
 /* the choices a strip of count blocks is encoded with: its level's kept ones from at's first block (0 where none is
-   known), or all 0, the whole search, where none are kept (at NULL, or no key, or no room to stage them) */
-static void choices_in(VkCommandBuffer cb, const ChoiceAt* at, u64 count) {
+   known), or all 0, the whole search, where none are kept (at NULL, or no key, or no room to stage them); it gives
+   how many blocks had one */
+static u64 choices_in(VkCommandBuffer cb, const ChoiceAt* at, u64 count) {
     const u16* kept = at && at->key ? vk_bc7_choices_find(at->key, at->n) : NULL;
     VkBuffer up = VK_NULL_HANDLE;
     u64 off = 0;
     u8* p = kept && at->first <= at->n && count <= at->n - at->first ? vk_stage_upload(count * 4, 4, &up, &off) : NULL;
     choice_barrier(cb, 0);
+    u64 known = 0;
     if (p) {
-        u64 known = 0;
         for (u64 i = 0; i < count; i++) {
             const u32 w = kept[at->first + i];
             memcpy(p + i * 4, &w, 4);
@@ -1063,6 +1092,7 @@ static void choices_in(VkCommandBuffer cb, const ChoiceAt* at, u64 count) {
     } else
         rec_CmdFillBuffer(cb, bc7_choice_buf(), 0, count * 4, 0);
     choice_barrier(cb, 1);
+    return known;
 }
 /* the choices the encode of a strip of count blocks made, into the readback ring for its level's (vk_astc_frame_done
    puts them there once the submission is done). None where they are not kept, or the ring has no room for them: the
@@ -1135,7 +1165,8 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
                              (1024u + bw / 2) / (bw - 1),
                              (1024u + bh / 2) / (bh - 1),
                              in_base};
-    const int two = bc7_passes(build) == 2, pair = bc7_time_begin(cb, build, (u64)cx * cy * nz * 16);
+    const u64 blocks = (u64)cx * cy * nz;
+    const int two = bc7_passes(build) == 2, pair = bc7_time_begin(cb, build, blocks * 16, at != NULL);
     if (two) { /* no block listed, and 0 x 1 x 1 workgroups for the second pass, which the first raises */
         work_barrier(cb, 0);
         /* each word written once: fills without a barrier between them may land in any order */
@@ -1144,7 +1175,7 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
         rec_CmdFillBuffer(cb, bc7_work_buf(), 12, BC7_WORK_HEAD - 12, 0);
         work_barrier(cb, 1);
     }
-    choices_in(cb, at, (u64)cx * cy * nz);
+    const u64 known = choices_in(cb, at, blocks);
     scratch_barrier(cb, bc7_scratch_buf(), USE_COPY, 0, USE_WRITE);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bc7_pipe(build, 0));
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.bc7_layout, 0, 1, &set, 0, NULL);
@@ -1159,8 +1190,8 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
         vk_gpuprof_tag(tag);
         rec_CmdDispatchIndirect(cb, bc7_work_buf(), 0);
     }
-    bc7_time_end(cb, pair, (u64)cx * cy * nz * 16);
-    choices_out(cb, at, (u64)cx * cy * nz);
+    bc7_time_end(cb, pair, blocks * 16, blocks, known);
+    choices_out(cb, at, blocks);
     g_astc.bc7_dispatches++;
     scratch_barrier(cb, bc7_scratch_buf(), USE_WRITE, 0, USE_COPY);
 }

@@ -1219,6 +1219,19 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         "one in place of the search; %llu levels' kept (%llu KB), written at the exit\n",
                         (unsigned long long)choice_known, (unsigned long long)choice_given,
                         (unsigned long long)choice_levels, (unsigned long long)(choice_bytes >> 10));
+                VkBc7LaterTime lt;
+                vk_bc7_later_time(&lt);
+                if (lt.strips || lt.untimed)
+                    LOG("vulkan: the BC7 encoder between frames on the GPU since the start: %llu strips, %.1f ms for "
+                        "%llu blocks (%.0f ns a block), %llu of them given a kept choice; strips whose every block had "
+                        "one %.0f ns a block (%llu blocks), strips with none %.0f ns a block (%llu blocks); %llu strips "
+                        "found no timestamps free\n",
+                        (unsigned long long)lt.strips, (double)lt.ns / 1e6, (unsigned long long)lt.blocks,
+                        lt.blocks ? (double)lt.ns / (double)lt.blocks : 0.0, (unsigned long long)lt.known,
+                        lt.all_blocks ? (double)lt.all_ns / (double)lt.all_blocks : 0.0,
+                        (unsigned long long)lt.all_blocks,
+                        lt.none_blocks ? (double)lt.none_ns / (double)lt.none_blocks : 0.0,
+                        (unsigned long long)lt.none_blocks, (unsigned long long)lt.untimed);
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)

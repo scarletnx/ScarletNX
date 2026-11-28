@@ -2334,6 +2334,14 @@ u16* vk_bc7_choices_take(const u64 key[2], u64 n);
 void vk_bc7_choices_put(const u64 key[2], u64 n, u64 first, const void* got, u64 count);
 void vk_bc7_choices_given(u64 blocks, u64 known);
 void vk_bc7_choices_stats(u64* levels, u64* bytes, u64* given, u64* known);
+/* The encoder's strips between frames (the levels a texture keeps for its BC7 image) timed on the GPU since the
+   start, as the fast build's are (VK_BC7_TIMED more pairs): the strips and the ns, blocks and blocks given a kept
+   choice of those, and apart the strips whose every block had a kept choice and those with none (the whole search);
+   untimed: strips that found no pair free */
+typedef struct {
+    u64 strips, ns, blocks, known, all_ns, all_blocks, none_ns, none_blocks, untimed;
+} VkBc7LaterTime;
+void vk_bc7_later_time(VkBc7LaterTime* t);
 u64 vk_bc7_choices_load(const char* path);
 void vk_bc7_choices_save(void);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
