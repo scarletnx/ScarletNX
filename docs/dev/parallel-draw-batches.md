@@ -499,9 +499,17 @@ Each step keeps the picture of the base run (screenshots at the same frame) and 
 the share lock's takes a draw, the ns a draw on each thread, and the fps in A/B/B/A runs.
 
 1. Counters on each thread (the list above). Gate: no change of the picture, fewer lines that both cores write.
-2. The split point with no dependency, with a count of the draws it gives back to the renderer thread.
-3. The write journal and the worker's view of it. Gate: `wseq` follows the GPU order (a check that compares, at each
+   Done: the draw count of each thread (vk_drawn) and the feedback statistics of each slot.
+2. The write journal and the worker's view of it. Gate: `wseq` follows the GPU order (a check that compares, at each
    join, the numbers of the targets of both halves), and no take of the lock in target_written on either thread.
+3. The split point with no dependency. The worker learns what a draw samples only in its setup (stage_set_), from
+   the texture headers its shaders index, so a draw that depends on the renderer thread's half is found after its
+   setup began. It is undone: the worker's list and journal go back to their length before the draw, and the cut
+   (the records the worker drew) goes to the join, which skips that many (gpu_ds_batch_done). The renderer thread's
+   copy of the state has every skipped record applied already, so it draws the rest from the cut. The renderer
+   thread half's targets come from the worker's apply of the records before its half (gpu_ds_batch_apply), which
+   it makes now. This needs step 2: with the target writes in the journal, nothing outside the list and the journal
+   changed for the undone draw but caches, which a miss fills again. Count the draws given back.
 4. The lookups' hits under seqlocks.
 5. A judgement in three games, the split on against off. The split goes on by default only where it gains in each.
 
