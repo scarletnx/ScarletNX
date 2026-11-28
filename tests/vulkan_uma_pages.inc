@@ -369,10 +369,20 @@ static int check_uma_pages_old(void) {
    the program going at once */
 #define UPG_S  (HEAP_BASE + 0x2a800000)
 #define UPG_GS 0x5fb000000ull
+/* prog's write of 256 bytes in place, recorded; submit: submitted, behind 4 GiB of fills in its submission, so a
+   reader that comes next waits for a submission the GPU has not done (as usr_busy has a load wait for a store) */
 static int upg_soon_write(u64 prog, int submit) {
-    VkBuffer w;
-    u64 wo;
+    VkBuffer w, b;
+    u64 wo, at;
     vk_lock();
+    if (submit) {
+        vk_render_end();
+        CHECK(vk_stage_device(16u << 20, 16, &b, &at));
+        for (u32 i = 0; i < 256; i++) {
+            vk_all_barrier(vk_cmd()); /* each fill after the one before */
+            rec_CmdFillBuffer(vk_cmd(), b, at, 16u << 20, i);
+        }
+    }
     vk_uma_writer(prog);
     CHECK(vk_buf_copy_writable(UPG_GS + 0x100, 256, &w, &wo, 1));
     const int inplace = !vk_buf_pending(UPG_GS + 0x100, 256);
@@ -405,10 +415,12 @@ static int check_uma_soon(void) {
     const int added = vk_uma_read_soon(prog) && bytes[0] == 0x51;
     g_vk_present = present + 601;
     const int expired = !vk_uma_read_soon(prog);
-    /* a reader of a submitted write, 500 presents on, keeps it 600 more */
+    /* a reader that waits for a submitted write, 500 presents on, keeps it 600 more */
     g_vk_present = present + 500;
     CHECK(!upg_soon_write(prog, 1));
+    const u64 waits = vk_uma_out_waits();
     CHECK(!gmem_read(UPG_GS + 0x100, bytes, sizeof bytes));
+    const int waited = vk_uma_out_waits() > waits;
     g_vk_present = present + 1100;
     const int kept = vk_uma_read_soon(prog);
     g_vk_present = present + 1101;
@@ -420,13 +432,13 @@ static int check_uma_soon(void) {
     CHECK(mem_unmap(UPG_S, 0x200000) == 0);
     g_renderer->mem_may_have_changed();
     g_settings.guest_buffers_copied = copies;
-    if (before || !added || !expired || !kept || !gone)
+    if (before || !added || !expired || !waited || !kept || !gone)
         fprintf(stderr,
                 "dispatches at once: before any reader %d, after one waited %d, gone 601 presents later %d (1 "
-                "expected); a reader of a submitted write 500 presents on: still there 600 later %d, gone 601 "
-                "later %d\n",
-                before, added, expired, kept, gone);
-    CHECK(!before && added && expired && kept && gone);
+                "expected); a reader of a submitted write 500 presents on: waited %d, still there 600 later %d, "
+                "gone 601 later %d\n",
+                before, added, expired, waited, kept, gone);
+    CHECK(!before && added && expired && waited && kept && gone);
     printf("in place: a program's dispatches go at once while a CPU reader waited for its writes in the last 600 "
            "presents\n");
     return 0;
