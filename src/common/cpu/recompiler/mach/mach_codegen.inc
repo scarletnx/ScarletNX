@@ -560,7 +560,11 @@ enum {
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
+    /* a piece's emitter reads the pins as they were where the piece was made, not as the unit has them by now */
+    const SnxU64 dirty = u->cur_dirty, sel = u->pin_sel;
+    const SnxU32 vdirty = u->vcur_dirty, vsel = u->vpin_sel;
     (void)r;
+    if (i->mpins) u->cur_dirty = i->kv[1], u->pin_sel = i->psel, u->vcur_dirty = i->pvdirty, u->vpin_sel = i->pvsel;
     switch (i->op) {
     case SGX_FN_JCC: jcc(u, i->cc, i->disp); break;
 #ifdef MG_POLL_INLINE
@@ -634,6 +638,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
     }
+    u->cur_dirty = dirty, u->pin_sel = sel, u->vcur_dirty = vdirty, u->vpin_sel = vsel;
 }
 static void machine_target(Unit* u, int op, SgD target) {
     SgX* x = &u->g->x;
@@ -656,6 +661,12 @@ static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0) {
     i->imm = imm;
     i->disp = disp;
     i->kv[0] = k0;
+    if (op != SGX_FN_BIND && op != SGX_FN_JMP) {
+        /* the pins as they are here, which the emitter reads when the region is assembled: a label's binding and a
+           jump to one read none (pins_of alone reads them, and the machines' calls of the runtime) */
+        i->mpins = 1;
+        i->kv[1] = u->cur_dirty, i->psel = u->pin_sel, i->pvdirty = u->vcur_dirty, i->pvsel = u->vpin_sel;
+    }
     u->glue_last = 1;
     flush(u);
     u->glue_last = 0;
