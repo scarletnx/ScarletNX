@@ -3054,6 +3054,10 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
+/* vk_written_since with no lock when nothing needs taking in, else -2 (draw_batches=2's threads, share_wrap.h) */
+int vk_written_since_nolock(const u8* host, u64 len, u32 since);
+/* nonzero when [host, host + len) needs nothing taken in for vk_written_since: safe with no lock */
+int vk_ww_settled(const u8* host, u64 len);
 /* vk_written_since where it needs no scan: its 4 MiB leaves taken in for this epoch already (by an earlier query), no
    alias of guest memory and no import over the range. -1 where it would scan or can't tell: vk_written_since asks then */
 int vk_written_quick(const u8* host, u64 len, u32 since);
