@@ -543,26 +543,53 @@ static int sys_heap_short(void) {
 }
 
 /* A trim for an allocation that found no memory while the free space inside the heap's blocks is in pieces: the use
-   the caches count (vk_mem_use, without those pieces) is under every step's mark, the heap's own use is at its budget,
-   and evictions before it are releasing more than the allocation. A target with pixels memory lacks, unused for
-   longer than the lossy steps' age, goes (here it can't move: lost). The trim counted the pieces as room and took the
-   allocation less what was being released, and freed nothing: a racing game's 1,101 failed allocations each forced
-   one. 1 when the target went */
+   the caches count (vk_mem_use, without those pieces) is under every step's mark, while the heap's own use is at its
+   budget. A superseded target satisfies `need`, so only counting the heap's own use reaches the lossy step and takes
+   the target with pixels memory lacks. 1 when both targets went */
 static int forced_in_pieces(void) {
     g_vk_present += 1000;
     g_vk.has_pageable = 0;
     Surf* s = target(0x70000000, 16 << 20, 1);
     s->last_used = g_vk_present - 1000;
-    CHECK(!lossless(s));
+    Surf* old = target(0x70800000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x70800000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(s));
     g_use = g_budget - 3 * trim_head(g_budget); /* under every step's mark */
     g_heap_use = g_budget;
+    g_releasing = 0;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 1 && g_deferred == 32 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    return went;
+}
+
+/* A trim for an allocation while both vk_mem_use and the raw heap use are under every step's mark, and evictions
+   before it are releasing more than the allocation: `need` stays the full allocation rather than subtracting what is
+   releasing, so the lossy step still runs and takes the target. 1 when the target went */
+static int forced_need_ignores_deferred(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* s = target(0x70000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    CHECK(!lossless(s));
+    const u64 low = g_budget - 3 * trim_head(g_budget); /* raw heap + releasing + extra stays under every mark */
+    g_use = low;
+    g_heap_use = low;
     g_releasing = 64 << 20; /* more than the allocation */
     g_deferred = 0;
     const u64 lost = g_rt_sys.lost;
     vk_mem_trim(8 << 20, 1);
     const int went = targets_held() == 0 && g_deferred == 16 << 20 && g_rt_sys.lost == lost + 1;
     if (!went)
-        fprintf(stderr, "forced_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
+        fprintf(stderr, "forced_need_ignores_deferred: %u targets held, %llu bytes deferred\n", targets_held(),
                 (unsigned long long)g_deferred);
     while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
     g_heap_use = 0;
@@ -740,6 +767,7 @@ int main(void) {
     CHECK(copies_go(0) && copies_go(1) && copies_go(2));
     /* a trim for an allocation with the heap's free space in pieces reaches the lossy steps */
     CHECK(forced_in_pieces());
+    CHECK(forced_need_ignores_deferred());
     /* a target set aside lets its copies go, but its save copy */
     CHECK(copies_go_aside());
     /* a trim for headroom with the heap's free space in pieces reaches the trim's steps */
