@@ -644,28 +644,41 @@ static int copies_go_aside(void) {
     return counted && went;
 }
 
-/* A trim for headroom while the free space inside the heap's blocks is in pieces: the use the caches count
-   (vk_mem_use, without those pieces) is under the trim's start, while the heap's own use is at its budget. Without
-   running the trim's steps, a target with pixels memory lacks stayed until an allocation failed and forced a trim,
-   skipping draws meanwhile. 1 when the target went on the non-forced trim */
+/* A trim for headroom while the free space inside the heap's blocks is in pieces: vk_mem_use is under the trim's
+   start, while vk_mem_heap_use is at its budget. Freeing live entries inside blocks only widens the holes without
+   lowering vk_mem_heap_use until whole blocks empty, so a non-forced trim sweeps only dead entries (superseded
+   surfaces, stale copies, ended textures) once a present and leaves live non-superseded targets alone, even when
+   called again on the same or a later present with vk_mem_heap_use still at the budget. 1 when the superseded target
+   went, the live target stayed, and a second call freed nothing */
 static int headroom_in_pieces(void) {
     g_vk_present += 1000;
     g_vk.has_pageable = 0;
-    Surf* s = target(0x72000000, 16 << 20, 1);
-    s->last_used = g_vk_present - 1000;
-    CHECK(!lossless(s));
+    Surf* live = target(0x72000000, 16 << 20, 1);
+    live->last_used = g_vk_present - 1000;
+    Surf* old = target(0x72800000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x72800000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(live));
     g_use = g_budget - 3 * trim_head(g_budget); /* under the trim's start and every step's mark */
     g_heap_use = g_budget;
     g_deferred = 0;
     const u64 lost = g_rt_sys.lost;
     vk_mem_trim(0, 0);
-    const int went = targets_held() == 0 && g_deferred == 16 << 20 && g_rt_sys.lost == lost + 1;
-    if (!went)
-        fprintf(stderr, "headroom_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
-                (unsigned long long)g_deferred);
+    const int first = targets_held() == 2 && g_deferred == 16 << 20 && g_rt_sys.lost == lost;
+    /* a second call in the same present, and another on a later present with the heap still at the budget, free no
+       live target */
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    g_vk_present += 10;
+    vk_mem_trim(0, 0);
+    const int quiet = targets_held() == 2 && g_deferred == 0 && g_rt_sys.lost == lost;
+    if (!first || !quiet)
+        fprintf(stderr, "headroom_in_pieces: first=%d quiet=%d, %u targets held, %llu bytes deferred\n", first, quiet,
+                targets_held(), (unsigned long long)g_deferred);
     while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
     g_heap_use = 0;
-    return went;
+    return first && quiet;
 }
 
 /* A trim for an allocation while deferred frees hold enough bytes to pull vk_mem_heap_use under the lossy steps'

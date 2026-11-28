@@ -3914,9 +3914,10 @@ static u64 trim_head(u64 budget) {
     if (head > (256ull << 20)) head = 256ull << 20;
     return head > budget / 4 ? budget / 4 : head;
 }
-static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
-static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
-static u64 g_oom_bytes; /* the smallest size that found none in that present */
+static u32 g_forced;     /* the present a failed allocation last forced a trim (+1) */
+static u32 g_heap_swept; /* the present the heap's own use last swept dead entries (+1) */
+static u32 g_oom;        /* the present an image allocation last found no memory (+1) */
+static u64 g_oom_bytes;  /* the smallest size that found none in that present */
 static u32 g_oom_target; /* the same of render targets */
 static u64 g_oom_target_bytes;
 u64 vk_mem_trimmed(void) { return g_trimmed; }
@@ -4099,7 +4100,6 @@ void vk_mem_trim(u64 extra, int force) {
     vk_mem_use(&usage, &budget);
     usage += extra;
     const u64 head = trim_head(budget);
-    int heap_full = 0;
     if (force) {
         /* An allocation found no memory: the heap is at its budget, or the free space inside its blocks is in pieces
            no run of the request's fits. The use the caches count leaves those pieces out (vk_mem_use), and in a
@@ -4111,14 +4111,21 @@ void vk_mem_trim(u64 extra, int force) {
         if (heap > usage) usage = heap;
         need = extra;
     } else if (usage <= vk_mem_trim_start(budget)) {
-        /* The caches count the free space inside the blocks as room, but a request takes only a run of its own kind
-           and size, and the driver's heap can be at its budget while that space is in pieces no request takes. Then
-           the trim runs against the heap's own use, taking targets drawn over after two presents even where the
-           driver pages, before an allocation fails and skips draws */
-        const u64 heap = vk_mem_heap_use() + extra;
-        if (heap <= vk_mem_trim_start(budget)) return;
-        heap_full = 1;
-        usage = heap;
+        /* The caches count the free space inside the blocks as room, so freeing live entries inside them only widens
+           the holes without lowering vk_mem_heap_use until whole blocks empty: running the trim's steps here thrashed
+           live textures and targets and oscillated Auto ASTC while vk_mem_use fell to 4 GB of an 11 GB budget. Sweep
+           only what is already dead (superseded surfaces, ended texture objects and stale copies), once a present,
+           and leave live entries until vk_mem_use passes the start or an allocation fails */
+        if (g_heap_swept != g_vk_present + 1 && vk_mem_heap_use() + extra > vk_mem_trim_start(budget)) {
+            g_heap_swept = g_vk_present + 1;
+            const u32 before = vk_present_before(0, 2);
+            g_trimmed += vk_rt_reclaim_superseded(before, ~0ull);
+            g_trimmed += vk_tex_reclaim_superseded(before, ~0ull);
+            g_trimmed += rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
+            ended_collect();
+            g_trimmed += ended_reclaim(~0ull, before);
+        }
+        return;
     }
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
@@ -4145,7 +4152,7 @@ void vk_mem_trim(u64 extra, int force) {
        and, for the large ones, memory of its own: a call to the driver of 0.64 ms where it moves memory, 0.29 ms
        where it doesn't. A trim for an allocation (force) still takes them after two presents */
     const u32 superseded_before =
-        g_vk.has_pageable && !force && !heap_full ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
+        g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
     /* the copies of targets no bind asked for lately go with them: made again from their targets */
     const u32 copy_before = vk_present_before(0, force ? VK_RT_COPY_PRESENTS : VK_RT_COPY_TRIM_PRESENTS);
     u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) + rt_copies_reclaim(copy_before, ~0ull);
