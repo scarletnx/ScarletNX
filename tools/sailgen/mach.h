@@ -269,6 +269,7 @@ typedef struct {
         /* and its functions' leaders past the first, where a region ends: those after a call, and of the others those
            one, several or no instruction of the function leads to */
         SnxU64 leaders, after_call, one_way, more_ways, no_way;
+        SnxU64 glue[16]; /* the machine's own: its functions' bytes between regions, by part (its order) */
     } seen;
 } SgX;
 
