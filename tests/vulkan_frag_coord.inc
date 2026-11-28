@@ -3,14 +3,14 @@
 
 /* the 4x4 RGBA32F target's x and y (red and green) after a triangle over all of it, at the end of a draw */
 static int frag_coord_draw(GpuChannel* channel, u64 target, float out[4][4][2]) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_lock();
     rt_clear_format(channel, target, 4, 4, 0, 0, 0xC0); /* RGBA32F */
     channel->r3d_dirty = ~0u;                           /* the registers were set directly */
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;

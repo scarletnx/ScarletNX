@@ -26,14 +26,14 @@ static const char* const upg_name[UPG_N] = {"a pending graphics result", "a queu
                                             "its pages given back and mapped again"};
 /* the pixel the draw of channel gives, its target read back: what came before it is in the same submission */
 static int upg_pixel(GpuChannel* channel, u8 px[4]) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_lock();
     rt_clear(channel, UMA_CB_TARGET, 4, 4, 0, 0);
     channel->r3d_dirty = ~0u;
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(UMA_CB_TARGET);
     VkBuffer buffer;

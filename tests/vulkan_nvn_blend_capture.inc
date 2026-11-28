@@ -136,9 +136,9 @@ static int blend_capture_instances(GpuChannel* channel, u64 gpu) {
         DrawClear clear = {.color_mask = 15, .aspects = 3, .depth = 1};
         memcpy(clear.color, destination, sizeof destination);
         vk_render_clear(state, &clear, &owner);
-        u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+        u64 drawn = vk_drawn(), skipped = g_vk_skipped;
         vk_render_draw(state, &call, &owner);
-        CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
+        CHECK(vk_drawn() == drawn + 1 && g_vk_skipped == skipped);
         vk_render_end();
         if (feedback) CHECK(vk_render_xfb_control(state->owner, control, 1, 28, &owner));
         float expected[4];

@@ -1853,7 +1853,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
            stage_set_): a writable view alone does not create a dependency, unless the setting asks for the
            conservative order (ordered). Read-only consumers and new submissions retain their automatic visibility
            checks. */
-        u64 work = g_vk_drawn + g_vk_dispatches;
+        u64 work = vk_drawn() + g_vk_dispatches;
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
            this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
@@ -5099,7 +5099,7 @@ void vk_buf_ordered(void) {
     vk_uma_ordered();
     g_buffer.order.owner_reads_ordered = g_buffer.order.owner_reads; /* the renderer's barrier is from all commands */
     g_buffer.order.submit = vk_submit_number();
-    g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
+    g_buffer.order.work = vk_drawn() + g_vk_dispatches;
     g_buffer.order.visible = g_buffer.order.writes;
     g_buffer.order.read_pending = 0;
     g_buffer.order.required = 0;

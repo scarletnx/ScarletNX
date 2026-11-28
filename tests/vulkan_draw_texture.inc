@@ -89,9 +89,9 @@ static int check_draw_texture(void) {
             state->rkey.alpha_to_coverage = state->rkey.alpha_to_one = 0;
             state->rkey.sample_mask = 5;
         }
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw_texture(state, &rectangle);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         Surf* surface = vk_rt_find(test == 5 ? target + 0x2000 : target);
         CHECK(surface);

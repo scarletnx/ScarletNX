@@ -39,12 +39,12 @@ static int usr_dispatch(GpuChannel* channel, u32 word) { return usr_dispatch_at(
 /* one draw of the program at ALIAS_GCODE, recorded with nothing between it and the work before: no barrier of a program
    change (alias_program_draw's), so only the read's own barrier orders it after the dispatch's store */
 static int usr_draw(GpuChannel* channel) {
-    const u64 drawn = g_vk_drawn;
+    const u64 drawn = vk_drawn();
     DrawCall call = {.topology = 0, .count = 1, .instances = 1};
     vk_lock();
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_unlock();
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     return 0;
 }
 /* about 4 GiB of fills in two submissions, which the GPU runs while the next store and load are recorded: the two

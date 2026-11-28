@@ -16,14 +16,14 @@ static int mesh_program(u64 address, const u64* ops, u32 count, int fragment) {
 }
 
 static int mesh_pixel_check(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4], u32 mask) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 0);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .base_instance = instance, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;

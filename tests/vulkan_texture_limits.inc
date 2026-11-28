@@ -292,11 +292,11 @@ static int check_texture_min_lod(void) {
                     state->bind.cb_addr[ST_FS][2] = constants; state->bind.cb_size[ST_FS][2] = 0x200;
                     state->bind.cb_addr[ST_FS][3] = clamp_buffer; state->bind.cb_size[ST_FS][3] = 0x400;
                     state->blend.en[0] = 0; state->blend.mask[0] = 15;
-                    u64 before = g_vk_drawn;
+                    u64 before = vk_drawn();
                     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
                     vk_render_draw(state, &draw, &channel->owner);
                     vk_render_end();
-                    CHECK(g_vk_drawn == before + 1);
+                    CHECK(vk_drawn() == before + 1);
                     Surf* surface = vk_rt_find(target);
                     VkBuffer buffer;
                     u8* actual = vk_readback_buffer(16 * 16, &buffer);

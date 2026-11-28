@@ -11,7 +11,7 @@ static int nvn_storage_batch(GpuChannel* channel, u64 cbuf, u64 stored, u64 cpu,
     CHECK(!gmem_write(stored, initial, bytes));
     vk_lock();
     vk_finish();
-    u64 pass0 = g_vk_passes, draw0 = g_vk_drawn, skipped0 = g_vk_skipped;
+    u64 pass0 = g_vk_passes, draw0 = vk_drawn(), skipped0 = g_vk_skipped;
     u64 start = plat_ns();
     for (u32 i = 0; i < draws; i++) {
         u64 at = stored + (u64)i * stride;
@@ -30,7 +30,7 @@ static int nvn_storage_batch(GpuChannel* channel, u64 cbuf, u64 stored, u64 cpu,
     vk_finish();
     *elapsed = plat_ns() - start;
     *passes = g_vk_passes - pass0;
-    CHECK(g_vk_drawn == draw0 + draws && g_vk_skipped == skipped0);
+    CHECK(vk_drawn() == draw0 + draws && g_vk_skipped == skipped0);
     vk_unlock();
     for (u32 i = 0; i < draws; i++) snx_st_le32(initial + i * stride, 0x5eed);
     CHECK(!memcmp(GP(cpu + 0x10000), initial, bytes));
@@ -228,12 +228,12 @@ static int alias_channel_end(void) {
 static int alias_program_draw(GpuChannel* channel, const u64* program, u32 n, int ordering) {
     CHECK(mesh_program(ALIAS_GCODE, program, n, 0));
     g_renderer->method_barrier(5); /* the program at this address is another one now */
-    const u64 drawn = g_vk_drawn;
+    const u64 drawn = vk_drawn();
     DrawCall call = {.topology = 0, .count = 1, .instances = 1};
     vk_lock();
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_unlock();
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     if (ordering) {
         g_renderer->method_barrier(6);
         g_renderer->method_barrier(7);

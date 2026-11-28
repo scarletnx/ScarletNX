@@ -2812,7 +2812,7 @@ static struct {
 } g_copy_stats;
 void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) {
     VkRtCopyCounts* n = &g_copy_stats.n;
-    const u64 work = g_vk_drawn + g_vk_dispatches + 1;
+    const u64 work = vk_drawn() + g_vk_dispatches + 1;
     n->written[why]++;
     n->ended[why] += ended != 0;
     n->bytes[why] += bytes;

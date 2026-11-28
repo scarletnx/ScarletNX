@@ -381,7 +381,9 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
 /* render.c's pass: open while g_pass_open, which a test sets as a draw's pass would be; a copy's barriers end it, as
    vk_surf_use ends the pass before a barrier */
 static int g_pass_open;
-u64 g_vk_drawn, g_vk_dispatches;
+u64 g_vk_dispatches;
+static u64 g_drawn; /* the draws this test counts */
+u64 vk_drawn(void) { return g_drawn; }
 int vk_render_begun(void) { return g_pass_open; }
 void vk_render_end_at(const char* file, int line) {
     (void)file;
@@ -2198,18 +2200,18 @@ static void check_copy_counts(void) {
     CHECK(!memcmp(&n, &(VkRtCopyCounts){0}, sizeof n));
     /* a draw's pass is open (a draw since the copies of the cases before): its first texture, a corner, ends it; its
        second, the full target in another format, finds it ended */
-    g_vk_drawn++;
+    g_drawn++;
     g_pass_open = 1;
     CHECK(rt_crop(&rt, 792, 448, NULL) != &rt && !g_pass_open);
     CHECK(rt_crop(&rt, 800, 448, &as) != &rt);
     /* the next draw: a corner in another format with its pass open, then a read of what was copied, reused */
-    g_vk_drawn++;
+    g_drawn++;
     g_pass_open = 1;
     Surf* both = rt_crop(&rt, 800, 440, &as);
     CHECK(both && both != &rt && rt_crop(&rt, 800, 440, &as) == both && g_image_copies == 3);
     /* a draw sampling its target, after a texture barrier; then a dispatch's read of the target scaled 2x at the
        guest's size, its blit outside the pass */
-    g_vk_drawn++;
+    g_drawn++;
     g_vk_texture_epoch++;
     rt.wgen++;
     g_pass_open = 1;
@@ -2260,7 +2262,7 @@ static void check_copy_counts(void) {
     vk_rt_copy_counts(&n);
     CHECK(!memcmp(&n, &(VkRtCopyCounts){0}, sizeof n));
     /* a corner copied again after a barrier, in a present of its own: the line's numbers are that present's */
-    g_vk_drawn++;
+    g_drawn++;
     g_vk_texture_epoch++;
     rt.wgen++;
     g_pass_open = 1;

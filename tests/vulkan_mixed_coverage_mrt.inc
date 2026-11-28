@@ -176,9 +176,9 @@ static int check_mixed_coverage_mrt(void) {
                                       NVN_BLEND_ADV_PMS, 1), NVN_BLEND_ADV_NPM, 1);
                 }
                 for (u32 i = 0; i < 16; i++) call.coverage_table[i] = (u8)((3 * i + 5) % 17);
-                u64 before = g_vk_drawn;
+                u64 before = vk_drawn();
                 vk_render_draw(state, &call, &channel->owner);
-                CHECK(g_vk_drawn == before + 1);
+                CHECK(vk_drawn() == before + 1);
                 u32 population = 0;
                 for (u32 bit = 0; bit < raster; bit++) population += masks[mask] >> bit & 1;
                 float factor = mode ? (float)population / (float)raster : 1.0f;

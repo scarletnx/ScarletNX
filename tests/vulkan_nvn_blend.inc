@@ -67,9 +67,9 @@ static int check_nvn_advanced_blend(void) {
         CHECK(nvn_blend_advanced(&channel->ds.blend, 0, packed));
         channel->ds.gen[DS_BLEND] = ds_generation_next();
         DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(&channel->ds, &draw, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         VkBuffer buffer;
