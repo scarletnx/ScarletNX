@@ -298,6 +298,8 @@ static void glue_out(Unit* u) {
     u->glue_part = GLUE_OTHER;
 }
 #define jmp(u, label)                 region_glue((u), SGX_FN_JMP, 0, (label), 0)
+/* a label bound where the region's bytes end: the region's instruction too, so that one can go on past a label */
+#define bind(u, label)                region_glue((u), SGX_FN_BIND, 0, (label), 0)
 #define jcc(u, cc, label)             (glue_in((u), GLUE_JUMP), jcc((u), (cc), (label)), glue_out(u))
 #define pins_of(u, b, store, caller)  (glue_in((u), GLUE_PINS), pins_of((u), (b), (store), (caller)), glue_out(u))
 #define prologue(u)                   region_glue((u), SGX_FN_PROLOGUE, 0, 0, 0)
@@ -552,7 +554,8 @@ enum {
     SGX_FN_PINS,
     SGX_FN_UNDEF,
     SGX_FN_SVC,
-    SGX_FN_BRK
+    SGX_FN_BRK,
+    SGX_FN_BIND
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -568,7 +571,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
         jcc(u, i->cc ^ 1, skip);
         (poll_jz)(u, i->disp); /* the emitters themselves: their names alone are a region's instruction, as below */
         (jmp)(u, (int)i->imm);
-        bind(u, skip);
+        (bind)(u, skip);
         break;
     }
 #endif
@@ -626,6 +629,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     case SGX_FN_UNDEF: (mg_undef)(u, (SnxU64)i->imm, (SnxU32)i->kv[0]); break;
     case SGX_FN_SVC: (mg_svc)(u, (SnxU64)i->imm, (unsigned)i->kv[0], i->disp); break;
     case SGX_FN_BRK: (mg_brk)(u, (SnxU64)i->imm, (unsigned)i->kv[0]); break;
+    case SGX_FN_BIND: (bind)(u, i->disp); break;    /* the label disp, here */
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -3393,6 +3397,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
 
 /* the machine's emitters are defined after this file, by their own names */
 #undef jmp
+#undef bind
 #undef jcc
 #undef pins_of
 #undef prologue
