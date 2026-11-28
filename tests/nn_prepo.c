@@ -55,15 +55,21 @@ u64 kernel_find_symbol_exact(const char* name) { return !strcmp(name, PREPO_SYM_
 /* a 32-bit game's registers, the module set while the test plays one */
 static SnxArmModule module32;
 const SnxArmModule* g_arm_mod;
-static SnxArmCPU* test_arm;
-SnxArmCPU* arm_cpu(CPU* c) { return (void)c, test_arm; }
+/* a thread's CPU and its 32-bit registers in one struct, each found from the other, as KThread holds them: an A32
+   adapter reaches the registers through a restrict pointer */
+typedef struct {
+    CPU cpu;
+    SnxArmCPU arm;
+} Thread32;
+static Thread32 thread;
+SnxArmCPU* arm_cpu(CPU* c) { return &((Thread32*)(void*)((char*)c - offsetof(Thread32, cpu)))->arm; }
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     added.calls++;
     added.fn = fn, added.a[0] = a0, added.a[1] = a1, added.a[2] = a2, added.a[3] = a3;
-    added.sp = g_arm_mod ? test_arm->r[13] : c->x[31];
+    added.sp = g_arm_mod ? arm_cpu(c)->r[13] : c->x[31];
     added.id = snx_ld_le64(c->mem + a2);
     if (g_arm_mod)
-        test_arm->r[0] = 0x2a81, c->x[0] = 0xbad0bad0ull; /* a 32-bit Add's Result is in r0, nothing in x0 */
+        arm_cpu(c)->r[0] = 0x2a81, c->x[0] = 0xbad0bad0ull; /* a 32-bit Add's Result is in r0, nothing in x0 */
     else
         c->x[0] = 0x2a81; /* a Result of the SDK's Add, which AddSessionId hands on */
 }
@@ -71,9 +77,8 @@ void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 
-static CPU cpu;
 static u8 mem[0x1000];
-CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return &((Thread32*)(void*)((char*)arm - offsetof(Thread32, arm)))->cpu; }
 #define REPORT 0x100u
 #define BUFFER 0x400u
 
@@ -81,19 +86,19 @@ CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
 static void report(const HookLayout_nn_prepo_PlayReport* L, const char* id, u64 capacity) {
     memset(mem + REPORT, 0, 0x40);
     strcpy((char*)mem + REPORT, id);
-    hook_put_addr(&cpu, L->buffer, REPORT, BUFFER);
-    hook_put_u64(&cpu, L->capacity, REPORT, capacity);
-    hook_put_u64(&cpu, L->used, REPORT, 10);
+    hook_put_addr(&thread.cpu, L->buffer, REPORT, BUFFER);
+    hook_put_u64(&thread.cpu, L->capacity, REPORT, capacity);
+    hook_put_u64(&thread.cpu, L->used, REPORT, 10);
     memset(mem + BUFFER, 0xee, 16);
 }
 static int cleared(const HookLayout_nn_prepo_PlayReport* L) {
     return mem[BUFFER] == 0xde && mem[BUFFER + 1] == 0 && mem[BUFFER + 2] == 0 &&
-           hook_get_u64(&cpu, L->used, REPORT) == 3;
+           hook_get_u64(&thread.cpu, L->used, REPORT) == 3;
 }
 
 int main(void) {
-    CPU* c = &cpu;
-    cpu.mem = mem;
+    CPU* c = &thread.cpu;
+    thread.cpu.mem = mem;
     nnprepo_init();
     static const HookLayout_nn_prepo_PlayReport v7 = {0x38, {0x20}, {0x28}, {0x30}}, v20 = {0x40, {0x28}, {0x30}, {0x38}};
     const HookLayout_nn_prepo_PlayReport* layouts[2] = {&v7, &v20};
@@ -188,10 +193,8 @@ int main(void) {
                                            "_ZN2nn5prepo21GetTransmissionStatusEPNS0_18TransmissionStatusE",
                                            "_ZN2nn5prepo6detail3ipc10InitializeEv",
                                            "_ZN2nn5prepo6detail3ipc8FinalizeEv"};
-        static SnxArmCPU a;
         u32 versions[HOOK_KEYS] = {0};
-        a.mem = mem, a.mem_size = sizeof mem;
-        test_arm = &a;
+        thread.arm.mem = mem, thread.arm.mem_size = sizeof mem;
         CHECK(HOOK32_COUNT == 9 && hook32_count_at(0x080000) == 6 && hook32_count_at(0x090300) == 7 &&
               hook32_count_at(HOOK32_SDK_11) == 0);
         for (int user = 0; user < 2; user++) { /* the limit's side by version */
@@ -228,31 +231,31 @@ int main(void) {
             snx_st_le32(mem + REPORT + 0x24, 0x100);
             snx_st_le32(mem + REPORT + 0x28, 10);
             memset(mem + BUFFER, 0xee, 16);
-            a.r[0] = REPORT, a.r[1] = 0x200, a.r[14] = 0x1234;
-            hook32_fn[k](&a);
-            CHECK(a.r[0] == 0 && a.r[15] == 0x1234 && mem[BUFFER] == 0xde && mem[BUFFER + 1] == 0 &&
+            thread.arm.r[0] = REPORT, thread.arm.r[1] = 0x200, thread.arm.r[14] = 0x1234;
+            hook32_fn[k](&thread.arm);
+            CHECK(thread.arm.r[0] == 0 && thread.arm.r[15] == 0x1234 && mem[BUFFER] == 0xde && mem[BUFFER + 1] == 0 &&
                   mem[BUFFER + 2] == 0);
             CHECK(snx_ld_le32(mem + REPORT + 0x28) == 3 && mem[REPORT + 0x2c] == 0xee && mem[BUFFER + 3] == 0xee);
             /* an event id refused: the report left */
             strcpy((char*)mem + REPORT, "Upper");
             snx_st_le32(mem + REPORT + 0x28, 10);
-            a.r[0] = REPORT;
-            hook32_fn[k](&a);
-            CHECK(a.r[0] == 0xa81 && snx_ld_le32(mem + REPORT + 0x28) == 10);
+            thread.arm.r[0] = REPORT;
+            hook32_fn[k](&thread.arm);
+            CHECK(thread.arm.r[0] == 0xa81 && snx_ld_le32(mem + REPORT + 0x28) == 10);
             /* a buffer with no room for the map: nothing written, nothing used */
             strcpy((char*)mem + REPORT, "event_1");
             snx_st_le32(mem + REPORT + 0x24, 2);
             mem[BUFFER] = 0xee;
-            a.r[0] = REPORT;
-            hook32_fn[k](&a);
-            CHECK(a.r[0] == 0 && mem[BUFFER] == 0xee && snx_ld_le32(mem + REPORT + 0x28) == 0);
+            thread.arm.r[0] = REPORT;
+            hook32_fn[k](&thread.arm);
+            CHECK(thread.arm.r[0] == 0 && mem[BUFFER] == 0xee && snx_ld_le32(mem + REPORT + 0x28) == 0);
         }
         { /* the status of an empty queue in its 4 bytes */
             int k = hook_select(&hook32_table, all[3], versions, &first);
             memset(mem + 0x200, 0xee, 8);
-            a.r[0] = 0x200, a.r[14] = 0x1234;
-            hook32_fn[k](&a);
-            CHECK(a.r[0] == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
+            thread.arm.r[0] = 0x200, thread.arm.r[14] = 0x1234;
+            hook32_fn[k](&thread.arm);
+            CHECK(thread.arm.r[0] == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
         }
         /* 10.6.0's Save: the ring of 900, as SDK 9 on's, before the event id; past it success, the report as it was */
         versions[HOOK_SDK] = 0x0a0600;
@@ -268,9 +271,9 @@ int main(void) {
                 snx_st_le32(mem + REPORT + 0x24, 0x100);
                 snx_st_le32(mem + REPORT + 0x28, 10);
                 mem[BUFFER] = 0xee;
-                a.r[0] = REPORT, a.r[1] = 0x200, a.r[14] = 0x1234;
-                hook32_fn[k](&a);
-                CHECK(a.r[0] == 0 && a.r[15] == 0x1234);
+                thread.arm.r[0] = REPORT, thread.arm.r[1] = 0x200, thread.arm.r[14] = 0x1234;
+                hook32_fn[k](&thread.arm);
+                CHECK(thread.arm.r[0] == 0 && thread.arm.r[15] == 0x1234);
                 if (i < 900)
                     CHECK(mem[BUFFER] == 0xde && snx_ld_le32(mem + REPORT + 0x28) == 3);
                 else /* past the limit, the bad id too: the report left */
@@ -287,12 +290,12 @@ int main(void) {
             g_arm_mod = &module32;
             memset(mem + 0x7c0, 0xee, 0x40);
             added.calls = 0;
-            a.r[0] = REPORT, a.r[1] = 0x200, a.r[13] = 0x804, a.r[14] = 0x1234;
-            hook32_fn[k](&a);
+            thread.arm.r[0] = REPORT, thread.arm.r[1] = 0x200, thread.arm.r[13] = 0x804, thread.arm.r[14] = 0x1234;
+            hook32_fn[k](&thread.arm);
             CHECK(added.calls == 1 && added.fn == ADD_AT && added.a[0] == REPORT && added.a[1] == 0x200);
             CHECK(added.a[2] == 0x7f0 && added.sp == 0x7f0 && added.id == 0 && mem[0x7f8] == 0xee &&
                   mem[0x7ef] == 0xee);
-            CHECK(a.r[0] == 0x2a81 && a.r[13] == 0x804 && a.r[15] == 0x1234);
+            CHECK(thread.arm.r[0] == 0x2a81 && thread.arm.r[13] == 0x804 && thread.arm.r[15] == 0x1234);
             versions[HOOK_SDK] = 0x08ffff; /* none before 9.0.0, which has no AddSessionId */
             CHECK(hook_select(&hook32_table, "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc", versions, &first) ==
                   -2);
