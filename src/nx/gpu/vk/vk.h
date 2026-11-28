@@ -2605,6 +2605,26 @@ static inline void vk_gmem_words(u64 gva, u32* w, u32 n) {
 /* texture.c */
 void vk_render_forget_state(void);     /* the next draw sets all its state again (another pipeline or state was set) */
 Surf* vk_tex_from_tic(const u32* tic); /* tic: the header's words as host numbers */
+/* vk_tex_from_tic for a fragment program's slot that can read a corner of its target in place
+   (ShaderInfo.tex_corner_mask), sampled through the sampler tsc: a header of normalized coordinates that shows the top
+   left corner of a render target in its format comes as the target itself, with the corner's width and height in
+   corner (0s for anything else), where sampling the target in place reads what the corner's copy would (an unscaled
+   target of one level and an image of its own, a sampler that clamps to the edge with one filter and no anisotropy,
+   reduction or compare) */
+Surf* vk_tex_from_tic_corner(const u32* tic, const u32* tsc, u32 corner[2]);
+/* why a corner of the target rt (NULL: not asked) that the header tic shows, sampled through tsc, is read through its
+   copy and not in place: the first that holds, in this order, or VK_CORNER_N for none */
+enum {
+    VK_CORNER_WRAP,         /* a wrap mode other than clamp to edge in x or y */
+    VK_CORNER_FILTER,       /* one filter for minification, another for magnification */
+    VK_CORNER_ANISOTROPY,   /* the sampler's own anisotropy */
+    VK_CORNER_REDUCTION,    /* a min or max reduction */
+    VK_CORNER_COMPARE,      /* a depth compare */
+    VK_CORNER_UNNORMALIZED, /* a header of texel coordinates */
+    VK_CORNER_TARGET,       /* the target hosted, of several levels or scaled */
+    VK_CORNER_N
+};
+int vk_tex_corner_refusal(const u32* tic, const u32* tsc, const Surf* rt);
 /* whether t is one of render target rt's copies (its crops, rt_guest's), which a lookup refreshes from rt's pixels */
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt);
 /* Writable resolution bypasses read-only render-target crop snapshots. */
@@ -3357,11 +3377,11 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
    ShaderInfo.tex_minmax_mask, then theirs of tex_minmax_max from bit SH_MINMAX_SLOTS on), and a fragment program's
    ShaderInfo.predraw_slots (predraw). early: the fragment program declares early fragment tests though the guest
    didn't ask, where they give the same result (a pre-draw capture's stores would otherwise stop the GPU's early
-   depth culling) */
+   depth culling). corner: a fragment program's ShaderInfo.corner_slots */
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config, u32 minmax, u64 predraw, int early);
+                       u32 fs_config, u32 minmax, u64 predraw, int early, u64 corner);
 /* An Ounce's task or mesh program at gva (stage ST_TS or ST_MS), with the fields of its key k: vk_shader_get with the
    fields in the key's words, and the per-primitive SPH that k names read from the program's code area. A fragment
    program drawn after a mesh program takes the generics that it writes per primitive (ShaderInfo.prim_mask) in the
@@ -3822,6 +3842,12 @@ enum {
     VK_SLOT_MINMAX,
     VK_SLOT_QUERY,
     VK_SLOT_TICS,
+    /* the fragment slots that read a corner of a target in place (ShaderInfo.corner_slots), those of them whose
+       texture was no corner at the bind (read whole), and the corners a slot that could read so read through their
+       copy (the sampler, a scaled or hosted target: vk_tex_from_tic_corner) */
+    VK_SLOT_CORNER,
+    VK_SLOT_CORNER_WHOLE,
+    VK_SLOT_CORNER_COPY,
     VK_SLOT_N
 };
 /* The headers that the texture memo checked again after a write tracking epoch (render.c tex_memo_unwritten): those
@@ -3847,6 +3873,7 @@ typedef struct {
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
     u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
+    u64 corner_why[VK_CORNER_N + 1]; /* VK_SLOT_CORNER_COPY by vk_tex_corner_refusal's reason, VK_CORNER_N: none */
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end

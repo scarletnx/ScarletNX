@@ -1215,6 +1215,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[SH_KEY_WORDS],
         si->capture_outputs = (mask[24] >> (8 + SH_FS_CAPTURE_SHIFT)) & 7;
         si->varying = mask[24] >> (8 + SH_FS_VARYING_SHIFT);
         si->predraw_slots = mask[26] | (u64)mask[27] << 32;
+        si->corner_slots = mask[28] | (u64)mask[29] << 32;
     }
     if (stage == ST_FS) {
         si->tex_int_mask = ints;
@@ -1450,17 +1451,18 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
                     u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                     const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
     return vk_shader_get_ex(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs,
-                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0, 0, 0);
+                            unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0, 0, 0,
+                            0);
 }
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
-                       u32 fs_config, u32 minmax, u64 predraw, int early) {
+                       u32 fs_config, u32 minmax, u64 predraw, int early, u64 corner) {
     /* a vertex program's is its position's copy (ShaderInfo.position_copy) */
     if ((fs_config & ~SH_FS_CONFIG_MASK) || (fs_config && stage != ST_FS && (stage != ST_VS || fs_config > 32)))
         return NULL;
     if ((minmax >> 2 * SH_MINMAX_SLOTS) || (minmax && stage != ST_FS)) return NULL;
-    if ((predraw || early) && stage != ST_FS) return NULL;
+    if ((predraw || early || corner) && stage != ST_FS) return NULL;
     const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
     g_pipeline.sh_ds = ds;
@@ -1487,6 +1489,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         mask[23] = advanced_mask;
         mask[26] = (u32)predraw;
         mask[27] = (u32)(predraw >> 32);
+        mask[28] = (u32)corner;
+        mask[29] = (u32)(corner >> 32);
     }
     if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
     /* the rectangle textures, and the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint,

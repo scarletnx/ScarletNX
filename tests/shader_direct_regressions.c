@@ -4210,6 +4210,67 @@ static void rect_array_texture(void) {
     free(rect);
 }
 
+/* A corner read in place (ShaderInfo.corner_slots, the key): the slot's normalized coordinates times the corner's
+   share and clamped at its last texel centre, two OpFMul and two FMin (OpExtInst) for TEX, and TXD's four gradients
+   scaled too; TXQ answers the corner's size, two OpConvertFToU of the values. A slot the program gathers (TLD4) or
+   samples with an offset can't be read so: tex_corner_mask leaves it out, and a key that asks for it is refused.
+   TEX R8, R0, 2D and TXQ.DIMENSION R0, R5 (width and height) of its slot; TXD R0, R4, R8, 2D; TLD4 R0, R4, 2D */
+static void corner_textures(void) {
+    const u64 tex =
+        0xc000000000000000ull | 0x10ull << 36 | 7ull << 51 | 1ull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | 8;
+    const u64 txd = 0xde00000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 8ull << 20 |
+                    7ull << 16 | 4ull << 8;
+    const u64 tld4 = 0xc800000000000000ull | 7ull << 51 | 0x10ull << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 |
+                     7ull << 16 | 4ull << 8;
+    const u64 tex_offset = tex | 1ull << 54;
+    const u64 sized[2] = {tex, (0xdf48010200470500ull & ~(1ull << 33)) | 1ull << 31 | 1ull << 32};
+    const u64* programs[5] = {&tex, &txd, sized, &tld4, &tex_offset};
+    const int counts[5] = {1, 1, 2, 1, 1}, capable[5] = {1, 1, 1, 0, 0}, muls[5] = {2, 6, 2, 0, 0},
+              mins[5] = {2, 2, 2, 0, 0}, sizes[5] = {0, 0, 2, 0, 0};
+    const char* const names[5] = {"TEX", "TXD", "TEX and TXQ", "TLD4", "TEX with an offset"};
+    for (int k = 0; k < 5; k++) {
+        ShaderInfo info;
+        size_t words = 0, plain_words = 0;
+        u32* plain = translate(programs[k], counts[k], ST_FS, &info, &plain_words, 1);
+        check_translated(plain, &info, "a program whose slot could be a corner translates");
+        const u64 mask = info.tex_corner_mask;
+        if (mask != (u64)capable[k])
+            fprintf(stderr, "%s: the slots a corner read in place serves are %llx, not %d\n", names[k],
+                    (unsigned long long)mask, capable[k]);
+        check(mask == (u64)capable[k], "a gathered or offset slot is no corner, a sampled one is");
+        size_t slots;
+        u64* code = guest_program(programs[k], counts[k], NULL, &slots);
+        if (!code || !plain) {
+            free(code);
+            free(plain);
+            continue;
+        }
+        info = (ShaderInfo){.corner_slots = 1};
+        u32* corner = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
+        free(code);
+        if (!capable[k]) {
+            check_refused(corner, &info, "a corner read in place of a slot the program can't read so", names[k]);
+        } else {
+            check_translated(corner, &info, "a corner read in place translates");
+            if (corner) {
+                const int mul = count_opcode(corner, words, 133, 0xffffffffu) - count_opcode(plain, plain_words, 133, 0xffffffffu),
+                          ext = count_opcode(corner, words, 12, 0xffffffffu) - count_opcode(plain, plain_words, 12, 0xffffffffu),
+                          size = count_opcode(corner, words, 109, 0xffffffffu) -
+                                 count_opcode(plain, plain_words, 109, 0xffffffffu);
+                if (mul != muls[k] || ext != mins[k] || size != sizes[k])
+                    fprintf(stderr, "%s of a corner: %d more multiplications, %d more extended instructions, %d more "
+                                    "float to unsigned conversions; expected %d, %d and %d\n",
+                            names[k], mul, ext, size, muls[k], mins[k], sizes[k]);
+                check(mul == muls[k] && ext == mins[k] && size == sizes[k],
+                      "a corner's coordinates (and gradients) take its share and clamp, its size the corner's");
+                check(info.corner_slots == 1, "the corner's translation keeps its key");
+            }
+        }
+        free(plain);
+        free(corner);
+    }
+}
+
 /* A sampler's min/max reduction the program takes itself (ShaderInfo.tex_minmax_mask, the key; tex_minmax_max for
    the greatest): TEX and TXD of a 2D texture become four gathers, one a component, and the least or greatest of the
    texels their footprint weighs, which the evaluator runs on a 4x4 texture. At (0.5, 0.5) the footprint is texels 1
@@ -7898,6 +7959,7 @@ int main(int argc, char** argv) {
     legacy_varyings_forms();
     rect_textures();
     rect_array_texture();
+    corner_textures();
     minmax_samples();
     viewport_mask();
     indexed_attribute_load();

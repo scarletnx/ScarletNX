@@ -2279,6 +2279,235 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
            two_draws ? "checked" : "not checked (no dynamic rendering local read)");
     return 0;
 }
+/* A header that shows the top left 6x5 of an 8x8 target, as dynamic resolution samples the frame's size of a target of
+   the full size: a fragment program reads the corner in place, its coordinates scaled to the corner and clamped at
+   its last texel centre (ShaderInfo.corner_slots), where the sampler clamps to the edge and filters one way; through a
+   copy of the corner under the other wrap modes and filters, counted by that reason (vk_tex_corner_refusal). Either
+   way each pixel is the corner's texel or texels that the wrap mode and filter give, and a size query answers 6x5.
+   The quad's generic goes from 0 to 1.5 across the 4x4 target, so the right and bottom columns sample past the
+   corner's edge, where the target's texels go on: a sample not clamped there reads them. Nearest is exact, linear
+   within one of the texel's 8 bits */
+static void corner_texel(const u8* pixels, int i, int j, u32 w, u32 h, u32 wrap, u8 out[4]) {
+    const int size[2] = {(int)w, (int)h};
+    int at[2] = {i, j};
+    for (int k = 0; k < 2; k++) {
+        const int n = size[k], c = at[k];
+        if (wrap == 0)
+            at[k] = ((c % n) + n) % n;
+        else if (wrap == 1) {
+            const int m = ((c % (2 * n)) + 2 * n) % (2 * n) - n;
+            at[k] = n - 1 - (m >= 0 ? m : -(1 + m));
+        } else if (wrap == 3 && (c < 0 || c >= n)) {
+            memset(out, 0, 4); /* the TSC's border of zeros */
+            return;
+        } else
+            at[k] = c < 0 ? 0 : c >= n ? n - 1 : c;
+    }
+    memcpy(out, pixels + (at[1] * 8 + at[0]) * 4, 4);
+}
+static void corner_sample(const u8* pixels, u32 w, u32 h, u32 wrap, int linear, double u, double v, u8 out[4]) {
+    if (!linear) {
+        corner_texel(pixels, (int)floor(u * w), (int)floor(v * h), w, h, wrap, out);
+        return;
+    }
+    const double x = u * w - 0.5, y = v * h - 0.5, fx = x - floor(x), fy = y - floor(y);
+    const int i = (int)floor(x), j = (int)floor(y);
+    u8 t[4][4];
+    corner_texel(pixels, i, j, w, h, wrap, t[0]);
+    corner_texel(pixels, i + 1, j, w, h, wrap, t[1]);
+    corner_texel(pixels, i, j + 1, w, h, wrap, t[2]);
+    corner_texel(pixels, i + 1, j + 1, w, h, wrap, t[3]);
+    for (u32 c = 0; c < 4; c++) {
+        const double top = t[0][c] * (1 - fx) + t[1][c] * fx, bottom = t[2][c] * (1 - fx) + t[3][c] * fx;
+        out[c] = (u8)floor(top * (1 - fy) + bottom * fy + 0.5);
+    }
+}
+static int corner_case(GpuChannel* channel, u64 target, u64 address) {
+    const u64 programs = address + 0xA000, sampler = address + 0xA800, query = address + 0xAC00,
+              source = address + 0xC000, pool = address + 0xE000, samplers = pool + 0x100, cbuf = pool + 0x200;
+    const u32 three_quarters = 0x3f400000u, inv255 = 0x3b808081u, w = 6, h = 5;
+    /* the generic: 0.75 x + 0.75 and 0.75 y + 0.75 of the corner */
+    const u64 vertex[8] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                           0x0103f40000071006ull, /* MOV32I R6, 0.75 */
+                           OWN_FFMA(8, 0, 6, three_quarters, 0),
+                           OWN_FFMA(9, 1, 6, three_quarters, 0),
+                           OWN_AST(0x70, 0, 4),
+                           OWN_AST(0x80, 8, 2),
+                           0xe30000000007000full,
+                           0xe30000000007000full};
+    /* TEX R0..3, R8, 2D, the handle at 0x7C */
+    const u64 tex =
+        0xc000000000000000ull | 0x1full << 36 | 0xfull << 31 | 2ull << 28 | 0xffull << 20 | 7ull << 16 | 8ull << 8;
+    const u64 fragment[4] = {OWN_IPA(8, 0x80), OWN_IPA(9, 0x84), tex, 0xe30000000007000full};
+    /* the sample's texels into R12..15, then the size: R0 and R1 the width and height over 255, as the red and green */
+    const u64 size_fragment[12] = {
+        OWN_IPA(8, 0x80), OWN_IPA(9, 0x84), tex | 12ull, 0x0100000000071005ull, /* MOV32I R5, 0: the level */
+        /* TXQ.DIMENSION R0, R5, 0x1f, width and height */
+        (0xdf48010200470500ull & ~(1ull << 33)) | 1ull << 31 | 1ull << 32 | 0xfull << 36,
+        0x5cb8000000070a00ull,                                                                 /* I2F.F32.U32 R0, R0 */
+        0x5cb8000000170a01ull,                                                                 /* I2F.F32.U32 R1, R1 */
+        OWN_FFMA(0, 0, 255, inv255, 0), OWN_FFMA(1, 1, 255, inv255, 0), 0x0100000000071002ull, /* MOV32I R2, 0 */
+        0x0100000000071003ull,                                                                 /* MOV32I R3, 0 */
+        0xe30000000007000full};
+    /* the 6x5 corner's header: A8B8G8R8, block linear as the target is, one level */
+    const u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)source,
+                        (u32)(source >> 32) | 3u << 21,
+                        0,
+                        (w - 1) | 1u << 23, /* 2D */
+                        (h - 1) | 1u << 31, /* depth 1, normalized */
+                        0,
+                        0};
+    u8 pixels[8 * 8 * 4], bytes[256] = {0}, out[64];
+    for (u32 i = 0; i < 64; i++) {
+        const u8 texel[4] = {(u8)(10 + 20 * (i & 7)), (u8)(5 + 25 * (i >> 3)), (u8)(60 + 3 * i), 255};
+        memcpy(pixels + i * 4, texel, 4);
+    }
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, sizeof bytes);
+    CHECK(!gmem_write(cbuf, bytes, 256)); /* the handle at 0x7C: header 0, sampler 0 */
+    CHECK(index_program(programs, vertex, 8, 0));
+    CHECK(index_program(sampler, fragment, 4, 1));
+    CHECK(index_program(query, size_fragment, 12, 1));
+    u32* r = channel->r3d;
+    float kept[6];
+    memcpy(kept, r + 0x280, sizeof kept);
+    /* the source: an 8x8 target, its pixels uploaded */
+    vk_lock();
+    rt_clear(channel, source, 8, 8, 0, 1);
+    Surf* surface = vk_rt_find(source);
+    VkBuffer upload;
+    u64 offset;
+    u8* staged = surface ? vk_stage(sizeof pixels, 4, &upload, &offset) : NULL;
+    int ok = staged != NULL;
+    if (ok) {
+        memcpy(staged, pixels, sizeof pixels);
+        vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkBufferImageCopy region = {
+            .bufferOffset = offset, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {8, 8, 1}};
+        rec_CmdCopyBufferToImage(vk_cmd(), upload, surface->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &region);
+        vk_surf_wrote(surface);
+        vk_rt_drawn(surface);
+        vk_surf_touch(surface);
+        g_renderer->method_barrier(0);
+    }
+    vk_unlock();
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    r[0x811] = (u32)(programs - address);
+    channel->ds.bind.cb_addr[4][2] = cbuf;
+    channel->ds.bind.cb_size[4][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    static const char* const wraps[5] = {"repeat", "mirrored repeat", "clamp to edge", "border", "clamp"};
+    /* each wrap mode with nearest and linear filters, then linear minification under nearest magnification (a level
+       of detail clamped at the edge could tip the choice), then the size query through the clamp and the repeat */
+    u32 rounds = 0, in_place = 0;
+    for (u32 round = 0; ok && round < 13; round++) {
+        const int sizes = round >= 11, mixed = round == 10;
+        const u32 wrap = sizes ? (round == 11 ? 2u : 0u) : mixed ? 2u : round >> 1;
+        const int linear = !sizes && (mixed || (round & 1));
+        /* the filters: magnification bits 0-1, minification bits 4-5, no mip filter */
+        const u32 tsc[8] = {wrap | wrap << 3 | wrap << 6, (mixed    ? 1u
+                                                           : linear ? 2u
+                                                                    : 1u) |
+                                                              (linear ? 2u : 1u) << 4 | 1u << 6};
+        for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tsc[i]);
+        CHECK(!gmem_write(samplers, bytes, 32));
+        r[0x851] = (u32)((sizes ? query : sampler) - address);
+        VkDrawCounts before, after;
+        VkRtCopyCounts copies_before, copies_after;
+        vk_draw_counts(&before);
+        vk_rt_copy_counts(&copies_before);
+        vk_lock();
+        rt_clear(channel, target, 4, 4, 0, 1);
+        channel->r3d_dirty = ~0u; /* the registers were set directly */
+        mx_draw_state_sync(channel);
+        const u64 drawn = g_vk_drawn;
+        vk_render_draw(&channel->ds, &call, &channel->owner);
+        ok = g_vk_drawn == drawn + 1;
+        vk_render_end();
+        VkBuffer readback;
+        u8* data = ok ? vk_readback_buffer(64, &readback) : NULL;
+        Surf* drawn_to = vk_rt_find(target);
+        ok = data && drawn_to;
+        if (ok) {
+            vk_surf_use(vk_cmd(), drawn_to, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {4, 4, 1}};
+            rec_CmdCopyImageToBuffer(vk_cmd(), drawn_to->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            memcpy(out, data, sizeof out);
+        }
+        vk_unlock();
+        vk_draw_counts(&after);
+        vk_rt_copy_counts(&copies_after);
+        if (!ok) {
+            fprintf(stderr, "corner, round %u: the draw or its readback failed\n", round);
+            break;
+        }
+        /* in place where the sampler clamps to the edge (wrap 2, and 4 as Vulkan has it) and filters one way */
+        const int want_in_place = (wrap == 2 || wrap == 4) && !mixed;
+        const u64 read_in_place = after.slot[VK_SLOT_CORNER] - before.slot[VK_SLOT_CORNER],
+                  through_copy = after.slot[VK_SLOT_CORNER_COPY] - before.slot[VK_SLOT_CORNER_COPY],
+                  copied = copies_after.written[VK_RT_COPY_CROP] - copies_before.written[VK_RT_COPY_CROP];
+        /* and through the copy, why: the wrap mode, else the two filters (vk_tex_corner_refusal) */
+        const int refusal = want_in_place ? VK_CORNER_N : mixed ? VK_CORNER_FILTER : VK_CORNER_WRAP;
+        const u64 refused = want_in_place ? 0 : after.corner_why[refusal] - before.corner_why[refusal];
+        if (want_in_place ? read_in_place != 1 || through_copy || copied
+                          : read_in_place || through_copy != 1 || refused != 1) {
+            fprintf(stderr,
+                    "corner, %s%s%s: %llu reads in place, %llu through a copy (%llu for the %s), %llu copies of the "
+                    "corner written; expected %s\n",
+                    sizes ? "size query, " : "", wraps[wrap],
+                    sizes    ? ""
+                    : mixed  ? ", nearest over linear"
+                    : linear ? ", linear"
+                             : ", nearest",
+                    (unsigned long long)read_in_place, (unsigned long long)through_copy, (unsigned long long)refused,
+                    mixed ? "filters" : "wrap mode", (unsigned long long)copied,
+                    want_in_place ? "1 read in place and no copy" : "1 read through a copy, for that");
+            ok = 0;
+        }
+        in_place += want_in_place;
+        for (u32 i = 0; ok && i < 16; i++) {
+            const u32 x = i & 3, y = i >> 2;
+            u8 want[4] = {(u8)w, (u8)h, 0, 0};
+            /* past the edge's half texel each sample is minification: the quad's coordinates change by 2.25 texels
+               a pixel, so the mixed filters sample linearly */
+            if (!sizes) corner_sample(pixels, w, h, wrap, linear, 1.5 * (x + 0.5) / 4, 1.5 * (y + 0.5) / 4, want);
+            int differs = 0;
+            for (u32 c = 0; c < 4; c++) differs |= abs((int)out[i * 4 + c] - (int)want[c]) > (linear ? 1 : 0);
+            if (differs) {
+                fprintf(stderr, "corner, %s%s%s: pixel (%u, %u) is %u %u %u %u, expected %u %u %u %u\n",
+                        sizes ? "size query, " : "", wraps[wrap],
+                        sizes    ? ""
+                        : mixed  ? ", nearest over linear"
+                        : linear ? ", linear"
+                                 : ", nearest",
+                        x, y, out[i * 4], out[i * 4 + 1], out[i * 4 + 2], out[i * 4 + 3], want[0], want[1], want[2],
+                        want[3]);
+                ok = 0;
+            }
+        }
+        rounds++;
+    }
+    memcpy(r + 0x280, kept, sizeof kept);
+    r[0x811] = 0;
+    r[0x851] = 0x10000; /* the harness's programs again */
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    CHECK(ok);
+    printf("corners: a 6x5 corner of an 8x8 target sampled under 5 wrap modes and 2 filters and its size asked, %u "
+           "rounds, %u of them read in place\n",
+           rounds, in_place);
+    return 0;
+}
 #undef OWN_FFMA
 #undef OWN_AST
 #undef OWN_ALD
@@ -2375,6 +2604,7 @@ static int check_index_draws(void) {
     CHECK(!own_target_case(channel, target, address, 0));
     CHECK(!own_target_case(channel, target, address, 1));
     CHECK(!feedback_interval_case(channel, target, address));
+    CHECK(!corner_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf(
         "index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
