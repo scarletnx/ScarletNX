@@ -29,7 +29,7 @@
 #include <string.h>
 #include <stdatomic.h>
 
-#define NVN_STATE_VERSION 4 /* 3: the programs' early test flags; 4: 32 vertex attributes */
+#define NVN_STATE_VERSION 5 /* 3: the programs' early test flags; 4: 32 vertex attributes; 5: marked chains */
 /* the heap memory g_nvn's members own, after it: g_nvn.object's program metadata and linkage maps, and the blocks the
    small store of g_nvn.cmd was given back */
 enum { NH_END, NH_XFB, NH_TESS, NH_SUBPROGRAM, NH_SUBLINKAGE, NH_SMALL, NH_EARLY_Z };
@@ -159,10 +159,11 @@ static void* heap_get(StateIo* io, u64 n) {
     return p;
 }
 /* the chain from head through each piece's next (or cnext with control), each link a slot of the pieces: at most
-   *links links, which it uses up. 0 when one is past the slots or the links run out (a loop) */
-static int chain_ok(const NvnCmdState* c, u32 head, int control, u32* links) {
+   *links links, which it uses up. 0 when one is past the slots, the links run out (a loop), or a piece is in the
+   chains of the other NVN_SPILL_CHAIN (chain -1: the free list, any) */
+static int chain_ok(const NvnCmdState* c, u32 head, int control, int chain, u32* links) {
     for (u32 i = head; i; i = control ? c->p[i].cnext : c->p[i].next) {
-        if (i > c->slots || !*links) return 0;
+        if (i > c->slots || !*links || (chain >= 0 && NVN_SPILL_CHAIN(&c->p[i]) != chain)) return 0;
         --*links;
     }
     return 1;
@@ -183,12 +184,16 @@ static int cmd_ok(NvnCmdState* c) {
     }
     if (live != atomic_load_explicit(&c->np, memory_order_relaxed)) return 0;
     links = c->slots; /* a slot is in one bucket's chain or the free list, through next */
-    for (i = 0; i < NVN_SPILL_BUCKETS; i++)
-        if (!chain_ok(c, c->bucket[i], 0, &links)) return 0;
-    if (!chain_ok(c, c->free, 0, &links)) return 0;
+    for (i = 0; i < 2 * NVN_SPILL_BUCKETS; i++)
+        if (!chain_ok(c, c->bucket[i / NVN_SPILL_BUCKETS][i % NVN_SPILL_BUCKETS], 0, (int)(i / NVN_SPILL_BUCKETS),
+                      &links))
+            return 0;
+    if (!chain_ok(c, c->free, 0, -1, &links)) return 0;
     links = c->slots;
-    for (i = 0; i < NVN_SPILL_BUCKETS; i++)
-        if (!chain_ok(c, c->cbucket[i], 1, &links)) return 0;
+    for (i = 0; i < 2 * NVN_SPILL_BUCKETS; i++)
+        if (!chain_ok(c, c->cbucket[i / NVN_SPILL_BUCKETS][i % NVN_SPILL_BUCKETS], 1, (int)(i / NVN_SPILL_BUCKETS),
+                      &links))
+            return 0;
     memset(&c->p[c->slots + 1], 0, (NVN_SPILL_PIECES - c->slots) * sizeof *c->p);
     memset(&c->s[c->ns], 0, (NVN_SPILL_SEGS - c->ns) * sizeof *c->s);
     return 1;
