@@ -1652,6 +1652,74 @@ static void check_drain_pace(void) {
     check_counts(0);
 }
 
+/* A request that cannot fit in the block being emptied (larger than a block, or larger than its longest free run) does
+   not stop the drain; one whose run fits in it still stops the drain and takes that run */
+static void check_drain_unfit(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0;
+    while (n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS) {
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        n++;
+    }
+    CHECK(n > 64);
+    /* pick three 64 MiB blocks: free every other 4 MiB image in the first (32 MiB free, largest run 4 MiB) and 24 MiB
+       in each of the next two so drain_pick chooses the first */
+    u32 blk[3] = {0}, nb = 0;
+    for (u32 i = 0; i < g_devmem.nblock && nb < 3; i++)
+        if (g_devmem.block[i].mem && !g_devmem.block[i].own && g_devmem.block[i].size == 64 * MIB) blk[nb++] = i + 1;
+    CHECK(nb == 3);
+    u32 seen = 0, drop_b = 0, drop_c = 0;
+    for (u32 i = 0; i < n; i++) {
+        const u32 b = g_devmem.rec[g_dh[i].mem - 1].block;
+        if (b == blk[0] && (seen++ % 2)) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        } else if (b == blk[1] && drop_b < 6) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop_b++;
+        } else if (b == blk[2] && drop_c < 6) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop_c++;
+        }
+    }
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 64, 64 * MIB) > 0 && g_devmem.drain.slot == blk[0]);
+    CHECK(g_devmem.block[blk[0] - 1].free.largest * DM_UNIT == 4 * MIB);
+    /* refill the 12 holes in the other two blocks so only the draining block has free runs left */
+    Held fill[12];
+    u32 nf = 0;
+    while (nf < 12) {
+        CHECK(make(1, 4 * MIB, 4096, ~0u, 0, tex, &fill[nf]) == VK_SUCCESS);
+        CHECK(g_devmem.rec[fill[nf].mem - 1].block != blk[0]);
+        nf++;
+    }
+    /* larger than a block (75 MiB > 64 MiB): fails, drain stays on */
+    Held h;
+    CHECK(make(1, 75 * MIB, 4096, ~0u, 0, tex, &h) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    CHECK(g_devmem.drain.slot == blk[0] && g_devmem.block[blk[0] - 1].drain && !g_devmem.drain.gave_up);
+    /* larger than the draining block's longest run (8 MiB > 4 MiB): goes past budget in pieces, drain stays on */
+    CHECK(make(1, 8 * MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS && alone_of(&h));
+    CHECK(g_devmem.drain.slot == blk[0] && g_devmem.block[blk[0] - 1].drain && !g_devmem.drain.gave_up);
+    unmake(&h);
+    /* fits in the draining block's 4 MiB run: stops the drain and takes a run there */
+    CHECK(make(1, 4 * MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS);
+    CHECK(!g_devmem.drain.slot && g_devmem.drain.gave_up == 1 && g_devmem.rec[h.mem - 1].block == blk[0]);
+    unmake(&h);
+    while (nf) unmake(&fill[--nf]);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1679,6 +1747,7 @@ int main(void) {
     check_drain_alone();
     check_drain_room();
     check_drain_pace();
+    check_drain_unfit();
     check_kinds();
     check_kind_fallback();
     check_keep();

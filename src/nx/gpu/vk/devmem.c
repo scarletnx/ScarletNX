@@ -945,6 +945,24 @@ static void info_of(DevMem m, DevMemInfo* info) {
                          .tag = r->tag};
 }
 
+/* whether the block being emptied has a free run that could hold (req, want): stopping the drain for a request it
+   cannot hold (larger than a block, larger than its longest run, or of another type) gains nothing and puts the block
+   off for 600 presents */
+static int drain_holds(const Block* d, const VkMemoryRequirements* req, const DevMemWant* want) {
+    if (!((req->memoryTypeBits >> d->type) & 1) || type_pick(1u << d->type, want) < 0) return 0;
+    if (g_devmem.apart && (d->image & DM_KIND_IMAGE) != (want->image ? DM_KIND_IMAGE : 0)) return 0;
+    const u64 cap = block_cap(d->type);
+    u64 align = req->alignment ? req->alignment : 1;
+    const VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[d->type].propertyFlags;
+    if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+        align < g_vk.props.limits.nonCoherentAtomSize)
+        align = g_vk.props.limits.nonCoherentAtomSize;
+    if (!cap || req->size > cap || align > cap) return 0;
+    u64 units = (req->size + DM_UNIT - 1) / DM_UNIT;
+    const u64 align_units = align > DM_UNIT ? align / DM_UNIT : 1;
+    if (want->sized) units = class_units(units, cap);
+    return d->free.largest >= units && d->free.largest >= align_units;
+}
 /* alone: the driver's word on the resource, 2 when it must have memory of its own, 1 when it would rather. A request
    that no memory type has a block for gets memory of its own in the end, in the first type that has any */
 static void drain_stop(void);
@@ -1005,7 +1023,8 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
        to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
        request finds no memory. One that must have memory of its own takes no run: its look again would bind it into
        a block, against the driver or the caller */
-    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair && !want->own && alone != 2) {
+    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair && !want->own && alone != 2 &&
+        drain_holds(&g_devmem.block[g_devmem.drain.slot - 1], req, want)) {
         const Block* d = &g_devmem.block[g_devmem.drain.slot - 1];
         LOG_LIMIT(16,
                   "vulkan: a request for %.1f MB of device memory found no room but in the block being emptied (%.1f "
