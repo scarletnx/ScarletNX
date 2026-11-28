@@ -1703,6 +1703,16 @@ void snx_ssa_leaders_line(char* out, size_t size, const SnxSsaCount* ssa) {
              (unsigned long long)ssa->leaders, (unsigned long long)ssa->after_call, (unsigned long long)ssa->one_way,
              (unsigned long long)ssa->more_ways, (unsigned long long)ssa->no_way);
 }
+void snx_ssa_between_line(char* out, size_t size, const SnxSsaCount* ssa) {
+    /* mach_codegen.inc's order: other, frame, check, jump, pins, call, dispatch, trap, island */
+    const SnxU64* g = ssa->glue;
+    snprintf(out, size,
+             "ssa between regions: frames %.1f, checks %.1f, jumps %.1f, pins %.1f, calls %.1f, dispatch %.1f, traps "
+             "%.1f, constant islands %.1f, other %.1f",
+             (double)g[1] / 1048576.0, (double)g[2] / 1048576.0, (double)g[3] / 1048576.0, (double)g[4] / 1048576.0,
+             (double)g[5] / 1048576.0, (double)g[6] / 1048576.0, (double)g[7] / 1048576.0, (double)g[8] / 1048576.0,
+             (double)g[0] / 1048576.0);
+}
 void snx_recompile_line(char* out, size_t size, double before, double code, double after) {
     snprintf(out, size, "recompile: %.1f s in all: %.1f s before the code, %.1f s the code, %.1f s after it",
              before + code + after, before, code, after);

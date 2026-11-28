@@ -132,6 +132,10 @@ typedef struct {
         SnxU64 dirty; /* cur_dirty where it was made */
         SnxU32 vdirty;
     } * stubs;
+    /* the code between regions by part (glue_in): the part its bytes count as now, since where, how deep in the
+       machine's emitters, and whether a region or the function's end is being assembled (its bytes are not it) */
+    int glue_part, glue_depth, glue_off;
+    size_t glue_at;
 } Unit;
 
 static void* grow(void* p, size_t* cap, size_t need, size_t each) {
@@ -258,6 +262,65 @@ static SgD MG_RBIT(Unit* u, SgD v);
 #else
 #define MG_RBIT(u, v) sg_d_bitreverse((u)->g, (v))
 #endif
+
+/* ---- the code between regions, by part (SgXSeen.glue): the machine's emitters called from here on count their
+   bytes as their part's, one called inside another as the outer's; what a region's assembly or the function's end
+   calls is not counted (glue_off: those bytes are the region's, the cold paths' or the constants') ---- */
+enum {
+    GLUE_OTHER,
+    GLUE_FRAME,
+    GLUE_CHECK,
+    GLUE_JUMP,
+    GLUE_PINS,
+    GLUE_CALL,
+    GLUE_DISPATCH,
+    GLUE_TRAP,
+    GLUE_ISLAND,
+    GLUE_PARTS
+};
+static void glue_count(Unit* u) {
+    u->g->x.seen.glue[u->glue_part] += u->b.n - u->glue_at;
+    u->glue_at = u->b.n;
+}
+static void glue_in(Unit* u, int part) {
+    if (u->glue_off || u->glue_depth++) return;
+    glue_count(u);
+    u->glue_part = part;
+}
+static void glue_out(Unit* u) {
+    if (u->glue_off || --u->glue_depth) return;
+    glue_count(u);
+    u->glue_part = GLUE_OTHER;
+}
+#define jmp(u, label)                 (glue_in((u), GLUE_JUMP), jmp((u), (label)), glue_out(u))
+#define jcc(u, cc, label)             (glue_in((u), GLUE_JUMP), jcc((u), (cc), (label)), glue_out(u))
+#define pins_of(u, b, store, caller)  (glue_in((u), GLUE_PINS), pins_of((u), (b), (store), (caller)), glue_out(u))
+#define prologue(u)                   (glue_in((u), GLUE_FRAME), prologue(u), glue_out(u))
+#define epilogue(u)                   (glue_in((u), GLUE_FRAME), epilogue(u), glue_out(u))
+#define leave(u)                      (glue_in((u), GLUE_FRAME), leave(u), glue_out(u))
+#define calldyn(u, tail)              (glue_in((u), GLUE_CALL), calldyn((u), (tail)), glue_out(u))
+#define set_target(u, target)         (glue_in((u), GLUE_CALL), set_target((u), (target)), glue_out(u))
+#define call_sym(u, sym, tail)        (glue_in((u), GLUE_CALL), call_sym((u), (sym), (tail)), glue_out(u))
+#define check_return(u, next)         (glue_in((u), GLUE_CHECK), check_return((u), (next)), glue_out(u))
+#define poll_then(u, resume)          (glue_in((u), GLUE_CALL), poll_then((u), (resume)), glue_out(u))
+#define poll_jz(u, label)             (glue_in((u), GLUE_CALL), poll_jz((u), (label)), glue_out(u))
+#define poll_slow(u, resume)          (glue_in((u), GLUE_CALL), poll_slow((u), (resume)), glue_out(u))
+#define jtab_jump(u, k)               (glue_in((u), GLUE_DISPATCH), jtab_jump((u), (k)), glue_out(u))
+#define jtab_emit(u)                  (glue_in((u), GLUE_DISPATCH), jtab_emit(u), glue_out(u))
+#define mg_undef(u, address, word)    (glue_in((u), GLUE_TRAP), mg_undef((u), (address), (word)), glue_out(u))
+#define mg_svc(u, next, n, direct)    (glue_in((u), GLUE_TRAP), mg_svc((u), (next), (n), (direct)), glue_out(u))
+#define mg_brk(u, address, imm)       (glue_in((u), GLUE_TRAP), mg_brk((u), (address), (imm)), glue_out(u))
+#define mg_entry(u, index, start)     (glue_in((u), GLUE_FRAME), mg_entry((u), (index), (start)), glue_out(u))
+#define mg_check(u, start, label)     (glue_in((u), GLUE_CHECK), mg_check((u), (start), (label)), glue_out(u))
+#define mg_stale(u, index, given, s)  (glue_in((u), GLUE_CHECK), mg_stale((u), (index), (given), (s)), glue_out(u))
+#define mg_entry_stale(u, index)      (glue_in((u), GLUE_CHECK), mg_entry_stale((u), (index)), glue_out(u))
+#define mg_entry_fp(u)                (glue_in((u), GLUE_FRAME), mg_entry_fp(u), glue_out(u))
+#define mg_dispatch(u, lab0)          (glue_in((u), GLUE_DISPATCH), mg_dispatch((u), (lab0)), glue_out(u))
+#define mg_pool_island(u)             (glue_in((u), GLUE_ISLAND), mg_pool_island(u), glue_out(u))
+#define mg_if_stale(u, index, label)  (glue_in((u), GLUE_CHECK), mg_if_stale((u), (index), (label)), glue_out(u))
+#define mg_if_x_not(u, r, value, l)   (glue_in((u), GLUE_CHECK), mg_if_x_not((u), (r), (value), (l)), glue_out(u))
+#define mg_if_pc_not(u, value, label) (glue_in((u), GLUE_CHECK), mg_if_pc_not((u), (value), (label)), glue_out(u))
+#define mg_target_pc(u)               (glue_in((u), GLUE_CALL), mg_target_pc(u), glue_out(u))
 
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
 /* the region's own stores of the pins (UNDEF's flush, the spill and reload around a helper's call) are assembled
@@ -429,7 +492,11 @@ static void flush(Unit* u) {
     for (k = 0; k < g->x.n && !u->host_fp; ++k)
         u->host_fp = MG_HOST_FP_HELPER(g->x.ins[k].sym); /* only a call keeps a symbol */
 #endif
+    glue_count(u);
+    u->glue_off = 1;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
+    u->glue_off = 0;
+    u->glue_at = u->b.n;
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
 #endif
@@ -2616,6 +2683,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     jmp_buf* saved = g_fail;
     char sym[40];
     u->f = f;
+    u->glue_part = GLUE_OTHER, u->glue_depth = 0, u->glue_off = 0, u->glue_at = u->b.n;
     u->index = index;
     u->at = f->count;
     u->nframe = 0;
@@ -2779,10 +2847,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     jtab_emit(u);
 #endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
+    glue_count(u);
+    u->glue_off = 1;
     const size_t hot_end = u->b.n;
     sgx_cold_emit(&u->a);
     const size_t cold_end = u->b.n;
     sgx_pool_emit(&u->a);
+    u->glue_off = 0;
+    u->glue_at = u->b.n;
     u->g->x.seen.cold += cold_end - hot_end;
     u->g->x.seen.pool += u->b.n - cold_end;
     /* the frame's size, in the prologue and every epilogue; the labels' jumps */
@@ -3211,6 +3283,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         options->ssa->one_way += seen->one_way;
         options->ssa->more_ways += seen->more_ways;
         options->ssa->no_way += seen->no_way;
+        for (i = 0; i < GLUE_PARTS; ++i) options->ssa->glue[i] += seen->glue[i];
         options->ssa->cold += seen->cold;
         options->ssa->pool += seen->pool;
     }
@@ -3219,3 +3292,33 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     return 0;
 }
 
+/* the machine's emitters are defined after this file, by their own names */
+#undef jmp
+#undef jcc
+#undef pins_of
+#undef prologue
+#undef epilogue
+#undef leave
+#undef calldyn
+#undef set_target
+#undef call_sym
+#undef check_return
+#undef poll_then
+#undef poll_jz
+#undef poll_slow
+#undef jtab_jump
+#undef jtab_emit
+#undef mg_undef
+#undef mg_svc
+#undef mg_brk
+#undef mg_entry
+#undef mg_check
+#undef mg_stale
+#undef mg_entry_stale
+#undef mg_entry_fp
+#undef mg_dispatch
+#undef mg_pool_island
+#undef mg_if_stale
+#undef mg_if_x_not
+#undef mg_if_pc_not
+#undef mg_target_pc

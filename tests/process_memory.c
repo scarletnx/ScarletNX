@@ -87,6 +87,11 @@ int main(void) {
         snx_ssa_code_line(line, sizeof line, &parts);
         assert(!strcmp(line, "ssa code: 600.0 MiB of functions: regions 400.0, cold paths 20.0, constants 12.0, "
                              "between regions 168.0 (28%)"));
+        const SnxU64 between[9] = {8, 60, 40, 30, 50, 20, 15, 2, 1};
+        for (size_t k = 0; k < 9; ++k) parts.glue[k] = between[k] << 20;
+        snx_ssa_between_line(line, sizeof line, &parts);
+        assert(!strcmp(line, "ssa between regions: frames 60.0, checks 40.0, jumps 30.0, pins 50.0, calls 20.0, "
+                             "dispatch 15.0, traps 2.0, constant islands 1.0, other 8.0"));
         parts.leaders = 900000, parts.after_call = 400000, parts.one_way = 300000, parts.more_ways = 150000;
         parts.no_way = 50000;
         snx_ssa_leaders_line(line, sizeof line, &parts);
