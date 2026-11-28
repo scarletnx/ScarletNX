@@ -1011,6 +1011,14 @@ static void pool_recycle(Frame* f) {
     u64 size = chunk_size();
     DevMemBudget budget[VK_MAX_MEMORY_HEAPS];
     vk_devmem_budgets(budget);
+    /* what each ring handed out of its last chunk, which ring_fast counts in the ring alone: the pool hands out the
+       chunk written most first (pool_before), not one that a frame barely began */
+    for (u32 rs = 0; rs < VK_RC_SLOTS; rs++)
+        for (u32 r = 0; r < FRAME_RINGS; r++) {
+            const Ring* ring = &f->ring[rs][r];
+            if (ring->cur && ring->used > g_cmd.chunk[ring->cur - 1].handed)
+                g_cmd.chunk[ring->cur - 1].handed = ring->used;
+        }
     for (u32 r = 0; r < FRAME_RINGS; r++)
         for (u32 big = 0; big < 2; big++) {
             keep[r][big] = !big;
