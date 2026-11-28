@@ -281,7 +281,7 @@ enum {
     GLUE_ISLAND,
     GLUE_PARTS
 };
-/* a piece of the machine's as a region's last instruction (below): the checks' emitters go through it */
+/* a piece of the machine's as a region's last instruction (below): the checks and the frame go through it */
 static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0);
 static void glue_count(Unit* u) {
     u->g->x.seen.glue[u->glue_part] += u->b.n - u->glue_at;
@@ -300,9 +300,9 @@ static void glue_out(Unit* u) {
 #define jmp(u, label)                 (glue_in((u), GLUE_JUMP), jmp((u), (label)), glue_out(u))
 #define jcc(u, cc, label)             (glue_in((u), GLUE_JUMP), jcc((u), (cc), (label)), glue_out(u))
 #define pins_of(u, b, store, caller)  (glue_in((u), GLUE_PINS), pins_of((u), (b), (store), (caller)), glue_out(u))
-#define prologue(u)                   (glue_in((u), GLUE_FRAME), prologue(u), glue_out(u))
+#define prologue(u)                   region_glue((u), SGX_FN_PROLOGUE, 0, 0, 0)
 #define epilogue(u)                   (glue_in((u), GLUE_FRAME), epilogue(u), glue_out(u))
-#define leave(u)                      (glue_in((u), GLUE_FRAME), leave(u), glue_out(u))
+#define leave(u)                      region_glue((u), SGX_FN_LEAVE, 0, 0, 0)
 #define calldyn(u, tail)              (glue_in((u), GLUE_CALL), calldyn((u), (tail)), glue_out(u))
 #define set_target(u, target)         (glue_in((u), GLUE_CALL), set_target((u), (target)), glue_out(u))
 #define call_sym(u, sym, tail)        (glue_in((u), GLUE_CALL), call_sym((u), (sym), (tail)), glue_out(u))
@@ -315,11 +315,11 @@ static void glue_out(Unit* u) {
 #define mg_undef(u, address, word)    (glue_in((u), GLUE_TRAP), mg_undef((u), (address), (word)), glue_out(u))
 #define mg_svc(u, next, n, direct)    (glue_in((u), GLUE_TRAP), mg_svc((u), (next), (n), (direct)), glue_out(u))
 #define mg_brk(u, address, imm)       (glue_in((u), GLUE_TRAP), mg_brk((u), (address), (imm)), glue_out(u))
-#define mg_entry(u, index, start)     (glue_in((u), GLUE_FRAME), mg_entry((u), (index), (start)), glue_out(u))
+#define mg_entry(u, index, start)     region_glue((u), SGX_FN_ENTRY, (long long)(start), 0, (SnxU64)(index))
 #define mg_check(u, start, label)     region_glue((u), SGX_FN_CHECK, (long long)(start), (label), 0)
 #define mg_stale(u, index, given, s)  region_glue((u), SGX_FN_STALE, (long long)(s), (given), (SnxU64)(index))
 #define mg_entry_stale(u, index)      region_glue((u), SGX_FN_ENTRY_STALE, (long long)(index), 0, 0)
-#define mg_entry_fp(u)                (glue_in((u), GLUE_FRAME), mg_entry_fp(u), glue_out(u))
+#define mg_entry_fp(u)                region_glue((u), SGX_FN_ENTRY_FP, 0, 0, 0)
 #define mg_dispatch(u, lab0)          (glue_in((u), GLUE_DISPATCH), mg_dispatch((u), (lab0)), glue_out(u))
 #define mg_pool_island(u)             (glue_in((u), GLUE_ISLAND), mg_pool_island(u), glue_out(u))
 #define mg_if_stale(u, index, label)  region_glue((u), SGX_FN_IF_STALE, (long long)(index), (label), 0)
@@ -540,7 +540,11 @@ enum {
     SGX_FN_ENTRY_STALE,
     SGX_FN_IF_STALE,
     SGX_FN_IF_X_NOT,
-    SGX_FN_IF_PC_NOT
+    SGX_FN_IF_PC_NOT,
+    SGX_FN_PROLOGUE,
+    SGX_FN_LEAVE,
+    SGX_FN_ENTRY,
+    SGX_FN_ENTRY_FP
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -586,6 +590,13 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     case SGX_FN_IF_STALE: (mg_if_stale)(u, (size_t)i->imm, i->disp); break;
     case SGX_FN_IF_X_NOT: (mg_if_x_not)(u, (unsigned)i->kv[0], (SnxU64)i->imm, i->disp); break;
     case SGX_FN_IF_PC_NOT: (mg_if_pc_not)(u, (SnxU64)i->imm, i->disp); break;
+#endif
+    /* the frame: a function's prologue, the rest of its entry (the index k0, the start imm) and its return */
+    case SGX_FN_PROLOGUE: (prologue)(u); break;
+    case SGX_FN_LEAVE: (leave)(u); break;
+    case SGX_FN_ENTRY: (mg_entry)(u, (size_t)i->kv[0], (SnxU64)i->imm); break;
+#ifdef MG_ENTRY_STALE
+    case SGX_FN_ENTRY_FP: (mg_entry_fp)(u); break;
 #endif
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
