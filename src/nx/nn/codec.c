@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/platform/time.h"
+#include "common/utilities/bits.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -312,9 +313,12 @@ u32 nncodec_hwopus_multi_decode_timed(CPU* c, u64 decoder, u64 consumed, u64 sam
 }
 
 /* ------------------------------------------------------------ the work buffer's size */
-/* What the session answered, which a game gives its decoder as a work buffer: the session's three commands size it
-   differently, and each SDK asks one of them (codec.hook says which). The SDK stops the game on a rate or a channel
-   count the session refuses: here the log says so and the size is 0 */
+/* What the session answered, rounded up to a page as the SDK's function rounds it (every function that asks the
+   session, in each SDK read from 0.12.16 to 20.5; switchbrew's hwopus: "official user-processes" round it), which a
+   game gives its decoder as a work buffer: the session's three commands size it differently, and each SDK asks one of
+   them (codec.hook says which). The SDK stops the game on a rate or a channel count the session refuses: here the log
+   says so and the size is 0 */
+#define WORK_PAGE 0x1000u
 static u64 work_size(i32 rate, i32 channels, i32 streams, i32 stereo_streams, int multi, i32 option, int dsp) {
     u32 size = hwopus_work_size((u32)rate, (u32)channels, (u32)streams, (u32)stereo_streams, multi, (u32)option, dsp);
     if (!size)
@@ -322,7 +326,7 @@ static u64 work_size(i32 rate, i32 channels, i32 streams, i32 stereo_streams, in
                    "hwopus: no work buffer size for %ld channels in %ld streams (%ld of two) at %ld Hz, which no "
                    "decoder takes: 0\n",
                    (long)channels, (long)streams, (long)stereo_streams, (long)rate);
-    return size;
+    return snx_align_up(size, WORK_PAGE);
 }
 u64 nncodec_hwopus_class_work_size(CPU* c, u64 self, i32 rate, i32 channels) {
     (void)c, (void)self;
