@@ -532,6 +532,7 @@ static inline void sh_vk_pages_read(u64 gva, u64 len) {
         vk_pages_read(gva, len);
         return;
     }
+    if (vk_pages_read_plain()) return;
     vk_share_lock_at(70);
     vk_pages_read(gva, len);
     vk_share_unlock();

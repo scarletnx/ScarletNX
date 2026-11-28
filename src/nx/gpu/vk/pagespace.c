@@ -48,6 +48,7 @@
    the work that bound them is done. A page's state is kept by granule either way, so everything above holds but
    for the draws' writes in place, which a slab does not take: the owner of a granule is of its buffer, which a join
    replaces. */
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -156,7 +157,9 @@ static struct {
     PgRegion** region; /* by region of guest memory, NULL where no range was asked for */
     u32 regions, nregion, region_max;
     u32 bound;  /* granules with memory */
-    u32 owners; /* granules with an owner: 0 until a draw first writes here, and nothing is ordered until then */
+    /* granules with an owner: 0 until a draw first writes here, and nothing is ordered until then. Atomic: a split's
+       draws read it with no share lock (vk_pages_read_plain), and the writes stay under the lock */
+    _Atomic u32 owners;
     u64 writes; /* ranges bound for writing in place so far (vk_pages_written) */
     /* The ranges written in place in the submission being recorded, by GPU address. They are stamped as written by
        the GPU when it goes to the queue (vk_pages_submit), which is when a result copied to the ring was stamped at
@@ -386,7 +389,7 @@ static void gran_drop(PgRegion* r, u64 g) {
     g_pages.stats.let_go++;
     if (q->own) {
         vk_own_res_unref(q->own);
-        g_pages.owners--;
+        atomic_fetch_sub_explicit(&g_pages.owners, 1, memory_order_relaxed);
     }
     free(q);
 }
@@ -636,7 +639,7 @@ int vk_pages_split_end(void) {
     g_pages.stats.barriers += s->barriers;
     s->barriers = 0;
     const PgLog* f = s->barred ? &s->first : &s->cur;
-    if (!g_pages.owners || (!log_any(f) && !s->barred && !s->their_first)) return 0; /* nothing in place to order */
+    if (!atomic_load_explicit(&g_pages.owners, memory_order_relaxed) || (!log_any(f) && !s->barred && !s->their_first)) return 0; /* nothing in place to order */
     order_begin();
     typeof(g_pages.order)* o = &g_pages.order;
     if (s->first_owner) o->rd_all = 1; /* the renderer thread's reads before it were not kept */
@@ -663,7 +666,7 @@ int vk_pages_split_end(void) {
 static int split_worker(void) { return vk_render_slot() && g_split_order.active; }
 /* guest memory [lo, hi) is bound in its region's buffer, to read or to write in place: the barrier it needs first */
 static void order_use(u64 lo, u64 hi, int write, int ordered) {
-    if (!g_pages.owners) return; /* no draw has written here: every binding reads, and the copies take their own */
+    if (!atomic_load_explicit(&g_pages.owners, memory_order_relaxed)) return; /* no draw has written here: every binding reads, and the copies take their own */
     if (split_worker()) {
         split_use(lo, hi, write, ordered);
         return;
@@ -1006,11 +1009,19 @@ int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     *off = a.at - a.bias;
     return 1;
 }
+/* With no owner, a read orders nothing and only counts. The count is the slot's own, and owners changes only under the
+   share lock: a load that sees 0 is the same as a read before the first owner, which that owner's order covers */
+int vk_pages_read_plain(void) {
+    if (atomic_load_explicit(&g_pages.owners, memory_order_relaxed)) return 0;
+    vk_shared_note(17);
+    g_again_slot[vk_render_slot()].again++;
+    return 1;
+}
 void vk_pages_read(u64 gva, u64 len) {
     vk_shared_note(17);
     u64 cpu = 0;
     g_again_slot[vk_render_slot()].again++;
-    if (g_pages.on > 0 && g_pages.owners && gmmu_run(gva, len, &cpu) == len) order_use(cpu, cpu + len, 0, 0);
+    if (g_pages.on > 0 && atomic_load_explicit(&g_pages.owners, memory_order_relaxed) && gmmu_run(gva, len, &cpu) == len) order_use(cpu, cpu + len, 0, 0);
 }
 
 int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) {
@@ -1046,7 +1057,7 @@ int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64*
         /* a draw writes it now, and its writes may come from the compute queue, which a move does not wait for */
         vk_devmem_owner(q->mem, NULL);
         /* the first of all: the reads recorded so far in this submission were not kept */
-        if (!g_pages.owners++) {
+        if (!atomic_fetch_add_explicit(&g_pages.owners, 1, memory_order_relaxed)) {
             if (split_worker()) {
                 g_split_order.first_owner = 1; /* the join gives it to the renderer thread's order */
                 g_split_order.cur.rd_all = 1;  /* and the worker's own reads before it were not kept */
@@ -1214,7 +1225,7 @@ void vk_pages_log(void) {
             g_pages.nslabs, (unsigned long long)g_pages.stats.joins,
             (double)g_pages.stats.joined_bytes / 1048576.0);
     const u64* wno = g_pages.stats.write_refused;
-    if (g_pages.owners || wno[PG_WNO_ASK] || wno[PG_WNO_CPU])
+    if (atomic_load_explicit(&g_pages.owners, memory_order_relaxed) || wno[PG_WNO_ASK] || wno[PG_WNO_CPU])
         LOG("vulkan: page cache, draws' results: %llu ranges written in place (%.1f MB), %llu refused as a read is "
             "or for another owner on their pages, %llu on pages the CPU wrote lately, %llu bytes made the GPU's, "
             "%llu ranges that could not be trapped; %u granules have an owner, %llu idle ones landed; %llu barriers "
@@ -1222,7 +1233,7 @@ void vk_pages_log(void) {
             (unsigned long long)g_pages.stats.written, (double)g_pages.stats.written_bytes / 1048576.0,
             (unsigned long long)(wno[PG_WNO_ASK] + wno[PG_WNO_OWNER]), (unsigned long long)wno[PG_WNO_CPU],
             (unsigned long long)g_pages.stats.published,
-            (unsigned long long)g_pages.stats.not_trapped, g_pages.owners, (unsigned long long)g_pages.stats.landed,
+            (unsigned long long)g_pages.stats.not_trapped, atomic_load_explicit(&g_pages.owners, memory_order_relaxed), (unsigned long long)g_pages.stats.landed,
             (unsigned long long)g_pages.stats.barriers);
     memset(&g_pages.stats, 0, sizeof g_pages.stats);
 }
