@@ -817,6 +817,34 @@ void vk_release_drain(void) {
     fold_fix();
     vk_unlock();
 }
+void vk_release_drain_gpu(u64 gva, u64 size) {
+    const int scan = size && !vk_result_landing(); /* a landing in progress drains nothing, as in release_match */
+    vk_lock();
+    pm_lock(&g_rlock);
+    i64 last = -1;
+    for (u64 i = atomic_load_explicit(&g_rtail, memory_order_relaxed);
+         scan && i < atomic_load_explicit(&g_rhead, memory_order_relaxed); i++) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (r->gva && r->len && (r->gva >= gva ? r->gva - gva < size : gva - r->gva < r->len)) last = (i64)i;
+    }
+    u64 gate = 0, cgate = 0;
+    if (last >= 0) {
+        hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
+        g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed); /* needed now, as in release_match */
+        if (g_rthread) pc_broadcast(&g_rcv);
+        gate = atomic_load_explicit(&g_rq[last % RQ_N].gate, memory_order_relaxed);
+        cgate = atomic_load_explicit(&g_rq[last % RQ_N].cgate, memory_order_relaxed);
+    }
+    pm_unlock(&g_rlock);
+    if (last >= 0) {
+        submit_through(gate);
+        vk_wait_submit(gate);
+        vk_compute_wait(cgate);
+        release_through(gate, cgate);
+    }
+    fold_fix(); /* as vk_release_drain: the reports done get the GPU's time before the translation changes */
+    vk_unlock();
+}
 void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
 /* The queued increments of syncpoint id up to the one that brings it to thresh, counted from its value now (increments
    are performed under g_rlock, so the two agree), with every release before them: performed on the waiting thread once

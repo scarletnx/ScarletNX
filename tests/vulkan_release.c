@@ -815,6 +815,22 @@ int main(void) {
     vk_release_submit();
     assert(submits == submitted + 1);
     g_vk_cs_open = 0;
+    /* a change of a GPU range drains the releases whose payloads are there, with those before them, and no others:
+       a map of fresh GPU memory waited for all of the GPU's queued work */
+    pending = 1;
+    u64 seq1 = g_rtail;
+    word4 = 41;
+    vk_release_write(0x10200, &word4, 4);
+    vk_submit(0, 0, 0); /* the second waits for a later submit than the first */
+    word4 = 42;
+    vk_release_write(0x10300, &word4, 4);
+    vk_release_drain_gpu(0x40000, 0x1000); /* fresh: no payload there */
+    assert(g_rtail == seq1 && g_rhead == seq1 + 2);
+    vk_release_drain_gpu(0x10200, 4);
+    assert(g_rtail == seq1 + 1 && snx_ld_le32(memory + 4096 + 0x200) == 41 && snx_ld_le32(memory + 4096 + 0x300) != 42);
+    vk_release_drain_gpu(0x102fc, 8); /* a range that meets the payload's first bytes only */
+    assert(g_rtail == seq1 + 2 && snx_ld_le32(memory + 4096 + 0x300) == 42 && lock_depth == 0);
+    pending = 0;
 	check_writeback_merge();
 	check_writeback_stamps();
     return 0;

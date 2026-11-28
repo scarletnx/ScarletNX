@@ -3088,6 +3088,12 @@ void vk_render_predicate_drop(u32 pred);
 void vk_release_retire(u32 id);
 int vk_release_wait(u32 id, u32 thresh, int block); /* renderer.h's release_wait */
 void vk_release_drain(void);
+/* the queued releases whose payloads meet GPU range [gva, gva + size), with all queued before them: performed before
+   the GMMU changes that range. A release writes its payload, and takes its pages' counts back, through the GMMU when
+   it is performed, so a change of its own range in between would point both at other memory. A release elsewhere
+   keeps its place in the queue: a map of fresh GPU memory waited for all of the GPU's queued work, with vk_lock held,
+   up to half a second at a time while one game streamed in its scenery */
+void vk_release_drain_gpu(u64 gva, u64 size);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
    (render.c), vk_query_flush outside a pass before a submit (cmd.c), where the reports' copies are recorded */

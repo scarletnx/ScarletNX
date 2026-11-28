@@ -200,7 +200,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
            run and reach the driver first */
         vk_uma_mapping_begin(gva, size);
     } else {
-        vk_release_drain(); /* before any translation changes: a payload loses the pages it gained */
+        vk_release_drain_gpu(gva, size); /* before the range's translation changes: a payload there loses its pages */
         vk_buf_mem_need_map(gva, size);
         vk_mirror_mem_need(gva, size);
         vk_gfx_image_mem_need(gva, size);
