@@ -1061,7 +1061,6 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         vk_bl_scratch_trim();
         vk_mem_release_run();
         vk_mem_trim(0, 0);
-        vk_astc_auto_present(); /* after the trim: Exact again for astc_mode's Auto where the room is back */
         SNX_PLOT("vk pres maintenance ms", (double)(plat_ns() - t_maint) / 1e6);
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
@@ -1232,7 +1231,6 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bg.quick, (unsigned long long)bg.made, (unsigned long long)bg.finished,
                         (unsigned long long)bg.pending, (unsigned long long)bg.stored,
                         (unsigned long long)bg.gpu_pieces, (unsigned long long)bg.loaded, (unsigned long long)bg.hits);
-                vk_astc_auto_say();
                 vk_astc_kind_say();
                 vk_astc_quick_say();
                 u64 sparse_binds, sparse_ns;

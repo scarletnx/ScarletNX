@@ -3808,8 +3808,8 @@ u64 vk_tex_reclaim_superseded(u32 before, u64 want) {
 }
 
 /* ------------------------------------------------------------ the budget */
-/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 by astc_mode=1 (Exact; Auto makes
-   them BC7 by itself, vk_astc_auto_trimmed) on a GPU that samples BCn but not ASTC: the log suggests astc_mode=2 (BC7)
+/* A trim that found the images short of memory, where ASTC textures are held as RGBA8 by astc_textures=1 (Exact) on a GPU that
+   samples BCn but not ASTC: the log suggests astc_textures=0 (Approximate)
    once a run, with the numbers (snx_astc_bc_suggest).
    Short: an image allocation found no memory (force), the caches left past their budget once all that could go went,
    or the working set evicted (what the last eight presents used, the trim's second step), which the next frames load
@@ -3821,7 +3821,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
               : working       ? SNX_ASTC_SHORT_WORKING_SET
                               : SNX_ASTC_SHORT_NONE;
     char said[128];
-    if (!snx_astc_bc_suggest(vk_astc_bc7() || g_settings.astc_mode == 0, g_vk.astc_bc7_could, 0, astc, why)) return;
+    if (!snx_astc_bc_suggest(vk_astc_bc7(), g_vk.astc_bc7_could, 0, astc, why)) return;
     if (why == SNX_ASTC_SHORT_NO_MEMORY)
         snprintf(said, sizeof said, "an image of %llu MB found no memory", (unsigned long long)(extra >> 20));
     else if (why == SNX_ASTC_SHORT_PAST_BUDGET)
@@ -3832,7 +3832,7 @@ static void astc_bc_suggest(int force, u64 extra, u64 usage, u64 budget, u64 fre
                  (unsigned long long)(working >> 20));
     LOG_LIMIT(
         1,
-        "vulkan: %s, %llu of %llu MB budgeted in use: astc_mode=2 (BC7, Settings > Graphics) would hold the %llu MB "
+        "vulkan: %s, %llu of %llu MB budgeted in use: astc_textures=0 (Approximate, Settings > Graphics) would hold the %llu MB "
         "of ASTC textures decoded to RGBA8 in a quarter, encoded again as BC7 between frames\n",
         said, (unsigned long long)(usage >> 20), (unsigned long long)(budget >> 20), (unsigned long long)(astc >> 20));
 }
@@ -4468,7 +4468,6 @@ void vk_mem_trim(u64 extra, int force) {
         vk_bc1_tight("the caches stay past their budget after a trim");
     else if (working)
         vk_bc1_tight("a trim took textures and targets the last eight presents used");
-    vk_astc_auto_trimmed(usage, snx_astc_trim_left(usage, extra, freed, force), budget, force);
     if (short_of) g_trim_dry = g_vk_present + 1;
     if (force || short_of || (usage > freed ? usage - freed : 0) > budget) g_short_at = g_vk_present + 1;
     g_left_big = step_big;

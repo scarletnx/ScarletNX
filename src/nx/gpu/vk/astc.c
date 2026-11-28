@@ -10,7 +10,7 @@
    slice, or whole slices when they fit, so a 3D texture's thin slices share a
    dispatch and a copy instead of taking one each.
 
-   A BC7 image (format.c's TA, astc_mode's Auto, on a GPU that samples BCn but not ASTC) takes another shader in the
+   A BC7 image (format.c's TA, astc_textures's BC7 at load, on a GPU that samples BCn but not ASTC) takes another shader in the
    decoder's place: astc_bc7.comp makes a strip's ASTC blocks straight into BC7 blocks, a quarter of RGBA8's bytes,
    in one dispatch, and those are what the copy writes. No texel is written out between the two: decoding into RGBA8
    and encoding from it was two dispatches with four bytes a texel written and read back between them. Its strips
@@ -134,7 +134,7 @@ typedef struct {
     VkPipeline kind_pipe;
     KindRead* kinds;
     u32 nkinds;
-    /* the textures whose blocks Auto read as they were made, by outcome (VK_ASTC_KIND_*), and the CPU's time for it;
+    /* the textures whose blocks astc_textures's BC7 read as they were made, by outcome (VK_ASTC_KIND_*), and the CPU's time for it;
        those read again as they loaded again, and of them those that took another format (vk_astc_kind_seen) */
     u64 kind_made[VK_ASTC_KIND_N], kind_made_ns, kind_again, kind_again_ns, kind_changed;
     /* the encoder's dispatches (vk_astc_dispatches) */
@@ -819,9 +819,10 @@ void vk_astc_kind_say(void) {
     for (int k = 0; k < VK_ASTC_KIND_N; k++) n += g_astc.kind_made[k];
     if (!n) return;
     char line[512];
-    int at = snprintf(line, sizeof line,
-                      "vulkan: astc_mode=0 (Auto): %llu ASTC textures read by their blocks' kind in %llu ms:",
-                      (unsigned long long)n, (unsigned long long)(g_astc.kind_made_ns / 1000000));
+    int at =
+        snprintf(line, sizeof line,
+                 "vulkan: astc_textures=0 (Approximate): %llu ASTC textures read by their blocks' kind in %llu ms:",
+                 (unsigned long long)n, (unsigned long long)(g_astc.kind_made_ns / 1000000));
     for (int k = 0; k < VK_ASTC_KIND_N && at < (int)sizeof line; k++)
         if (g_astc.kind_made[k])
             at += snprintf(line + at, sizeof line - at, " %llu %s%s;", (unsigned long long)g_astc.kind_made[k],
@@ -1098,7 +1099,7 @@ static int split_before(u64 texels) {
 
 /* ---- Very large levels: the quick build now, the fast build in the background
 
-   A level held as BC7 at load (astc_mode's BC7 at load) of astc_quick_mtexels
+   A level held as BC7 at load (astc_textures's BC7 at load) of astc_quick_mtexels
    megatexels or more, all its layers or slices counted, takes the encoder's quick build (mode 6 from one line) in the
    frame that needs it, and its fast build is made in the background: into the BC7 cache,
    so that the next upload of the same blocks (a later run's, or this run's after an eviction) copies them with no
@@ -2183,7 +2184,7 @@ int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 
 
 /* ---- What a texture's blocks hold, read on the GPU (texture.c's kind_frame)
 
-   Under astc_mode's Auto a new ASTC texture goes up as a texture of unknown kind does, and keeps its blocks
+   Under astc_textures's BC7 a new ASTC texture goes up as a texture of unknown kind does, and keeps its blocks
    (vk_astc_keep): astc_kind.comp reads them on the GPU, a dispatch a level of every layer, and leaves for each level of
    each layer the first block in the CPU walk's order (gpu/texture/astc_kind.h) with each kind bit. Those words come
    back through the frame's readback ring, as the BC7 cache's blocks do, and the CPU makes the walk's kind of them

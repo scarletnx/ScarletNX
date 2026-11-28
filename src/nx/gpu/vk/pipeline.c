@@ -1037,8 +1037,7 @@ void vk_pipeline_init(void) {
             fatal("vulkan: cannot create compute pipeline layout");
     }
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
-    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c): started now, or by
-       astc_mode's Auto once it holds them as BC7 (vk_astc_auto_present) */
+    /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c) */
     g_pipeline.bc7_cache = 1;
     if (vk_astc_bc7()) vk_pipeline_bc7_cache();
     { /* the files earlier versions kept that cache in: said once a run, and left where they are */

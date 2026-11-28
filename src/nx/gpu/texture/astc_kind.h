@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What an ASTC texture's blocks can hold, read from each block's header and color endpoint modes (CEMs) without
-   decoding a texel, and the BCn format that holds it on a GPU that samples BCn but not ASTC (astc_mode's Auto,
+   decoding a texel, and the BCn format that holds it on a GPU that samples BCn but not ASTC (astc_textures's BC7,
    texture.c): luminance alone as BC4 (8 bytes a 4x4 block, an eighth of RGBA8), luminance and alpha as BC5 (16), opaque
-   colour on one line a block as BC1 (8, half of BC7). The rest stays as astc_mode holds it. The GPU reads the blocks
+   colour on one line a block as BC1 (8, half of BC7). The rest stays as astc_textures holds it. The GPU reads the blocks
    (astc_kind.glsl, vk/astc.c's vk_astc_kind_read); this header has the kind's bits, the format each kind takes, and
    how the CPU makes a texture's kind of what the GPU leaves. The CPU's own read of a block and of a level, which the
    GLSL is held to, is the tests' (tests/support/astc_kind_ref.h).
@@ -37,7 +37,7 @@
    of grey, the BC5 view giving R for G and B: the tests hold every decoded texel of such blocks to that */
 #define SNX_ASTC_GREY_SPREAD 1u
 
-/* the format snx_astc_kind_as picks: none (as astc_mode holds them), BC4, BC5, BC1 */
+/* the format snx_astc_kind_as picks: none (as astc_textures holds them), BC4, BC5, BC1 */
 enum { SNX_ASTC_AS_USUAL, SNX_ASTC_AS_BC4, SNX_ASTC_AS_BC5, SNX_ASTC_AS_BC1 };
 
 /* the format a texture of kind is held in (SNX_ASTC_AS_*), decoded as sRGB or not: BC4 and BC5 have no sRGB twin, so

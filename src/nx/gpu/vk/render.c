@@ -2269,7 +2269,7 @@ static TexRecent g_tex_recent[1u << TEX_RECENT_BITS];
    its next check is one compare and gives t again. A texture that isn't (memory no granule watch covers, a failed
    upload, Auto's turn to BC7 pending) is checked in full at each lookup, whose answer a cache can't keep */
 static int tex_quiet_now(const Surf* t, u32 ww_epoch) {
-    return t->quiet && t->upload_valid && !t->bc7_reread && t->q_present == g_vk_present && t->q_epoch == ww_epoch;
+    return t->quiet && t->upload_valid && t->q_present == g_vk_present && t->q_epoch == ww_epoch;
 }
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;

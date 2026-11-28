@@ -272,7 +272,6 @@ u64 vk_buf_reclaim_ended(u32 before, u64 want) {
     g_tex_objs.buf_ended_avail -= got;
     return got;
 }
-void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {}
 void vk_stamp_runtime_begin(void) {}
 void vk_stamp_runtime_end(void) {}
 int vk_astc_bc7(void) { return 0; }

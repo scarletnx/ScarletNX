@@ -1804,15 +1804,14 @@ void vk_tex_defrag_frame(u64 frame_ns, u64 period_ns) {
 }
 
 /* ------------------------------------------------------------ ASTC held by what its blocks hold */
-/* Under astc_mode's Auto, on a GPU that samples BCn but not ASTC, an ASTC texture whose blocks hold luminance alone is
+/* Under astc_textures's BC7 (0), on a GPU that samples BCn but not ASTC, an ASTC texture whose blocks hold luminance alone is
    held as BC4, luminance and alpha as BC5, opaque colour on one line a 4x4 block as BC1 (gpu/texture/astc_kind.h, read
    from each block's endpoint modes), whatever the room: an eighth, a quarter and an eighth of RGBA8's memory, BC1 and
    BC4 half of BC7's. Their encoders are a pass each, near the decoder's cost: a new texture's image in its format is
    made from its kept blocks once the GPU has read their kind (vk_tex_kind_frame), and one whose bytes the memo knows,
-   or that loads again, goes up straight to it (vk_astc_upload). The rest is held as Auto holds it, Exact or BC7 by the
-   room. Not a 3D texture, nor one with holes in its mapping (BC7 whatever the mode) */
+   or that loads again, goes up straight to it (vk_astc_upload). The rest is held as BC7. Not a 3D texture, nor one with holes in its mapping (BC7 whatever the mode) */
 static int astc_by_kind(const VkFmt* f, VkImageViewType vt, int holes) {
-    return f->conv == VKC_ASTC && g_settings.astc_mode == 0 && g_vk.feat.textureCompressionBC && !holes &&
+    return f->conv == VKC_ASTC && g_settings.astc_textures == 0 && g_vk.feat.textureCompressionBC && !holes &&
            vt != VK_IMAGE_VIEW_TYPE_3D;
 }
 /* ------------------------------------------------------------ textures in system memory */
@@ -2709,10 +2708,10 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     int sparse = (holes || shed) && bl && !msaa && g_vk.sparse && g_vk.resident &&
                  (type == VK_IMAGE_VIEW_TYPE_3D ? g_vk.feat.sparseResidencyImage3D : g_vk.feat.sparseResidencyImage2D);
     /* held as BC7: RGBA8 until the encoder has made its BC7 image between frames (vk_tex_later_frame). Not one with
-       holes (BC7 for them whatever astc_mode says, tex_from_tic): its RGBA8 image is what took the GPU past its memory,
+       holes (BC7 for them whatever astc_textures says, tex_from_tic): its RGBA8 image is what took the GPU past its memory,
        and a sparse one's BC7 image from the encoder would have all its memory. It goes up as BC7 straight
-       (vk_astc_upload), a sparse one only where it has memory. Nor with g_vk.astc_at_load (astc_mode=3, or Auto for an
-       Ounce program): each such texture is encoded as it loads, with no RGBA8 image before it */
+       (vk_astc_upload), a sparse one only where it has memory. Nor with g_vk.astc_at_load (astc_textures=2): each
+       such texture is encoded as it loads, with no RGBA8 image before it */
     if (f.conv == VKC_ASTC && is_bc7(f.vk) && !holes && !g_vk.astc_at_load) {
         t->bc7_later = 1;
         t->f.vk = later_rgba8(f.vk);
@@ -3441,7 +3440,7 @@ static int tex_patch_pitch(Upload* u, const TexPieces* p) {
 /* the ASTC blocks of one level of one layer (lsz bytes at gva) that its bytes [a, b) lie in, decoded again a run of
    blocks of one row of blocks at a time, as level_patch_bl loads them: the layout of a surface that row high and that
    run wide, which astc_rows deswizzles. A run starts on a GOB, 4 ASTC blocks across, and is 8 << lbh block rows high
-   (or ends at the level's edge), so it holds whole the 4x4 blocks a texture held as BC7 (astc_mode=0) encodes from its
+   (or ends at the level's edge), so it holds whole the 4x4 blocks a texture held as BC7 (astc_textures=0) encodes from its
    texels, whatever the footprint: 4 and 8 blocks are whole multiples of lcm(4, bw) / bw and lcm(4, bh) / bh, which
    are 1, 2 or 4. Each BC7 block then takes the texels it takes in the whole level's upload, its neighbours' too */
 static int level_patch_astc(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u32 lbh, u32 lbd, u64 a, u64 b) {
@@ -3791,33 +3790,6 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
         t->tfull = g_vk_present;
     }
 }
-/* ------------------------------------------------------------ Auto's turn to BC7: the Exact ones read again */
-/* t's memory still holds what it was loaded from: unwritten since, where write tracking watches it, else the hash it
-   was loaded with (tex_hash) */
-static int later_same(const Surf* t) {
-    const int w = tex_written_since(t, t->gva, NULL);
-    return w >= 0 ? !w : t->hash && tex_hash(t) == t->hash;
-}
-typedef struct {
-    u32 textures;
-    u64 bytes;
-} LaterExact;
-/* an ASTC texture held Exact, as RGBA8, whose header takes BC7 now (a 3D one only where the device makes 3D BC7
-   images, vk_tic_format_3d) and whose memory is unchanged: marked to be read again (later_reread) */
-static void later_exact(Surf* t, void* ctx) {
-    LaterExact* took = ctx;
-    if (t->f.conv != VKC_ASTC || t->bc7_later || t->bc7_reread || t->sparse || t->bricks || t->msaa || t->piecewise ||
-        !t->upload_valid || (t->f.vk != VK_FORMAT_R8G8B8A8_UNORM && t->f.vk != VK_FORMAT_R8G8B8A8_SRGB))
-        return;
-    const u32 w0 = t->fkey & 0x7FFFF;
-    const int srgb = (int)(t->fkey >> 31);
-    if (!is_bc7((t->type == VK_IMAGE_VIEW_TYPE_3D ? vk_tic_format_3d(w0, srgb) : vk_tic_format(w0, srgb)).vk)) return;
-    if (!later_same(t)) return;
-    t->bc7_reread = 1;
-    t->bc7_reread_wgen = t->wgen;
-    took->textures++;
-    took->bytes += t->bytes;
-}
 static void astc_bc7_held(Surf* t, void* ctx) {
     if (t->f.conv == VKC_ASTC && is_bc7(t->f.vk)) *(u64*)ctx += t->bytes;
 }
@@ -3825,33 +3797,6 @@ u64 vk_tex_astc_bc7_bytes(void) {
     u64 bytes = 0;
     vk_surf_textures(astc_bc7_held, &bytes);
     return bytes;
-}
-void vk_tex_later_exact(u32* textures, u64* bytes) {
-    LaterExact took = {0, 0};
-    vk_surf_textures(later_exact, &took);
-    *textures = took.textures;
-    *bytes = took.bytes;
-}
-/* t marked to be read again (vk_tex_later_exact), once its check found it as memory has it: loaded again from memory
-   now as one held as BC7 between frames is, its RGBA8 image the same and its blocks kept, then queued for the encoder
-   (tex_upload), while this present's reads again are under LATER_REREAD_BYTES of RGBA8 (one at least): the frame after
-   the switch would otherwise decode at once every texture it draws. One loaded again since it was marked (its memory
-   changed, which the check found), or met after Auto turned Exact again, stays Exact. NULL where the load failed, which
-   the next present's check tries again */
-#define LATER_REREAD_BYTES (16ull << 20)
-static struct {
-    u32 present; /* the present the bytes are of, plus one */
-    u64 bytes;
-} g_reread;
-static Surf* later_reread(Surf* t) {
-    if (!t->bc7_reread) return t;
-    if (g_reread.present != g_vk_present + 1) g_reread.present = g_vk_present + 1, g_reread.bytes = 0;
-    if (g_reread.bytes && g_reread.bytes + t->bytes > LATER_REREAD_BYTES) return t;
-    t->bc7_reread = 0;
-    if (t->wgen != t->bc7_reread_wgen || !vk_astc_bc7()) return t;
-    g_reread.bytes += t->bytes;
-    t->bc7_later = 1;
-    return tex_upload(t) ? t : NULL;
 }
 /* t, a texture found for a header: still as guest memory has it (re-uploaded where it changed), or NULL when its
    upload failed. gva is its address */
@@ -3943,14 +3888,9 @@ static Surf* tex_check_memory(Surf* t, u64 gva) {
     }
     return t->upload_valid ? t : NULL;
 }
-/* tex_check_memory, then the read again that Auto's turn to BC7 asked for (later_reread) */
-static Surf* tex_check_full(Surf* t, u64 gva) {
-    Surf* r = tex_check_memory(t, gva);
-    return r ? later_reread(r) : NULL;
-}
 /* A texture whose last full check left it whole (Surf.quiet) gives the same answer to another while nothing that
-   check asks about can have changed since: a present (the schedule of the checks by contents, the LRU's touch, Auto's
-   turn to BC7), a CPU write on its pages in a new write tracking epoch, or a GPU-side write on its own granules
+   check asks about can have changed since: a present (the schedule of the checks by contents, the LRU's touch), a CPU
+   write on its pages in a new write tracking epoch, or a GPU-side write on its own granules
    (gpu_mem_granules_generation: the engines, results, mapping changes and constant buffer uploads, by GPU page). A
    draw's check of it is then one compare. Every draw of a frame checked each of its textures in full: the memory's
    records (gpu_mem_dirty_since), the LRU's touch, and the CPU's writes in each epoch, about 3% of the GPU thread in
@@ -3963,10 +3903,10 @@ static Surf* tex_check_counted(Surf* t, u64 gva) {
     const u64 gw = watched ? gpu_mem_granules_generation(gva, t->size) : 0;
     const u32 present = g_vk_present, epoch = vk_ww_epoch();
     const u32 wgen = t->wgen;
-    Surf* r = tex_check_full(t, gva);
+    Surf* r = tex_check_memory(t, gva);
     if (!r || r->wgen != wgen) g_tex_checks.changed++;
     if (r) {
-        r->quiet = r == t && watched && r->upload_valid && !r->bc7_reread && gw != ~(u64)0;
+        r->quiet = r == t && watched && r->upload_valid && gw != ~(u64)0;
         r->q_gw = gw;
         r->q_present = present;
         r->q_epoch = epoch;
@@ -3977,7 +3917,7 @@ static Surf* tex_check_counted(Surf* t, u64 gva) {
    again, or finds it gone, is a write the quick check missed */
 static Surf* tex_quiet_cross(Surf* t, u64 gva) {
     const u32 wgen = t->wgen;
-    Surf* r = tex_check_full(t, gva);
+    Surf* r = tex_check_memory(t, gva);
     if (r != t || t->wgen != wgen) {
         g_tex_checks.quiet_wrong++;
         LOG_LIMIT(16,
@@ -3992,7 +3932,7 @@ static Surf* tex_quiet_cross(Surf* t, u64 gva) {
 /* whether t, quiet since its last full check, still is: no GPU-side write on its own granules, and in a new epoch no
    CPU write on its pages where write tracking took them in for the epoch already (vk_written_quick). A write on
    another granule leaves it as it was. It crosses a present on the same terms, and takes the work a full check does
-   once a present: the LRU's touch, and Auto's cooling of a texture held Exact. In one game's race about 85% of the
+   once a present: the LRU's touch, and the cooling of a texture held Exact for its writes. In one game's race about 85% of the
    full checks came from the new present alone, with no write on the texture. What ended it goes in *why: 1 a present
    (with a write tracking epoch that can't tell), 2 an epoch, 3 a write */
 static int quiet_own(Surf* t, u64 gva, int* why) {
@@ -4032,8 +3972,8 @@ static Surf* tex_check(Surf* t, u64 gva) {
        old texels. Published first, it does */
     if (vk_gfx_image_pending_besides(gva, t->size, t)) vk_gfx_image_mem_need(gva, t->size);
     int why = 0;
-    /* what can change t outside a check (a failed load, a level given up, Auto's read again) */
-    if (t->quiet && gva == t->gva && t->upload_valid && !t->bc7_reread) {
+    /* what can change t outside a check (a failed load, a level given up) */
+    if (t->quiet && gva == t->gva && t->upload_valid) {
         if (quiet_own(t, gva, &why)) {
             g_tex_checks.quiet++;
             Surf* r = g_settings.draw_state_check ? tex_quiet_cross(t, gva) : t;
@@ -4345,14 +4285,14 @@ texture_from_memory:
         gmmu_pieces(gva, sz, tex_run, &runs);
         holes = runs.mapped < sz;
     }
-    /* ASTC that the GPU decodes and format.c leaves RGBA8 (astc_mode=1, or a 3D texture where the device has no 3D
+    /* ASTC that the GPU decodes and format.c leaves RGBA8 (astc_textures=1, or a 3D texture where the device has no 3D
        BC7 images): encoded again as BC7 all the same, where the GPU samples BCn, when its mapping has holes. That is a
        game's sparse texture, as big as 68 layers of 8192x8192 with seven of them mapped, which as RGBA8 took more
        memory than the GPU had: 341 MB a mapped layer as RGBA8, which filled a 12 GB GPU, 85 as BC7 */
     if (f.conv == VKC_ASTC && g_vk.feat.textureCompressionBC &&
         (f.vk == VK_FORMAT_R8G8B8A8_UNORM || f.vk == VK_FORMAT_R8G8B8A8_SRGB) && holes)
         f.vk = f.vk == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
-    /* astc_mode's Auto: BC4, BC5 or BC1 where its blocks hold no more (astc_by_kind). Bytes whose kind was read before
+    /* astc_textures's Auto: BC4, BC5 or BC1 where its blocks hold no more (astc_by_kind). Bytes whose kind was read before
        (the memo, by their hash, which the change checks take below too: hashed here when the CPU reads them as one
        run, no byte of theirs the GPU's) go up straight in its format; the others as Auto holds one of unknown kind,
        their kind read on the GPU from the blocks the upload keeps (vk_tex_kind_frame) */

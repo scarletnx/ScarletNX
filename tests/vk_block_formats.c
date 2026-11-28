@@ -120,9 +120,8 @@ static void device(int astc, int etc2, int bc, int native_astc, int native_etc2,
     g_settings.native_astc = native_astc;
     g_settings.native_etc2 = native_etc2;
     g_settings.native_bc = native_bc;
-    g_settings.astc_mode = 1; /* Exact: ASTC decoded stays RGBA8, which needs no memory budget here */
+    g_settings.astc_textures = 1; /* Exact: ASTC decoded stays RGBA8, which needs no memory budget here */
     g_settings.bcn_astc = 0;  /* BCn as ETC2: at its default of 1 the BCn checks below would take ASTC 4x4 */
-    g_vk.astc_auto.bc7 = 0;
     vk_blocks_want(&have, &g_vk.feat);
     g_test.n = 0;
     vk_blocks_say();
@@ -171,8 +170,9 @@ int main(void) {
     VkFmt v = vk_tic_format_3d(0x24 | 2u << 7, 0);
     CHECK(v.vk == VK_FORMAT_R8G8B8A8_UNORM && v.conv == VKC_BC1, "Mali 3D BC1: Vulkan format %d conversion %d",
           (int)v.vk, v.conv);
-    line(0, "vulkan: ASTC textures (native_astc=1, the GPU samples ASTC, astc_mode=1): sampled as the game's blocks: "
-            "ASTC");
+    line(0,
+         "vulkan: ASTC textures (native_astc=1, the GPU samples ASTC, astc_textures=1): sampled as the game's blocks: "
+         "ASTC");
     line(1, "vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples ETC2): sampled as the game's blocks: ETC2 "
             "RGB, ETC2 RGB8A1, ETC2 RGBA8, EAC R11, EAC RG11");
     line(2, "W vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 "
@@ -192,26 +192,28 @@ int main(void) {
     /* native_astc=0: ASTC decoded to RGBA8, no warning (it is what was asked) */
     device(1, 1, 0, 0, 1, 1);
     takes(0x40, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ASTC, "Mali native_astc=0 ASTC 4x4");
-    line(0, "vulkan: ASTC textures (native_astc=0, the GPU samples ASTC, astc_mode=1): decoded on the GPU: ASTC to "
+    line(0, "vulkan: ASTC textures (native_astc=0, the GPU samples ASTC, astc_textures=1): decoded on the GPU: ASTC to "
             "RGBA8");
 
     /* a desktop GPU, BCn alone: BCn as it is, ASTC and ETC2 decoded, a warning each as the settings ask for them */
     device(0, 0, 1, 1, 1, 1);
     takes(0x24, 0, 0, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VKC_NONE, "desktop BC1");
-    takes(0x40, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ASTC, "desktop ASTC 4x4, astc_mode=1");
-    line(0,
-         "W vulkan: ASTC textures (native_astc=1, the GPU samples no ASTC, astc_mode=1): decoded on the GPU: ASTC to "
-         "RGBA8");
+    takes(0x40, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ASTC, "desktop ASTC 4x4, astc_textures=1");
+    line(
+        0,
+        "W vulkan: ASTC textures (native_astc=1, the GPU samples no ASTC, astc_textures=1): decoded on the GPU: ASTC to "
+        "RGBA8");
     line(1, "W vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples no ETC2): decoded on the GPU: ETC2 RGB to "
             "RGBA8, ETC2 RGB8A1 to RGBA8, ETC2 RGBA8 to RGBA8, EAC R11 to R16, EAC RG11 to RG16");
     line(2, "vulkan: BCn textures (native_bc=1, the GPU samples BCn, ETC2 not sampled): sampled as the game's blocks: "
             "BC1, BC2, BC3, BC4, BC5, BC6H, BC7");
-    /* astc_mode=2 there: ASTC decoded, then encoded again as BC7 */
-    g_settings.astc_mode = 2;
+    /* astc_textures=2 there: ASTC decoded, then encoded again as BC7 */
+    g_settings.astc_textures = 0;
     g_test.n = 0;
     vk_blocks_say();
-    line(0, "W vulkan: ASTC textures (native_astc=1, the GPU samples no ASTC, astc_mode=2): encoded again on the GPU: "
-            "ASTC as BC7");
+    line(0,
+         "W vulkan: ASTC textures (native_astc=1, the GPU samples no ASTC, astc_textures=0): encoded again on the GPU: "
+         "ASTC as BC7");
 
     /* a device of all three with native_bc=0 (llvmpipe's tests): BCn takes the ETC2 path a phone's GPU does */
     device(1, 1, 1, 1, 1, 0);
