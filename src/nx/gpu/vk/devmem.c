@@ -159,14 +159,14 @@ static struct {
     u64 priorities; /* calls that gave a block a new priority since the last report (block_prio) */
     /* The block being emptied (vk_devmem_moving), as DXVK defragments its chunks: no request takes its runs, and the
        owners of its allocations move them to the runs of other blocks on the GPU. Once it has none it is an empty
-       block (vk_devmem_free). slot: its index plus one, 0 for none. since: the present it started. picked: the present
-       of the last search for one. The counts are since the last report */
+       block (vk_devmem_free). slot: its index plus one, 0 for none. since: the present it started. next: the earliest
+       present for the next search. The counts are since the last report */
     struct {
         int on; /* a GPU with memory of its own: integrated and mobile GPUs (UMA) keep their blocks as they are */
         u32 slot;
         int moving; /* a move asks for memory (DevMemWant.existing): only blocks that hold something take it */
         int repair; /* the block is repaired, not emptied (repair_pick): only its allocations of the wrong class move */
-        u64 since, picked;
+        u64 since, next;
         u64 emptied, kept, gave_up, moved, moved_bytes, repaired;
     } drain;
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
@@ -253,6 +253,7 @@ int vk_devmem_init(int bda) {
        cost the bandwidth that GPU shares with the CPU for nothing it lacks. DXVK likewise keeps no budget there
        (DxvkMemoryAllocator: enforceBudget only on a discrete GPU that is not UMA), and the old behaviour stays */
     g_devmem.drain.on = g_devmem.main_heap >= 0 && heap_capped((u32)g_devmem.main_heap);
+    g_devmem.drain.next = 30;
     g_devmem.coherent = 1;
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
         VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
@@ -1077,6 +1078,11 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                   (double)piece / 1048576.0, (double)heap_usage((u32)g_devmem.main_heap) / 1048576.0,
                   (double)heap_budget((u32)g_devmem.main_heap) / 1048576.0);
     }
+    /* a GPU heap request that failed or went past the budget while blocks hold free space wakes the next drain at once
+       instead of waiting out its 30-present idle rest */
+    if ((in_pieces || (!*mem && main_heap && room && want->at == DM_DEVICE)) && !g_devmem.drain.slot &&
+        g_devmem.drain.next > g_devmem.frame)
+        g_devmem.drain.next = g_devmem.frame;
     if (*mem && info) info_of(*mem, info);
     pm_unlock(&g_devmem.lk);
     return *mem ? VK_SUCCESS : res;
@@ -1130,6 +1136,8 @@ void vk_devmem_free(DevMem m) {
         const int emptied = k->drain && g_devmem.drain.slot == slot;
         if (emptied) {
             g_devmem.drain.slot = 0;
+            /* another nearly-empty block may be waiting: pick at the next present instead of resting 30 */
+            g_devmem.drain.next = g_devmem.frame;
             k->drain = 0;
         } else if (g_devmem.drain.slot == slot) { /* a block under repair that its frees emptied: nothing to repair */
             g_devmem.drain.slot = 0;
@@ -1144,7 +1152,7 @@ void vk_devmem_free(DevMem m) {
         int keep = 1;
         if (keep && !k->reserve) {
             u64 budget = heap_budget(heap);
-            if (g_devmem.block_bytes[heap] > budget) keep = 0;
+            if (g_devmem.block_bytes[heap] > budget || heap_usage(heap) > budget) keep = 0;
             for (u32 i = 0; keep && i < g_devmem.nblock; i++) {
                 const Block* o = &g_devmem.block[i];
                 if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type &&
@@ -1189,7 +1197,7 @@ static int drain_can(const Block* k, u32 h) {
 static u32 drain_pick(u64 budget) {
     if (!g_devmem.drain.on) return 0;
     const u32 h = (u32)g_devmem.main_heap;
-    const int over = g_devmem.block_bytes[h] > budget;
+    const int over = g_devmem.block_bytes[h] > budget || heap_usage(h) > budget;
     u32 best = 0;
     u64 best_used = ~0ull;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
@@ -1258,6 +1266,7 @@ static void drain_stop(void) {
     k->drain_skip = g_devmem.frame + 600;
     g_devmem.drain.slot = 0;
     g_devmem.drain.repair = 0;
+    if (g_devmem.drain.next < g_devmem.frame + 30) g_devmem.drain.next = g_devmem.frame + 30;
     g_devmem.drain.gave_up++;
 }
 u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
@@ -1266,8 +1275,8 @@ u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
     pm_lock(&g_devmem.lk);
     /* one that takes more than 600 presents to empty has an owner that does not move its allocation */
     if (g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.since > 600) drain_stop();
-    if (!g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.picked >= 30) {
-        g_devmem.drain.picked = g_devmem.frame;
+    if (!g_devmem.drain.slot && g_devmem.frame >= g_devmem.drain.next) {
+        g_devmem.drain.next = g_devmem.frame + 30;
         g_devmem.drain.slot = drain_pick(budget);
         /* with no block to empty, one whose classes are mixed is repaired: it stays open to requests */
         if (!g_devmem.drain.slot && (g_devmem.drain.slot = repair_pick())) {
