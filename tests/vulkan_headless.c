@@ -7995,6 +7995,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_tex_partial.inc"
 #include "vulkan_texture_quiet.inc"
 #include "vulkan_cube_take.inc"
+#include "vulkan_take_levels.inc"
 #include "vulkan_rt_stride.inc"
 #include "vulkan_texture_quiet_other.inc"
 #include "vulkan_memo_over_target.inc"
@@ -8900,6 +8901,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_quiet_alias();
         else if (!strcmp(name, "cube_take"))
             result = check_cube_take();
+        else if (!strcmp(name, "take_levels"))
+            result = check_take_levels();
         else if (!strcmp(name, "rt_stride"))
             result = check_rt_stride() || check_rt_stride_apart();
         else if (!strcmp(name, "cube_take_frames"))
@@ -9494,6 +9497,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_blit_bands());
     CHECK(!check_take_after_writes());
+    CHECK(!check_take_levels());
     CHECK(!check_rt_drop());
     CHECK(!check_targets_kept());
     CHECK(!check_uma_in_flight());

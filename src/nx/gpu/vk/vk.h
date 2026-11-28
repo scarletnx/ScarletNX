@@ -3328,6 +3328,8 @@ void vk_tex_take_log(void);
 /* those counts since the last log: targets and storage surfaces taken, refused for their format class, scaled, at no
    level or layer, with newer memory, then the loads of pieces that left some out and their bytes */
 void vk_tex_take_counts(u64 out[8]);
+/* the drawn targets a texture did not take because their level had no memory and found none (tex_take_drawn), so far */
+u64 vk_tex_take_unbound(void);
 /* since the last log: the texture checks, those quiet (one compare), and those draw_state_check=1 found changed */
 void vk_tex_check_counts(u64* checks, u64* quiet, u64* quiet_wrong);
 /* the full checks since the last log by what ended the quiet: never quiet, a present, an epoch, a write; then the epochs

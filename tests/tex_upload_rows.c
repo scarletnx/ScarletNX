@@ -1007,22 +1007,43 @@ int vk_image_resident(VkImage img, u8* want, const u64* keys, u32 n, u64* bytes)
     }
     return 1;
 }
-/* sparse residency: none here either */
+/* sparse residency: none here either, but for the image the checks of textures with levels turn on (g_sparse.on): two
+   levels of one block each and no mip tail, bound as asked (bound: block b's bit) or finding no memory (fail) */
+static struct {
+    int on, fail;
+    u8 bound;
+    u32 binds;
+} g_sparse;
+static const VkSparseShape g_sparse_shape = {.gran = {64, 64, 1},
+                                             .layers = 1,
+                                             .levels = 2,
+                                             .tail_first = 2,
+                                             .per_layer = 2,
+                                             .first = {0, 1, 2},
+                                             .bx = {1, 1},
+                                             .by = {1, 1},
+                                             .bz = {1, 1}};
 int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
     (void)ii, (void)img;
     return 0;
 }
 int vk_image_create_sparse_min(const VkImageCreateInfo* ii, VkImage* img, u64 min) {
-    (void)ii, (void)img, (void)min;
-    return 0;
+    (void)ii, (void)min;
+    if (!g_sparse.on) return 0;
+    *img = (VkImage)(uintptr_t)0x5BA;
+    return 1;
 }
 const VkSparseShape* vk_image_sparse_shape(VkImage img) {
     (void)img;
-    return NULL;
+    return g_sparse.on ? &g_sparse_shape : NULL;
 }
 int vk_image_sparse_bind(VkImage img, const u8* bits, const u64* keys, u64* bytes) {
-    (void)img, (void)bits, (void)keys, (void)bytes;
-    return -1;
+    (void)img, (void)keys;
+    if (!g_sparse.on || g_sparse.fail) return -1;
+    g_sparse.bound = bits[0] & 3;
+    g_sparse.binds++;
+    *bytes = ((g_sparse.bound & 1) + (g_sparse.bound >> 1)) * 0x10000ull;
+    return 1;
 }
 void vk_image_sparse_place(VkImage img, int system) { (void)img, (void)system; }
 void vk_image_sparse_mover(VkImage img, void* mover) { (void)img, (void)mover; } /* no defrag here */
@@ -1297,9 +1318,81 @@ static void check_take_skip(void) {
     tex_take_drawn(&t);
     tex_take_drawn(&t);
     CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
+    /* a texture sampled from level 1 on (made at half its resolution): its level 0 gets its memory back for the
+       target drawn for it, which is copied into it, and the texture samples from level 0 again */
+    Surf half = tex(64, 64, 1, 2, 4, 2, 0, 1);
+    half.sparse = half.shed = 1;
+    half.lod_floor = 1;
+    half.wgen = 9;
+    g_sparse.on = 1;
+    g_sparse.bound = 2; /* level 1 alone */
+    g_drawn_target = &s;
+    g_drawn_fresh = 1;
+    s.wgen++;
+    g_take_gen_now++;
+    g_image_copies = 0;
+    tex_take_drawn(&half);
+    CHECK(g_image_copies == 1 && half.lod_floor == 0 && g_sparse.bound == 3);
+    /* where the level finds no memory, the target is not copied into it, and is counted: tried again at the next
+       bind */
+    const u64 unbound = vk_tex_take_unbound();
+    half.lod_floor = 1;
+    g_sparse.bound = 2;
+    g_sparse.fail = 1;
+    s.wgen++;
+    g_take_gen_now++;
+    g_image_copies = 0;
+    tex_take_drawn(&half);
+    CHECK(g_image_copies == 0 && half.lod_floor == 1 && g_sparse.bound == 2 && vk_tex_take_unbound() == unbound + 1);
+    g_sparse.fail = 0;
+    g_sparse.on = 0;
     g_drawn_target = NULL;
     g_drawn_fresh = 0;
     vkCmdCopyImage = NULL;
+}
+
+static void no_format_features(VkPhysicalDevice phys, VkFormat format, VkFormatProperties* props) {
+    (void)phys, (void)format;
+    memset(props, 0, sizeof *props);
+}
+static void one_mib(VkDevice dev, VkImage img, VkMemoryRequirements* req) {
+    (void)dev, (void)img;
+    *req = (VkMemoryRequirements){.size = 1u << 20, .alignment = 0x10000};
+}
+/* Under memory pressure a texture with levels is made with its finest level never bound, sampled from the next one on
+   (texture_half_res, Always here). Not one with drawn targets over its memory: its texels come from them, and the
+   first level's would go into memory that is not there */
+static void check_create_over_targets(void) {
+    const VkFmt f = {.vk = VK_FORMAT_R8G8B8A8_UNORM, .bpp = 4, .bw = 1, .bh = 1, .conv = VKC_NONE};
+    const int half = g_settings.texture_half_res, sparse = g_vk.sparse, resident = g_vk.resident,
+              min_lod = g_vk.has_view_min_lod;
+    const VkBool32 residency = g_vk.feat.sparseResidencyImage2D;
+    Surf s = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    s.is_rt = 1;
+    g_settings.texture_half_res = 2;
+    g_vk.sparse = g_vk.resident = g_vk.has_view_min_lod = 1;
+    g_vk.feat.sparseResidencyImage2D = VK_TRUE;
+    vkGetPhysicalDeviceFormatProperties = no_format_features;
+    vkGetImageMemoryRequirements = one_mib;
+    g_sparse.on = 1;
+    g_drawn_target = NULL;
+    Surf* alone = tex_create(GVA, 64, 64, 1, 1, 2, VK_IMAGE_VIEW_TYPE_2D, f, 0x08, 1, 2, 0, 0, 0, 0x10000, 0, 0, 0);
+    CHECK(alone && alone->shed && alone->lod_floor == 1); /* nothing drawn over it: at half its resolution */
+    g_drawn_target = &s;
+    const u32 images = g_crop_images;
+    g_crop_images = 1; /* an image of the cache's: the whole texture's */
+    Surf* over = tex_create(GVA, 64, 64, 1, 1, 2, VK_IMAGE_VIEW_TYPE_2D, f, 0x08, 1, 2, 0, 0, 0, 0x10000, 0, 0, 0);
+    CHECK(over && !over->shed && !over->sparse && over->lod_floor == 0); /* over a drawn target: whole */
+    g_drawn_target = NULL;
+    g_crop_images = images;
+    free(alone);
+    free(over);
+    g_sparse.on = 0;
+    vkGetPhysicalDeviceFormatProperties = NULL;
+    vkGetImageMemoryRequirements = NULL;
+    g_settings.texture_half_res = half;
+    g_vk.sparse = sparse, g_vk.resident = resident, g_vk.has_view_min_lod = min_lod;
+    g_vk.feat.sparseResidencyImage2D = residency;
 }
 
 /* A copy of a target for a draw's read (rt_crop: a read narrower than the target, or in another format; vk_rt_snapshot:
@@ -1865,6 +1958,10 @@ static void check_resident_floor(void) {
     /* another image short of memory (vk_tex_shed): a level coarser releases level 0's page, and there is no coarser
        level with bricks to go to after it */
     t.bytes = 4 * 0x10000;
+    /* not while it holds pixels taken from drawn targets, which memory has not */
+    t.took_drawn = 1;
+    CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0 && t.lod_floor == 0 && g_res.bound[1]);
+    t.took_drawn = 0;
     CHECK(vk_tex_coarser(&t) == 0x10000 && t.lod_floor == 1 && !g_res.bound[1] && g_res.bound[4]);
     CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0);
     g_vk.has_view_min_lod = 0;
@@ -2285,6 +2382,7 @@ static void check_copy_counts(void) {
 int main(void) {
     fill();
     check_take_skip();
+    check_create_over_targets();
     check_tex_moves();
     check_crop_reuse();
     check_copy_counts();

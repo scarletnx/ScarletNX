@@ -1039,6 +1039,8 @@ u64 vk_tex_coarser(Surf* t) {
 }
 int vk_tex_can_coarsen(const Surf* t) {
     if (!t->img || !g_vk.has_view_min_lod) return 0;
+    /* a level's pixels taken from drawn targets are nowhere else: memory has none to load it from again */
+    if (t->took_drawn) return 0;
     if (t->sparse) {
         const VkSparseShape* sh = vk_image_sparse_shape(t->img);
         if (t->shed && g_settings.texture_system_memory) return sh && t->sys_levels + 1u < sh->tail_first;
@@ -2681,7 +2683,13 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
        level never bound: sampled at half its resolution from the start, a quarter of its bytes left. Its size stays
        the texture's, so textureSize and texelFetch read as the game's, and the level comes back as a shed one's does,
        when there is room (vk_tex_finer) */
-    const int can_shed = !holes && !written && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
+    /* Not one with drawn targets over its memory: its texels come from them, a level at a time (tex_take_drawn), and
+       memory has none of them to load a level from when it comes back. A game that blurs its frame down a chain of
+       targets samples each of them through one header of five levels: made at half its resolution, the first level's
+       pixels went into memory that was not there, and every pass after it read zeros */
+    Surf* over;
+    const int drawn = vk_rt_drawn_in(gva, gva + layer_size * layers, &over, 1) > 0;
+    const int can_shed = !holes && !written && !drawn && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
                          g_vk.has_view_min_lod &&
                          (f.conv == VKC_NONE ||
                           (f.conv == VKC_ASTC && !(is_bc7(f.vk) && !g_vk.astc_at_load) && !vk_astc_bcn(f.vk)));
@@ -5076,6 +5084,25 @@ void vk_tex_take_log(void) {
    sampled several frames later. Targets are never block compressed, but a compressed texture takes a target whose
    texels are as many bytes as its blocks, a texel for a block: a game compressing on the GPU draws the blocks so (one
    game's text labels, BC5 drawn as RGBA32UI) */
+/* The level a drawn target's pixels go into gets its memory back, where the texture samples from a coarser one (made
+   at half its resolution, or shed since): 1 when the level has memory. No trim inside it, as the search holds the
+   targets it found. A level between it and the floor it had has memory and no texels then: the texture loads again at
+   its next use, and takes its targets again */
+static int take_level_back(Surf* t, u32 level) {
+    if (!t->sparse) return 0;
+    const u32 had = t->lod_floor;
+    g_bind_no_trim = 1;
+    t->lod_floor = level;
+    const int r = tex_bind_at(t, 0);
+    g_bind_no_trim = 0;
+    if (r < 0) t->lod_floor = had; /* nothing was bound */
+    if (t->lod_floor > level) return 0;
+    if (had > level + 1) t->upload_valid = 0;
+    return 1;
+}
+/* the drawn targets a texture did not take for want of memory in their level, so far */
+static u64 g_takes_unbound;
+u64 vk_tex_take_unbound(void) { return g_takes_unbound; }
 static void tex_take_drawn(Surf* t) {
     /* a storage surface its texture hosts: what it takes is its host's to take, into the host's image */
     if (t && t->host) {
@@ -5252,6 +5279,17 @@ static void tex_take_drawn(Surf* t) {
         }
         if (!take_fresh(s, t, &at)) { /* newer guest memory at this address takes precedence */
             g_takes.stale++;
+            continue;
+        }
+        if (at.l < t->lod_floor && !take_level_back(t, at.l)) {
+            /* a copy into it would go nowhere: said, and tried again at the texture's next bind */
+            g_takes_unbound++;
+            LOG_LIMIT(8,
+                      "vulkan: the %ux%u render target at %llx is not taken into level %u of the %ux%u texture of %u "
+                      "levels at %llx: the texture is sampled from level %u on and its level %u found no memory\n",
+                      s->w, s->h, (unsigned long long)s->gva, at.l, t->w, t->h, t->levels, (unsigned long long)t->gva,
+                      t->lod_floor, at.l);
+            settled = 0;
             continue;
         }
         if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
