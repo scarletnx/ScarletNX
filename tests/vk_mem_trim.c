@@ -11,7 +11,8 @@
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
    nowhere (flush_land). The copies of a live target that no bind asked for in VK_RT_COPY_TRIM_PRESENTS go under the
-   trims' pressure, and stay with none (rt_copies_reclaim). No Vulkan loader, device or GPU is used:
+   trims' pressure, and stay with none (rt_copies_reclaim). A trim for an allocation counts the heap's own use, where
+   the caches count the free space inside its blocks as room. No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -261,8 +262,9 @@ void vk_mem_use(u64* usage, u64* budget) {
 u64 vk_mem_heap_use(void) { return g_heap_use; }
 /* the present `presents` ago, or 60 more where a time is asked too: a second is 60 presents here */
 u32 vk_present_before(u64 ago_ns, u32 presents) { return g_vk_present - presents - (ago_ns ? 60 : 0); }
-u64 vk_deferred_bytes(void) { return 0; }
-u64 vk_deferred_moved(void) { return 0; }
+/* what evictions before now are releasing, which the frames in flight still hold (cmd.c) */
+static u64 g_releasing;
+u64 vk_deferred_bytes(void) { return g_releasing; }
 void vk_defer_bytes(u64 bytes) { g_deferred += bytes; }
 void logf_(int lvl, const char* fmt, ...) {}
 
@@ -539,6 +541,34 @@ static int sys_heap_short(void) {
     return oldest && hot_stays && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
 }
 
+/* A trim for an allocation that found no memory while the free space inside the heap's blocks is in pieces: the use
+   the caches count (vk_mem_use, without those pieces) is under every step's mark, the heap's own use is at its budget,
+   and evictions before it are releasing more than the allocation. A target with pixels memory lacks, unused for
+   longer than the lossy steps' age, goes (here it can't move: lost). The trim counted the pieces as room and took the
+   allocation less what was being released, and freed nothing: a racing game's 1,101 failed allocations each forced
+   one. 1 when the target went */
+static int forced_in_pieces(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* s = target(0x70000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    CHECK(!lossless(s));
+    g_use = g_budget - 3 * trim_head(g_budget); /* under every step's mark */
+    g_heap_use = g_budget;
+    g_releasing = 64 << 20; /* more than the allocation */
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 0 && g_deferred == 16 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    g_releasing = 0;
+    return went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -565,13 +595,16 @@ int main(void) {
     CHECK(parked_lands_nothing());
     CHECK(sys_heap_short());
     CHECK(copies_go(0) && copies_go(1) && copies_go(2));
+    /* a trim for an allocation with the heap's free space in pieces reaches the lossy steps */
+    CHECK(forced_in_pieces());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
         "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
         "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
         "target's storage result landed nothing; the copies of a live target that no bind asked for in 600 presents "
-        "went under the trims' pressure, the others stayed, and none went with no pressure\n");
+        "went under the trims' pressure, the others stayed, and none went with no pressure; a trim for an allocation "
+        "took a target with pixels memory lacks though the heap's free space was in pieces\n");
     return 0;
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */
