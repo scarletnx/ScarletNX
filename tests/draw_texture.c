@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* DRAW_TEXTURE (3D 0x420-0x42B) reaches the renderer once, when its last word is written, with the words in place. */
+/* DRAW_TEXTURE (3D 0x420-0x42B) reaches the renderer once, when its last word is written, with the words in place,
+   and with the window origin at the lower left its rectangle from the top edge the registers give. */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
@@ -85,7 +86,19 @@ int main(void) {
         fprintf(stderr, "FAIL: %d calls after the last word, or its words weren't in place\n", calls);
         failures++;
     }
+    /* with the window origin at the lower left, a whole 1280 x 720 target drawn from a 2560 x 1440 texture as a game's
+       driver writes it: the destination's y the top edge (720), counted up; to the renderer the bottom edge (0), and
+       the source running down from its last row (1440) there, so the top still reads row 0 */
+    const u32 lower[12] = {0, 720u << 12, 1280u << 12, 720u << 12, 0, 2, 0, 2, 3, 5, 0, 0};
+    maxwell3d_method(&ch, 0x4EB, 1, 0);
+    for (u32 i = 0; i < 12; i++) maxwell3d_method(&ch, 0x420 + i, lower[i], i == 11);
+    if (calls != 2 || seen.x0 != 0 || seen.y0 != 0 || seen.w != 1280 || seen.h != 720 || seen.du != 2 ||
+        seen.dv != -2 || seen.sx0 != 0 || seen.sy0 != 1440) {
+        fprintf(stderr, "FAIL: lower-left DRAW_TEXTURE: %d calls, y0 %g h %g dv %g sy0 %g (want 2, 0, 720, -2, 1440)\n",
+                calls, (double)seen.y0, (double)seen.h, seen.dv, (double)seen.sy0);
+        failures++;
+    }
     if (failures) return 1;
-    puts("DRAW_TEXTURE reaches the renderer once, on its last word, with all its words");
+    puts("DRAW_TEXTURE reaches the renderer once, on its last word, with all its words; a lower-left one from its top");
     return 0;
 }

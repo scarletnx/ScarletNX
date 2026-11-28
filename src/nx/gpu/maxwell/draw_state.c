@@ -420,7 +420,10 @@ void mx_draw_clear(const u32* r, u32 v, DrawClear* c) {
 }
 
 /* DRAW_TEXTURE's registers 0x420-0x42B: the destination's x, y, width and height in 20.12 fixed point, du and dv in
-   32.32 (low word first), the texture and sampler indices, and the source's x and y in 20.12 */
+   32.32 (low word first), the texture and sampler indices, and the source's x and y in 20.12. With the window origin
+   at the lower left (0x4EB) the destination's y is its top edge, counted up from the bottom, and the rows go down the
+   screen from it, the source's y at the top (Eden's DrawManager::DrawTexture): a DrawTexture's y is its bottom edge, so
+   the rectangle starts h lower and its source runs the other way, from the row the top reads at the bottom */
 void mx_draw_texture(const u32* r, DrawTexture* t) {
     memset(t, 0, sizeof *t);
     t->handle = (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF);
@@ -429,6 +432,11 @@ void mx_draw_texture(const u32* r, DrawTexture* t) {
     t->du = (double)(i64)((u64)r[0x425] << 32 | r[0x424]) / 4294967296.0;
     t->dv = (double)(i64)((u64)r[0x427] << 32 | r[0x426]) / 4294967296.0;
     t->sx0 = (float)(i32)r[0x42A] / 4096.f, t->sy0 = (float)(i32)r[0x42B] / 4096.f;
+    if (r[0x4EB] & DS_ORIGIN_LOWER_LEFT) {
+        t->y0 -= t->h;
+        t->sy0 = (float)((double)t->sy0 + t->dv * t->h);
+        t->dv = -t->dv;
+    }
 }
 
 /* the group of n bytes at kept as made: a new generation when it changed */
