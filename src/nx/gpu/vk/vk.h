@@ -3188,6 +3188,9 @@ typedef struct VkSh {
        more being made from its draws' words (pipeline.c's fold jobs), 0 for none; its draws' words, counted */
     u32 nfold;
     u8 fold_asked, fold_broke, fold_job;
+    /* 1 while vk_shader_fold_draw would return at once (no fold job, and asked, failed or not a fragment shader). A
+       draw of draw_batches=2 reads it with no share lock (share_wrap.h). A stale 1 skips one draw's count only */
+    _Atomic u8 fold_idle;
     VkCbStable fold_stable;
     struct VkSh* next;
 } VkSh;

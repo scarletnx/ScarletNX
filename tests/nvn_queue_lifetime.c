@@ -249,6 +249,12 @@ void nvn_trace_flush(const NvnDraw* d) {
     assert(fixture.in_gpu && d);
     fixture.trace_flushes++;
 }
+/* no DMA copy is queued here */
+int nvn_copy_queued_over(u64 gva, u64 len) {
+    (void)gva;
+    (void)len;
+    return 0;
+}
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
     assert(op == OP_COPY_STRIDE);
@@ -675,7 +681,7 @@ static void ordered_writes(void) {
     gw64(0x108, 0x400);
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     u32 at = fixture.nsaw;
-    assert(nvn_replay_write(DESC, &two, 4) && gr32(DESC) == 1 && nvn_replay_writes_pending() == 1);
+    assert(nvn_replay_write(DESC, DESC, &two, 4) && gr32(DESC) == 1 && nvn_replay_writes_pending() == 1);
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     drain();
     assert(fixture.nsaw == at + 2 && fixture.saw[at % 16] == 1 && fixture.saw[(at + 1) % 16] == 2);
@@ -689,7 +695,7 @@ static void ordered_writes(void) {
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     assert(!pump());
     at = fixture.nsaw;
-    assert(nvn_replay_write(DESC, &three, 4) && gr32(DESC) == 3 && !nvn_replay_writes_pending());
+    assert(nvn_replay_write(DESC, DESC, &three, 4) && gr32(DESC) == 3 && !nvn_replay_writes_pending());
     gw32(0x800, 1);
     drain();
     assert(fixture.nsaw == at + 1 && fixture.saw[at % 16] == 3);
@@ -703,7 +709,7 @@ static void ordered_writes(void) {
     *(NvnRecHdr*)(void*)GP(0x420) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     at = fixture.nsaw;
-    assert(nvn_replay_write(DESC, &four, 4) && gr32(DESC) == 3);
+    assert(nvn_replay_write(DESC, DESC, &four, 4) && gr32(DESC) == 3);
     assert(!pump() && gr32(DESC) == 4 && !nvn_replay_writes_pending());
     gw32(0x800, 1);
     drain();
@@ -715,7 +721,7 @@ static void ordered_writes(void) {
     *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     at = fixture.nsaw;
-    assert(nvn_replay_write(DESC, &two, 4) && nvn_replay_write(DESC + 4, &three, 4) && gr32(DESC) == 4);
+    assert(nvn_replay_write(DESC, DESC, &two, 4) && nvn_replay_write(DESC + 4, DESC + 4, &three, 4) && gr32(DESC) == 4);
     assert(nvn_replay_writes_pending() == 2);
     nvn_replay_submit(b, 1, 0x108, &ready, &shown);
     drain();

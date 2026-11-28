@@ -42,8 +42,9 @@ void nvn_replay_finish_all(void);
    every queue reads what it replaced, unless it stops at a wait first, as the console's GPU reads after its wait what
    the CPU wrote meanwhile; the work queued after it reads it. 0 when it can't be so (no free work slots, the writes'
    ring full): the caller waits for the replay (nvn_replay_finish_all) and writes it. nvn_replay_writes_pending: writes
-   queued, not landed */
-int nvn_replay_write(u64 gva, const void* data, u32 len);
+   queued, not landed. gva is guest memory, and gpu
+   the same bytes' GPU address (0 for none), which the queued copies' ranges use */
+int nvn_replay_write(u64 gva, u64 gpu, const void* data, u32 len);
 u32 nvn_replay_writes_pending(void);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
@@ -126,7 +127,7 @@ typedef struct {
        each live queue's lane holds that lane's later work back until it lands. Groups land in their order. The open
        one takes more writes while no work was queued after its markers */
     struct {
-        u64 gva, group;
+        u64 gva, gpu, group;
         u32 len;
         u8 data[32];
     } wq[NVN_WRITES];

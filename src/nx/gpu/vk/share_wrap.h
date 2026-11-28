@@ -1051,6 +1051,8 @@ static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, c
         vk_shader_fold_draw(ds, s, gva, k);
         return;
     }
+    /* nothing to count or warm: the flag that vk_shader_fold_draw keeps, with no share lock */
+    if (atomic_load_explicit(&s->fold_idle, memory_order_relaxed)) return;
     vk_share_lock_at(140);
     vk_shader_fold_draw(ds, s, gva, k);
     vk_share_unlock();

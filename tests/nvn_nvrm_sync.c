@@ -81,11 +81,21 @@ u32 nvn_replay_shown_syncpt(void) { return 9; }
 /* ---- what the file needs of the runtime besides: stubs, none reached by the cases below */
 void nvn_replay_finish_all(void) {}
 /* a descriptor's write in the replay's order: lands at once, as with nothing left to replay */
-int nvn_replay_write(u64 gva, const void* data, u32 len) {
+int nvn_replay_write(u64 gva, u64 gpu, const void* data, u32 len) {
+    (void)gpu;
     memcpy(GP(gva), data, len);
     return 1;
 }
 u32 nvn_replay_writes_pending(void) { return 0; }
+int nvn_copy_queued_over(u64 gva, u64 len) { /* no DMA copy is queued here */
+    (void)gva;
+    (void)len;
+    return 0;
+}
+void nvn_copy_wait_over(u64 gva, u64 len) {
+    (void)gva;
+    (void)len;
+}
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     (void)cpu;
     (void)size;

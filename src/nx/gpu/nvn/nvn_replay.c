@@ -531,7 +531,7 @@ static void writes_land(void) {
     NvnReplayState* st = &g_nvn.replay;
     for (;;) {
         u8 data[64][32];
-        u64 at[64];
+        u64 at[64], gpu[64];
         u32 len[64], n = 0;
         pm_lock(&st->lock);
         if (!st->wq_count || !group_ready(st->wq[st->wq_head].group)) {
@@ -542,6 +542,7 @@ static void writes_land(void) {
         if (st->group_open == g) st->group_open = 0; /* it takes no more writes */
         while (st->wq_count && st->wq[st->wq_head].group == g && n < 64) {
             at[n] = st->wq[st->wq_head].gva;
+            gpu[n] = st->wq[st->wq_head].gpu;
             len[n] = st->wq[st->wq_head].len;
             memcpy(data[n], st->wq[st->wq_head].data, len[n]);
             n++;
@@ -550,7 +551,12 @@ static void writes_land(void) {
         }
         const int whole = !st->wq_count || st->wq[st->wq_head].group != g;
         pm_unlock(&st->lock);
-        for (u32 k = 0; k < n; k++) write_land(at[k], data[k], len[k]);
+        /* a copy that this thread queued before the writes (nvn_copy.c's launch) and that reads or writes the same bytes
+           runs first, as the console's GPU ran it before the CPU's write landed */
+        for (u32 k = 0; k < n; k++) {
+            if (gpu[k]) gq_read_wait(gpu[k], len[k]);
+            write_land(at[k], data[k], len[k]);
+        }
         atomic_fetch_sub_explicit(&st->writes, n, memory_order_release);
         if (whole) {
             pm_lock(&st->lock);
@@ -766,7 +772,7 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
 }
 u64 nvn_replay_submitted(void) { return atomic_load_explicit(&g_nvn.replay.submitted, memory_order_acquire); }
 u32 nvn_replay_writes_pending(void) { return atomic_load_explicit(&g_nvn.replay.writes, memory_order_acquire); }
-int nvn_replay_write(u64 gva, const void* data, u32 len) {
+int nvn_replay_write(u64 gva, u64 gpu, const void* data, u32 len) {
     NvnReplayState* st = &g_nvn.replay;
     if (len > sizeof st->wq[0].data) return 0;
     pm_lock(&st->lock);
@@ -782,6 +788,16 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
         for (u32 k = 0; k < live && now; k++)
             if (!stop[lanes[k] + 1] && gpu_lane_busy(lanes[k])) now = 0;
     }
+    /* unless a queued copy that has not run (nvn_copy.c's launch) reads or writes these bytes: it runs first, so the
+       write waits in the queue for writes_land. Asked after the lanes, as a lane puts its copies in the ring before it
+       goes idle. With no live lane no JOB_WRITE would land it: the caller waits for those copies (nvn_copy_wait_over)
+       and writes it */
+    const int over = gpu && nvn_copy_queued_over(gpu, len);
+    if (over && !live) {
+        pm_unlock(&st->lock);
+        return 0;
+    }
+    if (over) now = 0;
     if (now) {
         pm_unlock(&st->lock);
         write_land(gva, data, len);
@@ -815,6 +831,7 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
     }
     u32 at = (st->wq_head + st->wq_count++) % NVN_WRITES;
     st->wq[at].gva = gva;
+    st->wq[at].gpu = gpu;
     st->wq[at].group = g;
     st->wq[at].len = len;
     memcpy(st->wq[at].data, data, len);
