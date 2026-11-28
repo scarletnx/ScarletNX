@@ -61,6 +61,10 @@
 #define STALE_TEST    "80 3D ?? ?? ?? ?? 00"
 #define ENTRY_COMPARE "48 81 FE 00 00 01 00"
 
+/* RORX r, r/m, imm8 (VEX.LZ.F2.0F3A F0, three-byte VEX) and ROR r/m, imm8 (C1 /1 with a register: C8 to CF) */
+#define RORX        "C4 ?? 7B F0|C4 ?? FB F0"
+#define ROR_IMM     "C1 C8|C1 C9|C1 CA|C1 CB|C1 CC|C1 CD|C1 CE|C1 CF"
+
 typedef struct {
     const char* what;
     unsigned needs, without; /* the host's features (and WITH_STALE); those it goes without */
@@ -94,6 +98,11 @@ static const Row k_rows[] = {
     {"rev x0, x1", 0, NEEDS_GFNI, 192, -1, NULL, "DAC00C20"},
     {"rev16 x0, x1", 0, NEEDS_GFNI, 240, -1, NULL, "DAC00420"},
     {"rev16 w0, w1", 0, NEEDS_GFNI, 208, -1, NULL, "5AC00420"},
+    /* a bit field moved into a register by one mask of it, not the Sail's two: no rotation (RORX, or ROR by an
+       immediate) before the masks */
+    {"bfi x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B37C1C20"},
+    {"bfxil x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B3442C20"},
+    {"bfi w0, w1, #4, #8", 0, 0, 55, -1, "!" RORX "|" ROR_IMM, "331C1C20"},
     {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
     {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
     {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},

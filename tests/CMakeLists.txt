@@ -4275,7 +4275,10 @@ foreach(family IN ITEMS
 endforeach()
 # the families with no frozen file (LLVM alone's ends, recorded where the build had LLVM): held to QEMU where the build has
 # its reference, else made alone
-foreach(family IN ITEMS "copies;INS_general;INS_element" "polynomials;PMUL_v;PMULL_p8")
+# integer_fields: the words mach_codegen.inc makes itself (BFM's one mask, EXTR by shifts of the register's size, the
+# reversals' rotation) and those of sums, products and shift amounts of 32 bits
+foreach(family IN ITEMS "copies;INS_general;INS_element" "polynomials;PMUL_v;PMULL_p8"
+        "integer_fields;BFM;SBFM;UBFM;EXTR;MADD_w;MSUB_w;MADD_x;MSUB_x;LSLV;LSRV;ASRV;RORV;REV16;REV32")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name}_made COMMAND snx-test-recompiler-backends --refused --ops ${family})
     if(SNX_QEMU_REF)

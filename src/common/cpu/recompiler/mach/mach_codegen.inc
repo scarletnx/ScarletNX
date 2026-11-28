@@ -1396,10 +1396,19 @@ static int bitfield(Unit* u, SnxU32 word) {
     unsigned sf = word >> 31, opc = word >> 29 & 3, n = word >> 22 & 1, immr = word >> 16 & 63, imms = word >> 10 & 63;
     unsigned rn = word >> 5 & 31, rd = word & 31, d = sf ? 64 : 32;
     SgD v, r;
-    if ((word >> 23 & 0x3F) != 0x26 || (opc != 0 && opc != 2) || n != sf || (!sf && (immr > 31 || imms > 31))) return 0;
+    if ((word >> 23 & 0x3F) != 0x26 || opc == 3 || n != sf || (!sf && (immr > 31 || imms > 31))) return 0;
     v = xzr_or(g, rn);
     if (!sf) v = sg_d_slice(g, v, 31, 0);
-    if (opc == 2) {
+    if (opc == 1) {
+        /* BFM: Rd with one field of it Rn's bits, one mask and not the Sail's two (wmask, then tmask) */
+        if (rd == 31) return 1;
+        r = sg_GPR_read(g, rd);
+        if (!sf) r = sg_d_slice(g, r, 31, 0);
+        if (imms >= immr)
+            sg_d_set_slice(g, &r, imms - immr, 0, sg_d_slice(g, v, imms, immr)); /* BFXIL */
+        else
+            sg_d_set_slice(g, &r, d - immr + imms, d - immr, sg_d_slice(g, v, imms, 0)); /* BFI, BFC */
+    } else if (opc == 2) {
         if (imms == d - 1) r = sg_d_lsr(g, v, immr);                   /* LSR */
         else if (imms + 1 == immr) r = sg_d_lsl(g, v, d - 1 - imms);   /* LSL */
         else if (imms >= immr) r = sg_d_zext(g, sg_d_slice(g, v, imms, immr), d); /* UBFX, UXTB, UXTH */
