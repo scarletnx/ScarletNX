@@ -1575,6 +1575,8 @@ Surf* vk_rt_snapshot(Surf* rt, int pixels);
 /* a draw wrote rt: when it sampled a copy of rt (a crop or a snapshot), the copy stands for rt with that draw's writes
    as well */
 void vk_rt_copy_drawn(Surf* rt);
+/* the same for a write of the draw draw (render.c's journal: the worker's writes, applied at the join) */
+void vk_rt_copy_drawn_by(Surf* rt, u64 draw);
 extern _Thread_local u64 g_vk_drawing; /* the draw being recorded (render.c render_draw), counted from 1; 0 outside one */
 Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
@@ -1936,6 +1938,7 @@ u32 vk_mem_release_stats(u64 by[3]);
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes);
 /* the device memory a surface of the caches takes now: an image whose memory follows its mapping grows and shrinks */
 void vk_surf_bytes(Surf* s, u64 bytes);
+u64 vk_rt_bytes(const Surf* s); /* the bytes of guest memory a render target covers */
 int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
               double sdy);
 int vk_blit2d_filter(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
