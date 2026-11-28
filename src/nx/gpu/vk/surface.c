@@ -4107,7 +4107,7 @@ void vk_mem_trim(u64 extra, int force) {
            its budget: each forced trim then freed nothing, 1,101 allocations found none and the draws that needed them
            went without, the scene flickering. The heap's own use then, and the whole allocation: what evictions
            before it release goes back to the blocks as more pieces, which need not hold its run */
-        const u64 heap = vk_mem_heap_use() + extra;
+        const u64 heap = vk_mem_heap_use() + vk_deferred_bytes() + extra;
         if (heap > usage) usage = heap;
         need = extra;
     } else if (usage <= vk_mem_trim_start(budget)) {

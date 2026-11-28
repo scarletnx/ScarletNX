@@ -641,6 +641,37 @@ static int headroom_in_pieces(void) {
     return went;
 }
 
+/* A trim for an allocation while deferred frees hold enough bytes to pull vk_mem_heap_use under the lossy steps'
+   marks: those frees return to the blocks as pieces that need not hold the failed request's run. Even after a
+   superseded target satisfies `need`, the forced trim still counts the deferred bytes in the heap's use so the
+   lossy steps run. 1 when the lossy target went */
+static int forced_counts_deferred_heap(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    const u64 head = trim_head(g_budget);
+    Surf* s = target(0x74000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    Surf* old = target(0x73000000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x73000000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(s));
+    g_use = g_budget - 3 * head;
+    g_heap_use = g_budget - head - (16 << 20); /* below steps[2].mark until deferred bytes are added back */
+    g_releasing = head;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 1 && g_deferred == 32 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_counts_deferred_heap: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    g_releasing = 0;
+    return went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -673,6 +704,8 @@ int main(void) {
     CHECK(copies_go_aside());
     /* a trim for headroom with the heap's free space in pieces reaches the trim's steps */
     CHECK(headroom_in_pieces());
+    /* a forced trim counts deferred releases in the heap's use */
+    CHECK(forced_counts_deferred_heap());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
