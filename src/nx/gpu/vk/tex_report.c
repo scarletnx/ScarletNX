@@ -80,7 +80,7 @@ typedef struct {
     struct {
         u32 n;
         u64 bytes;
-    } by_class[VK_TEX_CLASSES], rt_class[VK_TEX_CLASSES], rt_sys_class[VK_TEX_CLASSES];
+    } by_class[VK_TEX_CLASSES], rt_class[VK_TEX_CLASSES], rt_sys_class[VK_TEX_CLASSES], sys_size[VK_BUS_BUCKETS];
     int detail; /* buffer_copy_stats: the sums below too */
     VkTexFormats formats;
     VkAstcSizes astc;
@@ -136,6 +136,14 @@ static void census_run(void* ctx, u64 gva, u64 cpu, u64 n) {
     }
     c->runs[c->nruns] = (VkRange){gva, n};
     c->runs[c->capruns + c->nruns++] = (VkRange){cpu, n};
+}
+
+static void census_sys(void* ctx, const Surf* s) {
+    Census* c = ctx;
+    if (!s->demoted) return;
+    const u32 b = vk_bus_bucket(s->sys_bytes);
+    c->sys_size[b].n++;
+    c->sys_size[b].bytes += s->sys_bytes;
 }
 
 static void census_rt(void* ctx, const Surf* s) {
@@ -233,6 +241,7 @@ static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...) 
     if (w > 0) *at += (size_t)w;
 }
 
+static double mb_f(u64 bytes) { return (double)bytes / 1048576.0; }
 #define MB(bytes) ((unsigned long long)((bytes) >> 20))
 
 /* the sums by host format, the most bytes first, and by ASTC block size */
@@ -346,6 +355,19 @@ void vk_tex_report_log(void) {
             (double)bw.peak_bytes / 1048576.0, (unsigned long long)bw.bw_promotes);
     VkRtSysStats rts;
     vk_rt_sys_stats(&rts);
+    if (sys_out || rts.n || bw.touches) {
+        vk_surf_each(VK_LRU_TEX, census_sys, &c);
+        vk_surf_each(VK_LRU_RT, census_sys, &c);
+        LOG("vulkan: system-memory surfaces by size (<64K / <1M / <16M / >=16M): held %u/%u/%u/%u "
+            "(%.1f/%.1f/%.1f/%.1f MB); GPU reads over 600 presents: %llu/%llu/%llu/%llu touches "
+            "(%.1f/%.1f/%.1f/%.1f MB unique)\n",
+            c.sys_size[0].n, c.sys_size[1].n, c.sys_size[2].n, c.sys_size[3].n, mb_f(c.sys_size[0].bytes),
+            mb_f(c.sys_size[1].bytes), mb_f(c.sys_size[2].bytes), mb_f(c.sys_size[3].bytes),
+            (unsigned long long)bw.bucket_touches[0], (unsigned long long)bw.bucket_touches[1],
+            (unsigned long long)bw.bucket_touches[2], (unsigned long long)bw.bucket_touches[3],
+            mb_f(bw.bucket_unique_bytes[0]), mb_f(bw.bucket_unique_bytes[1]), mb_f(bw.bucket_unique_bytes[2]),
+            mb_f(bw.bucket_unique_bytes[3]));
+    }
     if (rts.kept || rts.lost)
         LOG("vulkan: %llu render targets with pixels memory lacks kept where the caches would have let them go, %llu "
             "of them loaded again from memory the guest wrote meanwhile; %llu moved into system memory, %llu back, %llu "

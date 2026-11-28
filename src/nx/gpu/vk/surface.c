@@ -933,6 +933,8 @@ static struct {
     u64 bw_win_touches;   /* total touches since the last report */
     u64 bw_win_peak;      /* peak single-present unique bytes touched since the last report */
     u64 bw_promotes;      /* promotions made under PCIe read-bandwidth pressure since the last report */
+    u64 bw_bucket_touches[VK_BUS_BUCKETS];
+    u64 bw_bucket_bytes[VK_BUS_BUCKETS];
 } g_rt_sys;
 static u64 trim_head(u64 budget);
 static void surf_sys_touch(Surf* s) {
@@ -943,15 +945,18 @@ static void surf_sys_touch(Surf* s) {
         g_rt_sys.bw_present = g_vk_present;
         g_rt_sys.bw_win_frames++;
     }
+    const u32 b = vk_bus_bucket(s->sys_bytes);
     if (s->sys_read_at != g_vk_present) {
         s->sys_read_at = g_vk_present;
         s->sys_reads = 1;
         g_rt_sys.bw_frame_bytes += s->sys_bytes;
         g_rt_sys.bw_win_bytes += s->sys_bytes;
+        g_rt_sys.bw_bucket_bytes[b] += s->sys_bytes;
     } else
         s->sys_reads++;
     g_rt_sys.bw_frame_touches++;
     g_rt_sys.bw_win_touches++;
+    g_rt_sys.bw_bucket_touches[b]++;
 }
 static u64 sys_bw_now(void) { return g_rt_sys.bw_present == g_vk_present ? g_rt_sys.bw_frame_bytes : 0; }
 void vk_sys_bw_stats(VkSysBwStats* st) {
@@ -962,6 +967,12 @@ void vk_sys_bw_stats(VkSysBwStats* st) {
                          .unique_bytes = g_rt_sys.bw_win_bytes,
                          .peak_bytes = peak,
                          .bw_promotes = g_rt_sys.bw_promotes};
+    for (u32 i = 0; i < VK_BUS_BUCKETS; i++) {
+        st->bucket_touches[i] = g_rt_sys.bw_bucket_touches[i];
+        st->bucket_unique_bytes[i] = g_rt_sys.bw_bucket_bytes[i];
+        g_rt_sys.bw_bucket_touches[i] = 0;
+        g_rt_sys.bw_bucket_bytes[i] = 0;
+    }
     g_rt_sys.bw_win_frames = 0;
     g_rt_sys.bw_win_bytes = 0;
     g_rt_sys.bw_win_touches = 0;

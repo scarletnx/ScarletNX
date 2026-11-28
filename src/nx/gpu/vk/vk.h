@@ -1873,12 +1873,22 @@ typedef struct {
        as the guest had written their memory meanwhile */
     u64 kept, reloads;
 } VkRtSysStats;
+/* Size buckets for system-memory residency and CPU<->GPU bus transfers: < 64 KiB, < 1 MiB, < 16 MiB, >= 16 MiB */
+enum { VK_BUS_LT64K, VK_BUS_LT1M, VK_BUS_LT16M, VK_BUS_GE16M, VK_BUS_BUCKETS };
+static inline u32 vk_bus_bucket(u64 bytes) {
+    return bytes < (64ull << 10)   ? VK_BUS_LT64K
+           : bytes < (1ull << 20)  ? VK_BUS_LT1M
+           : bytes < (16ull << 20) ? VK_BUS_LT16M
+                                   : VK_BUS_GE16M;
+}
 typedef struct {
     u32 frames;       /* presents with at least one GPU use of a demoted surface since the last report */
     u64 touches;      /* total touches of demoted surfaces since the last report */
     u64 unique_bytes; /* sum of per-present unique bytes of demoted surfaces touched */
     u64 peak_bytes;   /* peak single-present unique bytes touched */
     u64 bw_promotes;  /* promotions made under PCIe read-bandwidth pressure */
+    u64 bucket_touches[VK_BUS_BUCKETS];      /* touches per size bucket since the last report */
+    u64 bucket_unique_bytes[VK_BUS_BUCKETS]; /* sum of per-present unique bytes touched per size bucket */
 } VkSysBwStats;
 void vk_sys_bw_stats(VkSysBwStats* st);
 void vk_rt_sys_stats(VkRtSysStats* st);

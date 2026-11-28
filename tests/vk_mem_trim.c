@@ -1049,6 +1049,42 @@ static int sys_bw_promotes_most_read(void) {
     return ok;
 }
 
+/* Size-bucket PCIe telemetry: vk_bus_bucket boundary values and per-bucket GPU read counting/reset in vk_sys_bw_stats.
+   1 when every boundary matched and per-bucket touches and unique bytes matched then cleared on read */
+static int sys_bus_buckets(void) {
+    CHECK(vk_bus_bucket(0) == VK_BUS_LT64K && vk_bus_bucket((64ull << 10) - 1) == VK_BUS_LT64K);
+    CHECK(vk_bus_bucket(64ull << 10) == VK_BUS_LT1M && vk_bus_bucket((1ull << 20) - 1) == VK_BUS_LT1M);
+    CHECK(vk_bus_bucket(1ull << 20) == VK_BUS_LT16M && vk_bus_bucket((16ull << 20) - 1) == VK_BUS_LT16M);
+    CHECK(vk_bus_bucket(16ull << 20) == VK_BUS_GE16M && vk_bus_bucket(64ull << 20) == VK_BUS_GE16M);
+    VkSysBwStats bw;
+    vk_sys_bw_stats(&bw); /* clear prior test activity */
+    g_vk_present += 10;
+    static const u64 sizes[VK_BUS_BUCKETS] = {32u << 10, 256u << 10, 4u << 20, 20u << 20};
+    Surf* s[VK_BUS_BUCKETS];
+    for (u32 i = 0; i < VK_BUS_BUCKETS; i++) {
+        s[i] = calloc(1, sizeof *s[i]);
+        CHECK(s[i]);
+        s[i]->gva = 0x80000000ull + (u64)i * 0x2000000ull;
+        s[i]->size = s[i]->sys_bytes = sizes[i];
+        s[i]->demoted = 1;
+        g_rt_sys.tex_n++;
+        row_take(s[i]);
+        lru_add(s[i], VK_LRU_TEX);
+    }
+    for (int k = 0; k < 5; k++) vk_surf_touch(s[0]);
+    for (u32 i = 1; i < VK_BUS_BUCKETS; i++) vk_surf_touch(s[i]);
+    vk_sys_bw_stats(&bw);
+    const int counted = bw.bucket_touches[0] == 5 && bw.bucket_touches[1] == 1 && bw.bucket_touches[2] == 1 &&
+                        bw.bucket_touches[3] == 1 && bw.bucket_unique_bytes[0] == sizes[0] &&
+                        bw.bucket_unique_bytes[1] == sizes[1] && bw.bucket_unique_bytes[2] == sizes[2] &&
+                        bw.bucket_unique_bytes[3] == sizes[3];
+    vk_sys_bw_stats(&bw);
+    const int cleared = !bw.bucket_touches[0] && !bw.bucket_touches[1] && !bw.bucket_touches[2] &&
+                        !bw.bucket_touches[3] && !bw.bucket_unique_bytes[0] && !bw.bucket_unique_bytes[3];
+    while (g_rows.lists[VK_LRU_TEX].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_TEX].head]);
+    return counted && cleared;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -1095,6 +1131,7 @@ int main(void) {
     CHECK(ended_buf_reclaimed_first());
     CHECK(sys_pressure_evicts_demoted_tex_before_live_rt());
     CHECK(sys_bw_promotes_most_read());
+    CHECK(sys_bus_buckets());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
