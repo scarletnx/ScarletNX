@@ -32,6 +32,11 @@ void kthread_block(KThread* t) { (void)t, unreached("kthread_block"); }
 KThread* kthread_cur(void) { unreached("kthread_cur"); }
 void kthread_unblock(KThread* t) { (void)t, unreached("kthread_unblock"); }
 u32 svc_arbitrate_unlock(u64 addr) { (void)addr, unreached("svc_arbitrate_unlock"); }
+void kthread_lock_wait(KThread* t, u64 key, const _Atomic u32* holder) {
+    (void)t, (void)key, (void)holder, unreached("kthread_lock_wait");
+}
+void kthread_lock_unwait(KThread* t) { (void)t, unreached("kthread_lock_unwait"); }
+void kthread_lock_held(u64 key, const _Atomic u32* holder) { (void)key, (void)holder, unreached("kthread_lock_held"); }
 u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed) {
     (void)addr, (void)tag, (void)handed, unreached("svc_arbitrate_unlock_to");
 }

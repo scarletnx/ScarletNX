@@ -204,11 +204,34 @@ static void test_svc_ring(void) {
                              "  last IPC requests:\n"));
 }
 
+/* a thread waiting for a lock the runtime keeps on the host (kthread_lock_wait) says which lock and who holds it,
+   where it said only that it was off its core */
+static void test_host_lock(void) {
+    char st[240];
+    KThread* holder = &g_hle.thread.threads[0];
+    KThread* waiter = &g_hle.thread.threads[2];
+    holder->id = 85;
+    waiter->state = 1;
+    waiter->on_core = -1;
+    waiter->wait_timeout = -1;
+    g_host.thread.hl_key[2] = 0xd2b9a70;
+    g_host.thread.hl_owner[2] = 1;
+    CHECK(!strcmp(kernel_thread_state(waiter, st, sizeof st),
+                  "waiting for the lock at d2b9a70 (on the host), held by thread 85"));
+    g_host.thread.hl_key[2] = 0x1455b0148ull | SNX_LOCK_WORD;
+    g_host.thread.hl_owner[2] = 0;
+    CHECK(!strcmp(kernel_thread_state(waiter, st, sizeof st),
+                  "waiting for the lock at 1455b0148 (on the host), its holder not known yet"));
+    g_host.thread.hl_key[2] = 0;
+    CHECK(!strcmp(kernel_thread_state(waiter, st, sizeof st), "off its core"));
+}
+
 int main(void) {
     g_mem = (u8*)((uintptr_t)g_test.guest - GUEST_LO); /* guest address a is g_test.guest[a - GUEST_LO] */
     test_copy();
     test_fill_and_others();
     test_svc_ring();
+    test_host_lock();
     printf("kernel_dump: every check passed\n");
     return 0;
 }

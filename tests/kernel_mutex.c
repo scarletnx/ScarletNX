@@ -112,6 +112,10 @@ static KThread* reset(const int* prio) {
     memset(g_host.thread.handed, 0, sizeof g_host.thread.handed);
     g_hle.sync.mwait = 0;
     memset(g_hle.sync.cvwait, 0, sizeof g_hle.sync.cvwait);
+    g_host.thread.hlwait = 0;
+    memset(g_host.thread.hl_next, 0, sizeof g_host.thread.hl_next);
+    memset(g_host.thread.hl_owner, 0, sizeof g_host.thread.hl_owner);
+    memset(g_host.thread.hl_key, 0, sizeof g_host.thread.hl_key);
     for (int i = 0; i < SNX_KMT_THREADS; i++) {
         snx_kmt_thread[i].o.type = KO_THREAD;
         snx_kmt_thread[i].prio = snx_kmt_thread[i].base_prio = prio[i];
@@ -455,6 +459,77 @@ int main(void) {
         CHECK(svc_arbitrate_unlock(SNX_KMT_W) == SNX_RC_SVC_INVALID_CURRENT_MEMORY && b->woken,
               "ArbitrateUnlock on a free page still hands the mutex on");
         g_hole_free = 0;
+    }
+
+    /* A lock the runtime keeps on the host (nn/sync.c's std::mutex): its waiters lend their priority to the holder its
+       family names by slot, as a mutex of the kernel's waiters do; a waiter that stops waiting takes its priority
+       back, and a new holder takes the priorities of those still waiting */
+    {
+        enum { SNX_KMT_HOST = 0x5000 };
+        _Atomic u32 slot;
+        t = reset(start_prio);
+        a = &t[0], b = &t[1];
+        KThread *c = &t[2], *e2 = &t[3], *d2 = &t[4];
+        atomic_store(&slot, kt_ix(a));
+        kthread_lock_wait(b, SNX_KMT_HOST, &slot);
+        CHECK(a->prio == 44 && a->base_prio == 46, "the holder at %d (base %d) with a waiter at 44 on the host",
+              a->prio, a->base_prio);
+        kthread_lock_wait(e2, SNX_KMT_HOST, &slot);
+        CHECK(a->prio == 40, "the holder at %d with waiters at 44 and 40", a->prio);
+        kthread_lock_unwait(e2);
+        CHECK(a->prio == 44 && !g_host.thread.hl_key[kt_ix(e2) - 1], "the holder at %d once 40 stopped waiting on %llx",
+              a->prio, (unsigned long long)g_host.thread.hl_key[kt_ix(e2) - 1]);
+        atomic_store(&slot, kt_ix(d2)); /* another thread took the lock */
+        kthread_lock_held(SNX_KMT_HOST, &slot);
+        CHECK(a->prio == 46 && d2->prio == 44, "the old holder at %d, the new one (50) at %d", a->prio, d2->prio);
+        prio_set_base_nl(b, 30);
+        CHECK(d2->prio == 30, "the holder at %d after its waiter's priority went from 44 to 30", d2->prio);
+        atomic_store(&slot, kt_ix(b)); /* the waiter got the lock: it lends nothing to itself */
+        kthread_lock_held(SNX_KMT_HOST, &slot);
+        CHECK(d2->prio == 50 && b->prio == 30 && !g_host.thread.hl_owner[kt_ix(b) - 1],
+              "the waiter holds it: the old holder at %d, it at %d, naming holder %u", d2->prio, b->prio,
+              g_host.thread.hl_owner[kt_ix(b) - 1]);
+        kthread_lock_unwait(b);
+        CHECK(!g_host.thread.hlwait, "nobody waits, the list holds %u", g_host.thread.hlwait);
+
+        /* chains through either kind of wait: a holder waiting on a kernel mutex passes it on to that mutex's owner,
+           and a kernel mutex's owner waiting on a host lock to that lock's holder */
+        t = reset(start_prio);
+        a = &t[0], b = &t[1], c = &t[2], d2 = &t[4];
+        atomic_store(&slot, kt_ix(a));
+        lock(a, d2, SNX_KMT_M2);
+        kthread_lock_wait(b, SNX_KMT_HOST, &slot);
+        CHECK(a->prio == 44 && d2->prio == 44, "44 on the host reaches both: %d and %d", a->prio, d2->prio);
+        t = reset(start_prio);
+        a = &t[0], b = &t[1], d2 = &t[4];
+        atomic_store(&slot, kt_ix(d2));
+        kthread_lock_wait(a, SNX_KMT_HOST, &slot);
+        lock(b, a, SNX_KMT_M);
+        CHECK(a->prio == 44 && d2->prio == 44, "44 in the kernel reaches the host lock's holder: %d and %d", a->prio,
+              d2->prio);
+        kthread_lock_unwait(a);
+        CHECK(d2->prio == 50 && a->prio == 44, "once it stops waiting: the holder at %d, the mutex owner at %d",
+              d2->prio, a->prio);
+
+        /* an SDK lock word (nn/os_sync.c's): its owner tag names the holder, a handle or a slot; a hand-over the
+           kernel makes (svc_arbitrate_unlock_to, to the word's first waiter) moves the others' priority to the new
+           owner, and the old one gets its own back */
+        t = reset(start_prio);
+        a = &t[0], b = &t[1], e2 = &t[3];
+        snx_st_le32(g_mem + SNX_KMT_M, handle(a) | HANDLE_WAIT);
+        kthread_lock_wait(b, SNX_KMT_M | SNX_LOCK_WORD, NULL);
+        kthread_lock_wait(e2, SNX_KMT_M | SNX_LOCK_WORD, NULL);
+        CHECK(a->prio == 40, "the word's owner (a handle) at %d with waiters at 44 and 40", a->prio);
+        CHECK(svc_arbitrate_unlock_to(SNX_KMT_M, handle(b), &handed) == 0 && handed, "handed to the word's waiter");
+        CHECK(a->prio == 46 && b->prio == 40 && !g_host.thread.hl_owner[kt_ix(b) - 1],
+              "after the hand-over: the old owner at %d, the new one (44) at %d, naming holder %u", a->prio, b->prio,
+              g_host.thread.hl_owner[kt_ix(b) - 1]);
+        kthread_lock_unwait(b);
+        snx_st_le32(g_mem + SNX_KMT_M, (SNX_LOCK_TAG_SLOT | kt_ix(c)) | HANDLE_WAIT); /* a thread with no handle */
+        kthread_lock_wait(e2, SNX_KMT_M | SNX_LOCK_WORD, NULL);
+        CHECK(c->prio == 40 && b->prio == 44, "a slot's tag: its thread at %d, the one before at %d", c->prio, b->prio);
+        kthread_lock_unwait(e2);
+        CHECK(c->prio == 45, "the slot's thread back at %d", c->prio);
     }
 
     printf("%u checks, %u failed\n", checks, failures);

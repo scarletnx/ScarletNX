@@ -40,6 +40,10 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i64 value, i64 timeout) {
 static u8 g_guest[0x100];
 /* the kernel's side with nobody waiting in the kernel: to the tag given, keeping the waiters bit, else freed */
 u32 svc_arbitrate_unlock(u64 addr) { (void)addr, unreached("svc_arbitrate_unlock"); }
+/* the priority a waiter lends the lock's holder (kernel_lock_inherit.c tests it): the order of the hand-over only */
+void kthread_lock_wait(KThread* t, u64 key, const _Atomic u32* holder) { (void)t, (void)key, (void)holder; }
+void kthread_lock_unwait(KThread* t) { (void)t; }
+void kthread_lock_held(u64 key, const _Atomic u32* holder) { (void)key, (void)holder; }
 u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed) {
     _Atomic u32* p = (_Atomic u32*)(void*)(g_guest + addr);
     *handed = tag != 0;

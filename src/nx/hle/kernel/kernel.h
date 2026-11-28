@@ -181,6 +181,20 @@ void kevent_signal(KEvent* e);
 void kevent_clear(KEvent* e);
 
 KThread* kthread_cur(void);
+/* Priority inheritance for the locks the runtime keeps on the host (nn/sync.c's std::mutex, nn/os_sync.c's critical
+   sections), as the console's kernel gives it a lock's holder in svcArbitrateLock: while t waits on the lock key, its
+   holder runs at t's priority when that is better than its own, up a chain of holders that wait themselves. holder is
+   the lock's word for its holder, a thread slot (kt_ix) that the lock's family keeps; or NULL, and key is an SDK lock
+   word's guest address with SNX_LOCK_WORD set, whose owner tag (a handle, or SNX_LOCK_TAG_SLOT plus the slot of a
+   thread the game has no handle for) names it. The word is read under g_klock, so a holder that changes meanwhile is
+   seen. kthread_lock_wait before t blocks, and again whenever it sees another holder; kthread_lock_unwait once it
+   holds the lock or gives up; kthread_lock_held after the holder changed while threads may wait (the word then holds
+   the new holder, or 0) */
+#define SNX_LOCK_WORD     (1ull << 63)
+#define SNX_LOCK_TAG_SLOT 0x3FFF0000u
+void kthread_lock_wait(KThread* t, u64 key, const _Atomic u32* holder);
+void kthread_lock_unwait(KThread* t);
+void kthread_lock_held(u64 key, const _Atomic u32* holder);
 /* Taking and releasing the thread's core. core_poll is where RtAPI's poll gives it up to a waiting thread, when
    generated code finds CPU.poll set at a backward branch (a loop with no SVC). core_leave_waiting is the calling
    thread's, as a change of guest memory in its SVC starts to wait for the renderer (gpu.h's g_gpu_mapping_waits) */
