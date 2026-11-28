@@ -548,7 +548,8 @@ enum {
     SGX_FN_POLL_JZ,
     SGX_FN_POLL_SLOW,
     SGX_FN_TAILDYN_PC,
-    SGX_FN_JMP
+    SGX_FN_JMP,
+    SGX_FN_PINS
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -616,6 +617,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
         break;
 #endif
     case SGX_FN_JMP: (jmp)(u, i->disp); break;      /* to the label disp */
+    case SGX_FN_PINS: pins(u, i->disp); break;      /* the selected pins loaded, or (disp) stored */
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -2911,7 +2913,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
         if (pin_rest || vpin_rest) {
             u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
-            pins(u, 0);
+            region_glue(u, SGX_FN_PINS, 0, 0, 0);
             u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
         }
         region_glue(u, SGX_FN_DISPATCH, lab0, 0, 0);
