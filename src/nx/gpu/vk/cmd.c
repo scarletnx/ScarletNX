@@ -149,7 +149,9 @@ static u64 g_dead_bytes; /* every frame's dead_bytes */
 static u64 g_dead_moved; /* every frame's dead_moved */
 static u32 g_cur;
 static u32 g_cb_begun = 1; /* command buffers begun, so a command buffer's state is told from an earlier one's */
-static u64 g_frame_id;
+/* the frames begun: written by the thread that advances the frame (vk_lock), read with no lock by a split run's worker
+   (vk_frame_id, table.c's slots) */
+static _Atomic u64 g_frame_id;
 static VkSemaphore g_gsem; /* graphics timeline: submission n signals n */
 static _Atomic u64 g_gval; /* the last submission */
 static u64 g_landed;       /* submissions whose storage results vk_buf_frame_done has landed */
@@ -933,7 +935,7 @@ static void stream_trim(void) {
     for (u32 i = 0; i < g_cmd.nchunk; i++) {
         Chunk* c = &g_cmd.chunk[i];
         if (!c->buf || c->ring != XRING_STREAM || i + 1 == g_cmd.stream_cur) continue;
-        if (g_frame_id - c->freed < (c->big ? STREAM_BIG_IDLE : STREAM_IDLE)) continue;
+        if (atomic_load_explicit(&g_frame_id, memory_order_relaxed) - c->freed < (c->big ? STREAM_BIG_IDLE : STREAM_IDLE)) continue;
         if (!asked) {
             done = stream_done();
             asked = 1;
@@ -964,7 +966,7 @@ u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
     }
     Chunk* c = &g_cmd.chunk[at_chunk - 1];
     c->sub = vk_submit_number() + 1;
-    c->freed = g_frame_id; /* when it was last used: stream_trim */
+    c->freed = atomic_load_explicit(&g_frame_id, memory_order_relaxed); /* when it was last used: stream_trim */
     chunk_written(c);
     if (at + size > c->handed) c->handed = at + size;
     g_xfer[vk_render_slot()][XRING_STREAM][c->in] += size;
@@ -1037,7 +1039,7 @@ static void pool_recycle(Frame* f) {
         if ((!c->big && c->size != size) || (c->bar && !bar_room(budget, 0, 0)) || c->spilled)
             chunk_destroy(c);
         else {
-            if (c->slot) c->freed = g_frame_id;
+            if (c->slot) c->freed = atomic_load_explicit(&g_frame_id, memory_order_relaxed);
             c->slot = 0;
             pooled[c->ring][c->big]++;
         }
@@ -1568,7 +1570,7 @@ void vk_frame_next(void) {
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_work_rings = 0; /* the next frame's rings count from 0 (frame_rings) */
-    g_frame_id++;
+    atomic_store_explicit(&g_frame_id, atomic_load_explicit(&g_frame_id, memory_order_relaxed) + 1, memory_order_relaxed);
     const Frame* f = &g_fr[g_cur];
     atomic_store_explicit(&g_recycle_at, f->last > f->hold ? f->last : f->hold, memory_order_release);
 }
@@ -1635,7 +1637,7 @@ static void frame_check(void) {
         LOG_LIMIT(
             4,
             "vulkan: frame %llu ends before a present: %llu MiB written to its rings, which end a frame at %llu MiB\n",
-            (unsigned long long)g_frame_id, (unsigned long long)(rings >> 20), (unsigned long long)(cap >> 20));
+            (unsigned long long)atomic_load_explicit(&g_frame_id, memory_order_relaxed), (unsigned long long)(rings >> 20), (unsigned long long)(cap >> 20));
         vk_frame_next();
     } else if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024 || !vk_descriptors_room(g_cur))
         vk_frame_next();
@@ -1692,9 +1694,9 @@ void vk_land_through(u64 value) {
                      ? value
                      : atomic_load_explicit(&g_gval, memory_order_relaxed));
 }
-u64 vk_frame_id(void) { return g_frame_id; }
+u64 vk_frame_id(void) { return atomic_load_explicit(&g_frame_id, memory_order_relaxed); }
 void vk_frame_hold(u64 frame_id) {
-    if (frame_id + 1 != g_frame_id) return; /* this frame's own rings, or an older frame's, landed when reused */
+    if (frame_id + 1 != atomic_load_explicit(&g_frame_id, memory_order_relaxed)) return; /* this frame's own rings, or an older frame's, landed when reused */
     g_fr[(g_cur + VK_FRAMES - 1) % VK_FRAMES].hold = vk_submit_number();
 }
 u32 vk_frame_slot(void) { return g_cur; }
