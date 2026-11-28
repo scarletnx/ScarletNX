@@ -75,6 +75,11 @@ typedef struct {
 #define NVN_SPILL_GRANULE      8
 #define NVN_SPILL_PART_BUCKET(part) ((u32)(((u64)(part) * 0x9E3779B97F4A7C15ull) >> (64 - NVN_SPILL_BUCKETS_LOG2)))
 #define NVN_SPILL_BUCKET(a)    NVN_SPILL_PART_BUCKET((u64)(a) >> NVN_SPILL_GRANULE)
+/* The chains of a bucket: [0] the pieces with no mark, [1] those with one (a JUMP reaches them, spill_link). Only a
+   look that may give back a marked piece reads [1]. In one game, 99 percent of the pieces that the looks of a
+   command buffer's own bytes read had a mark: a look read 90 to 220 of them at each recording's end, and gave back
+   none, with 2 of every 3 waits for the lock behind it */
+#define NVN_SPILL_CHAIN(q) ((q)->mark != 0)
 /* the file's state, g_nvn.cmd (gpu/nvn/nvn_state.h), under the lock (the game's threads record into several command
    buffers at once): the segments (append only), the pieces' slots and their buckets, the pieces in use (np), the slots
    ever taken and the first free one, the serial of the last piece cut, the segment the last cut came from, the
@@ -84,7 +89,7 @@ typedef struct {
     PMutex lock;
     NvnSpillSeg s[NVN_SPILL_SEGS];
     NvnSpillPiece p[NVN_SPILL_PIECES + 1];
-    u32 bucket[NVN_SPILL_BUCKETS], cbucket[NVN_SPILL_BUCKETS];
+    u32 bucket[2][NVN_SPILL_BUCKETS], cbucket[2][NVN_SPILL_BUCKETS]; /* by NVN_SPILL_CHAIN */
     NvnCtl ctl[NVN_CTL_SLOTS];
     u32 ns;
     _Atomic u32 np;

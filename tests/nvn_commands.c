@@ -151,6 +151,32 @@ static int untouched(u64 from, u64 to, u8 v) {
 }
 /* a display list's commands as one game records them for a model: a texture and a uniform buffer for the vertex
    stage, a color state, an indexed draw from a base vertex, and a compute stage's texture */
+/* the store's chains: each piece in use in the chain of its anchor's bucket (unless it counted no command bytes) and,
+   with a control anchor, in the chain of that one's bucket, each in the chains of its NVN_SPILL_CHAIN and in no other;
+   no free slot in a chain */
+static int chains_ok(void) {
+    const NvnCmdState* st = &g_nvn.cmd;
+    u8* in = calloc(st->slots + 1, 1); /* bit 0: an anchor chain, bit 1: a control anchor chain */
+    int ok = in != NULL;
+    for (u32 b = 0; ok && b < 2 * NVN_SPILL_BUCKETS; b++) {
+        const u32 chain = b / NVN_SPILL_BUCKETS, k = b % NVN_SPILL_BUCKETS;
+        for (u32 i = st->bucket[chain][k]; ok && i; i = st->p[i].next) {
+            ok = i <= st->slots && st->p[i].anchor && !(in[i] & 1) && (u32)NVN_SPILL_CHAIN(&st->p[i]) == chain &&
+                 NVN_SPILL_BUCKET(st->p[i].anchor) == k;
+            if (ok) in[i] |= 1;
+        }
+        for (u32 i = st->cbucket[chain][k]; ok && i; i = st->p[i].cnext) {
+            ok = i <= st->slots && st->p[i].anchor && st->p[i].canchor && !(in[i] & 2) &&
+                 (u32)NVN_SPILL_CHAIN(&st->p[i]) == chain && NVN_SPILL_BUCKET(st->p[i].canchor) == k;
+            if (ok) in[i] |= 2;
+        }
+    }
+    for (u32 i = 1; ok && i <= st->slots; i++)
+        if (st->p[i].anchor)
+            ok = (in[i] & 1) == !(st->p[i].flags & NVN_PIECE_NO_COMMAND) && !(in[i] & 2) == !st->p[i].canchor;
+    free(in);
+    return ok;
+}
 static void display_list(CPU* c, u64 cb, u64 st) {
     nvn_CommandBufferBindTexture(c, cb, 0, 0, 0x10200102);
     nvn_CommandBufferBindUniformBuffer(c, cb, 0, 1, 0x605640000ull, 0x100);
@@ -360,6 +386,10 @@ int main(void) {
         check(g_nvn.cmd.np == before + 1 && slot && g_nvn.cmd.p[slot].seg == NVN_SPILL_SMALL && !in_segment &&
                   g_nvn.cmd.p[slot].mark == block,
               "a call and a bind take a 64-byte block of the small store");
+        u32 marked = 0;
+        for (u32 j = g_nvn.cmd.bucket[1][NVN_SPILL_BUCKET(g_nvn.cmd.p[slot].anchor)]; j; j = g_nvn.cmd.p[j].next)
+            marked |= j == slot;
+        check(marked && chains_ok(), "its JUMP moves its piece into the marked chains");
         walk(hg, &a);
         check(a.n == 2 && a.op[0] == OP_CALL && a.op[1] == OP_BIND_UBO && gr64(a.at[0] + 8) == h,
               "the recording walks from its block");
@@ -376,6 +406,15 @@ int main(void) {
         walk(hg, &a);
         check(gr64(hg + 8) == block && a.n == 2 && gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 2,
               "the handle runs the newest recording, from the block of the first");
+        check(chains_ok(), "the chains hold each piece in use, a marked one in the marked chains");
+        /* a look of the bytes counted over it (no marked) keeps it; the end of its pool gives it back */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0xfa00, 0x80);
+        nvn_CommandBufferBeginRecording(&cpu, cbg);
+        nvn_CommandBufferDrawArrays(&cpu, cbg, 4, 0, 3);
+        nvn_CommandBufferEndRecording(&cpu, cbg);
+        check(g_nvn.cmd.np == before + 1 && chains_ok(), "the bytes counted over a JUMP's recording keep it");
+        nvn_cmd_memory_back(0x10000 + 0xfa00, 0x80);
+        check(g_nvn.cmd.np == before && chains_ok(), "the end of its pool gives the JUMP's recording back");
     }
 
     /* A recording that starts and ends in the runtime's memory marks the command bytes it counted: four uniform
@@ -1040,6 +1079,7 @@ int main(void) {
                   snx_ld_le32(GP(w.at[0] + 8 + offsetof(NvnPBindVAttr, st) + 4 * 16)) == 0x110,
               "a bind of 17 vertex attributes is recorded whole");
     }
+    check(chains_ok(), "at the end, the chains hold each piece in use, in the chains of its mark");
     if (failures) return 1;
     puts("nvn_commands: ok");
     return 0;
