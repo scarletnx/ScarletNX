@@ -5,7 +5,8 @@
    and its value; at 0 they keep their own code (the recursive mutex's with the condition variable's) and states may
    be taken. hooks_off naming the family, or the game changing every hooked function's code, leaves the game's too.
    native_os_sync the same for the os_sync family, which also stays the game's where its SDK lacks a function that
-   writes the words the family owns (os_sync_ready) */
+   writes the words the family owns (os_sync_ready); the cond_var family, which keeps its words through os_sync's
+   handlers, stays the game's in both cases too, said with why */
 #include "nx/nn/hook.c"
 #include "nx/nn/family.c"
 #include <assert.h>
@@ -100,16 +101,16 @@ int libc_wide_ready(void) { return 0; }
 static int g_os_ready = 1;
 int os_sync_ready(void) { return g_os_ready; }
 
-/* hook_install over fresh slots, with native_cond_var and hooks_off as given; 1 when the condition variable's
-   function took its hook, which the recursive mutex's follows: a mutex the host holds is out of a state as a wait on
-   the host is */
-static int install(int native, const char* off) {
+/* hook_install over fresh slots, with native_cond_var, native_os_sync and hooks_off as given; 1 when the condition
+   variable's function took its hook, which the recursive mutex's follows: a mutex the host holds is out of a state as
+   a wait on the host is */
+static int install(int native, int os, const char* off) {
     unsigned i;
     memset(&g_host, 0, sizeof g_host);
     for (i = 0; i < sizeof slots / sizeof slots[0]; i++) slots[i] = own_code;
     g_settings.native_hooks = 1;
     g_settings.native_cond_var = native;
-    g_settings.native_os_sync = 0;
+    g_settings.native_os_sync = os;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "%s", off);
     hook_install();
     assert(slots[(NOW - CODE) >> 2] != own_code); /* the sync family stays native either way */
@@ -120,33 +121,42 @@ static int install(int native, const char* off) {
 int main(void) {
     char why[128];
     /* native: the wait is the host's, and a state is refused naming the setting and its value */
-    assert(install(1, "") == 1);
+    assert(install(1, 1, "") == 1);
     assert(hook_family_unready("cond_var") == NULL);
     memset(why, 0, sizeof why);
     assert(hook_states_refused(why, sizeof why) == -1);
     assert(!strcmp(why, "save states need native_cond_var=0 (it is 1)"));
     /* the game changed the hooked functions' code (a mod's hook): the wait's own code alone leaves the host's mutex,
-       which still holds states back; with both its own, states may be taken */
+       which still holds states back; with both its own, os_sync's sleep still does */
     for (u32 i = 0; i < g_host.hook.count; i++)
         if (!strcmp(hook_symbol[g_host.hook.hook[i]], "wait")) g_host.hook.invalid[i] = 1;
     assert(hook_states_refused(why, sizeof why) == -1);
     for (u32 i = 0; i < g_host.hook.count; i++)
         if (!strcmp(hook_symbol[g_host.hook.hook[i]], "lock")) g_host.hook.invalid[i] = 1;
-    assert(hook_states_refused(why, sizeof why) == 0);
-    /* emulated: the game's own wait, said with the value, and states may be taken */
-    assert(install(0, "") == 0);
+    assert(hook_states_refused(why, sizeof why) == -1);
+    assert(!strcmp(why, "save states need native_os_sync=0 (it is 1)"));
+    /* emulated: the game's own wait, said with the value, and states may be taken with os_sync emulated too */
+    assert(install(0, 1, "") == 0);
     assert(strstr(hook_family_unready("cond_var"), "native_cond_var is 0"));
+    assert(install(0, 0, "") == 0);
     why[0] = 0;
     assert(hook_states_refused(why, sizeof why) == 0 && !why[0]);
-    /* hooks_off names the family: the same */
-    assert(install(1, "cond_var") == 0);
-    assert(hook_states_refused(why, sizeof why) == 0);
+    /* os_sync emulated, or an SDK without its words' writers: the family's words have no handlers, said */
+    assert(install(1, 0, "") == 0);
+    assert(strstr(hook_family_unready("cond_var"), "native_os_sync is 0, and the family keeps the game's mutexes"));
+    g_os_ready = 0;
+    assert(install(1, 1, "") == 0);
+    assert(strstr(hook_family_unready("cond_var"), "doesn't export every function"));
+    g_os_ready = 1;
+    /* hooks_off names the family: the same, states held back by os_sync's sleep alone */
+    assert(install(1, 1, "cond_var") == 0);
+    assert(hook_states_refused(why, sizeof why) == -1 && !strcmp(why, "save states need native_os_sync=0 (it is 1)"));
     /* what a stop says of the settings that turn a family off: nothing while its hooks run; the setting, its value and
        the family when hooks_off names it, and nothing of a family it does not name; hooks=0 over both */
-    install(1, "");
+    install(1, 1, "");
     hook_off_text(why, sizeof why, "cond_var");
     assert(!*why);
-    install(1, "libc,cond_var");
+    install(1, 1, "libc,cond_var");
     hook_off_text(why, sizeof why, "cond_var");
     assert(strstr(why, "hooks_off=libc,cond_var (its default is \"\") names the cond_var family"));
     hook_off_text(why, sizeof why, "nn_pctl");

@@ -1048,7 +1048,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         if (g_vk_present == 1 || g_vk_present % 600 == 0) {
             guest_stats_log(now_ns, g_vk_present);
             gq_stats_log(g_vk_present == 1 ? 0 : 600);
-            ipc_stats_log(now_ns);
+            ipc_stats_log(now_ns, g_vk_present);
         }
         /* What resource maintenance cost this frame. A trim can land results and wait for the GPU, so this is a plot
            with a start time, not a zone. The existing "vk resource" plots give the categories; this is their sum. */

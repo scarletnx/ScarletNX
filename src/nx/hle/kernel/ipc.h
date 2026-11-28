@@ -65,6 +65,7 @@ typedef struct IpcCtx {
     u32 in_objs[8];
     int nin_objs;
     int tipc;
+    int served; /* serve() gave it to the service: it counts on its (service, command) pair, any other as answered */
     /* the reply */
     u32 rc;
     u8 out[0x100]; /* the raw data; writes are bounded by its sizeof */
@@ -240,26 +241,35 @@ typedef struct {
     char apart[64];
     _Atomic u32 ring_n;
 } HleIpc;
-#define IPC_STAT_PAIRS 1024 /* the (service, command) pairs log=2 counts apart: past them, one sum for the rest */
+#define IPC_STAT_NAMES 256  /* the service objects' names counted apart: past them, their requests count as the rest */
+#define IPC_STAT_PAIRS 1024 /* the (service, command) pairs counted apart: past them, one sum for the rest */
 #define IPC_STAT_SLOTS (2 * IPC_STAT_PAIRS) /* their hash table, kept half empty as the warned pairs' */
-#define IPC_STAT_TOP   8                    /* the pairs the log's line names */
-/* what one (service, command) pair was served since the log's last line: how many requests, and the time they took.
-   name is the service object's, as IpcRec's */
+#define IPC_STAT_TOP   8                    /* the pairs a line names */
+/* one (service, command) pair's requests served, and the time they took (only while ipc.c times them: log=2 or a
+   profiler attached), since the run began. key is the pair, set once and never freed: its name's index in names plus
+   1, shifted 32, and the command; 0 while the slot is free. n0 and ns0 are n and ns where the log's window began,
+   which only ipc_stats_log writes */
 typedef struct {
-    const char* name;
-    u32 cmd;
-    u64 n, ns;
+    _Atomic u64 key, n, ns;
+    u64 n0, ns0;
 } IpcStat;
-/* ipc's host side: locks and condition variables, which a save state never holds (hle.h's g_host), and log=2's
-   counters, a measure of this run */
+/* ipc's host side: locks and condition variables, which a save state never holds (hle.h's g_host), and the requests
+   counted by service and command, a measure of this run */
 typedef struct {
     PMutex lk;
-    /* under lk, written only with log=2: the pairs served, open addressing on a hash of the name's text and the
-       command (a slot is free while it has no name, and a pair keeps its slot for the run); stat_rest sums the pairs
-       that came once the table was full; stat_since is when the window began (plat_ns), 0 while none has */
+    /* the counters, which the serving threads add to with no lock: a name's slot (open addressing on its pointer: a
+       service object's name lives as long as the process) and a pair's are taken with one compare-exchange and keep
+       their place for the run. The counts below are the slots taken, which stop growing at the tables' halves */
+    _Atomic(const char*) names[2 * IPC_STAT_NAMES];
     IpcStat stat[IPC_STAT_SLOTS];
-    IpcStat stat_rest;
-    u32 nstat;
-    u64 stat_since;
+    _Atomic u32 nnames, nstat;
+    /* the requests served once a table was full (rare), and those sf answered itself (control requests, refusals),
+       which any serving thread counts, on a line of its own; with their counts where the window began */
+    _Atomic u64 rest_n, rest_ns;
+    alignas(64) _Atomic u64 answered;
+    u64 rest_n0, rest_ns0, answered0;
+    /* under lk, ipc_stats_log's: where its window began (plat_ns, presents), and where log=2's timed one did, 0 while
+       none has */
+    u64 since, since_presents, timed_since;
 } HostIpc;
 #endif

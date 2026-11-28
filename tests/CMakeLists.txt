@@ -1899,13 +1899,15 @@ if(NOT WIN32)
     add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
 endif()
 # the sync family's clocks (src/nx/nn/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
-# by a pause and set by a state's load, system_clock the host's; and the cond_var family's C library waits
+# by a pause and set by a state's load, system_clock the host's; and the cond_var family in place on the SDK's
+# pthread words, through os_sync.c's handlers
 add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/nn/sync.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/os_sync.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
 snx_test_target(snx-test-sync-clock gnu23)
 target_include_directories(snx-test-sync-clock PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
 snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
+target_compile_options(snx-test-sync-clock PRIVATE -Wno-string-concatenation) # os_sync.c's split names
 add_test(NAME sync_clock COMMAND snx-test-sync-clock)
 # the os_light family's LightEvent handlers (src/nx/nn/os_sync.c) on each SDK's layout of nn::os::LightEventType,
 # against the bytes the SDK's own InitializeLightEvent leaves
@@ -2922,6 +2924,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME run_game COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run_game_test.py")
     # the tag a game goes by in place of its title and title ID (tools/game_tag.py): the HMAC, the key, which and scan
     add_test(NAME game_tag COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/game_tag_test.py")
+    # the SDK functions that ask a service, by SDK version (tools/ipc_reach.py), over module dumps made by the test
+    add_test(NAME ipc_reach COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc_reach_test.py")
     # the nightly release's title and notes (scripts/nightly-notes.py)
     add_test(NAME nightly_notes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_notes_test.py")
     # the builds published as releases and on Discord (scripts/publish-builds.py), against fakes. Where publish.yml

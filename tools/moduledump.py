@@ -87,7 +87,11 @@ def _dump(program):
 
 def load_program(program):
     """(modules, is64) of an extracted game (a folder with exefs/) or an NRO"""
-    folder = _dump(program)
+    return load_folder(_dump(program))
+
+
+def load_folder(folder):
+    """(modules, is64) from a folder `scarletnx --dump-modules` wrote"""
     mods, is64, current = [], True, None
     with open(os.path.join(folder, 'modules.txt'), encoding='utf-8') as f:
         for line in f:

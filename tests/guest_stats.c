@@ -158,7 +158,7 @@ int main(void) {
     said(0, "cpu: 120 presents in 2.00 s (60.0 fps): 0 of the game's threads ran 0.00 s on the host's processors (0% "
             "of one, 0.00 ms a present), the whole process ");
     said(0, "; the busiest: none\n");
-    said(1, "cpu: in those 2.00 s, 10 SVCs (5 a second): 0x18 WaitSynchronization 6, past 0xff 2, 0x1d "
+    said(1, "cpu: in those 2.00 s, 10 SVCs (5 a second, 0.1 a present): 0x18 WaitSynchronization 6, past 0xff 2, 0x1d "
             "SignalProcessWideKey 1, 0x7f 1; 5 calls the dispatch table had no code for (RtAPI.miss)\n");
 
     /* no add lost, in a thread's own slot or in the one they share */
@@ -264,6 +264,11 @@ int main(void) {
     guest_stats_log(1000 + 13000000000u, 661);
     said(2, "nce: in those 1.00 s, 0 outcalls (0 a second): 0 SVCs, 0 calls of hooked functions (by family: none), 0 "
             "returns of native runs; 0 counter reads in their stubs, 0 native runs started, 0 kicks\n");
+    /* a window with no present in it */
+    guest_stats_svc(1, 0x18);
+    g_test.lines = 0;
+    guest_stats_log(1000 + 13500000000u, 661);
+    said(1, "cpu: in those 0.50 s, 1 SVCs (2 a second, ? a present): 0x18 WaitSynchronization 1;");
 
     /* the families past the table: the last index, named so */
     for (unsigned i = 2; i < GSTAT_FAMILIES - 1; i++) {

@@ -353,6 +353,7 @@ modules `scarletnx --dump-modules` reads; their output names the game's function
 python3 tools/nvn_missing.py work/Game            # the NVN procedures the game's driver has that nvn does not implement
 python3 tools/export_census.py report work/exefs/<title>   # the module's SDK imports and exports no hook runs yet
 python3 tools/hook_census.py work/Game            # how many of a game's calls a hook could reach
+python3 tools/ipc_reach.py --nested --deep nn::settings work/exefs/*   # the namespace's functions that ask a service
 python3 tools/nvn_census.py work/Game             # the game's NVN driver: procedure table, command memory writers
 ```
 
