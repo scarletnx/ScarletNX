@@ -183,6 +183,7 @@ static struct {
     u64 bytes;
     u64 copy_src_read; /* vk_buf_copy_src_read */
     u64 ahead; /* fills recorded ahead of the submission's rendering passes (vk_cmd_upload) */
+    u64 prefetched; /* entries vk_buf_prefetch fetched ahead (step 1) */
     /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
@@ -222,6 +223,7 @@ static struct {
     /* the map of a draw with nothing aliased, staged in the frame map_none_frame - 1 (0: never): draw_map_none */
     VkBuffer map_none;
     u64 map_none_off, map_none_frame;
+    u32 map_none_split; /* vk_share_serial() of the split it was last good in, under the share lock: 0 outside one */
 } t_lookup_slot[VK_RC_SLOTS];
 /* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
 #define t_lookup (t_lookup_slot[vk_render_slot()])
@@ -369,6 +371,12 @@ typedef struct GfxOut {
     /* GPU-owned input snapshotted before shader writes, read only at the frame fence. */
     u8* initial;
     DevMem initial_mem;
+    /* where the GPU copied the baseline (writable_owned), for a merge that reads it there before the fence: NULL
+       when the baseline is only on the host (an atlas page) */
+    VkBuffer initial_buf;
+    u64 initial_off;
+    u32 initial_split; /* vk_share_serial() of the split that recorded the copy, 0 outside one */
+    u8 initial_slot;   /* vk_render_slot() of the thread that recorded it */
     u64* pages; /* sorted guest CPU pages behind this GPU virtual range */
     u64* vmap;  /* the same pages in the range's order, ~0 for an unmapped one */
     u64 cpu;    /* the guest CPU address of addr when vmap is one run of guest memory, ~0 otherwise */
@@ -377,6 +385,9 @@ typedef struct GfxOut {
        guest memory without them until each lands (out_rebase) */
     int composed;
     u32 wseen; /* the write tracking clock before its input was read (vk_ww_now): copyable_span skips comparing pages since */
+    /* a merge with its landing kept (gfx_rebase) put guest bytes of then into buf and kept org: org no longer tells
+       the bytes buf holds, so a write since wseen makes it land */
+    int kept_merged;
     /* of a logged result, its writers' logs, each holding a reference: part of log gives the bytes that writer wrote
        of [at, at + len) */
     struct OutLog {
@@ -586,6 +597,11 @@ static VkPipelineStageFlags2 out_stages(void) {
 static VkAccessFlags2 out_access(void) {
     return VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
            (g_vk.has_xfb ? VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT : 0);
+}
+/* what a merge into a result's buffer waits for before it writes there: its writers, and the draws before it that
+   read the buffer in place, also as vertices or indices (out_absorb) */
+static VkPipelineStageFlags2 merge_src_stages(void) {
+    return out_stages() | VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
 }
 /* an output with its page lists and its original bytes after it, in one block */
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
@@ -1433,7 +1449,8 @@ static int out_copyable(const GfxOut* o, u64 lo, u64 hi) {
     if (o->frame_id + 1 < vk_frame_id() || !host) return 0;
     int written = vk_written_since(host, hi - lo, o->wseen);
     if (written == 0) return 1;
-    if (o->initial || !o->org) return 0; /* the baseline is still being produced by the GPU, or there is none */
+    /* the baseline is still being produced by the GPU, or there is none, or buf no longer holds it */
+    if (o->initial || !o->org || o->kept_merged) return 0;
     const u8* untracked = gmem_ptr_untracked(lo, hi - lo);
     if (untracked) g_checks.compares++;
     return org_holds(host, untracked, o->org + (lo - o->addr), hi - lo, o->wseen, written);
@@ -1462,7 +1479,8 @@ static void copyable_span(void* user, u64 at, u64 from, u64 n) {
     }
     int written = vk_written_since(host, n, c->o->wseen);
     if (written == 0) return;
-    if (c->o->initial || !c->o->org) { /* no original bytes to tell the guest's writes by: it lands first */
+    /* no original bytes to tell the guest's writes by, or buf no longer holds them: it lands first */
+    if (c->o->initial || !c->o->org || c->o->kept_merged) {
         c->ok = 0;
         return;
     }
@@ -1627,7 +1645,7 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, RangeMap* rm) {
    result took its bytes as they were and lands before it, and it would land over those bytes as written since. A
    game binding a suffix of a storage buffer for each of its passes, about thirty submits a frame, made a new result
    for nearly every one: half a megabyte copied from guest memory and compared at landing each time */
-static int out_take_into_submit(GfxOut* m) {
+static int out_take_into_submit(GfxOut* m, int* later_out) {
     RangePages q;
     OutList l;
     RangeMap rm = {0};
@@ -1642,6 +1660,7 @@ static int out_take_into_submit(GfxOut* m) {
     out_list_free(&l);
     for (GfxOut* o = g_prep; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rm);
     range_map_free(&rm);
+    if (later_out) *later_out = later;
     if (later) return 0;
     m->frame = vk_submit_number();
     m->frame_id = vk_frame_id();
@@ -1726,7 +1745,7 @@ static GfxOut* out_absorb(GfxOut* h) {
     }
     g_out_tail = NULL;
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
-    if (h->frame < vk_submit_number() && !out_take_into_submit(h))
+    if (h->frame < vk_submit_number() && !out_take_into_submit(h, NULL))
         fatal("vulkan: a storage result that took the later ones' bytes could not be written in this submission");
     /* After every earlier read or write of h's buffer (it is read in place, as a vertex or index buffer too), and
        after the later results' writes. In g_out's order: a newer result's bytes over an older one's */
@@ -1763,13 +1782,70 @@ static GfxOut* out_absorb(GfxOut* h) {
    above, the device's limits, no staging, o not taken), and where no descriptor set is left, after the pass's end
    and a barrier, with o taken into this submission */
 static int range_owned(u64 gva, u64 len);
+/* The baseline of a result made over owned bytes (writable_owned) is still on its way to host memory, and the GPU
+   copy that makes it was recorded before this point in GPU order: the merge can read it on the GPU. Not while the
+   range is owned, since guest memory then does not hold the owner's bytes that the CPU's writes go over. In a split,
+   the worker's list runs after the renderer thread's half, so a copy that the worker recorded in this split is not
+   before the renderer thread's merge */
+static int baseline_on_gpu(const GfxOut* o) {
+    if (!o->initial_buf) return 0;
+    if (vk_share_on() && o->initial_split == vk_share_serial() && o->initial_slot > vk_render_slot()) return 0;
+    return !range_owned(o->addr, o->size);
+}
+/* gfx_rebase for a logged result, which has no original bytes: guest memory as the CPU left it, with the words that
+   its writers' logs mark copied over it from its buffer on the GPU (vk_wlog_merge), into its buffer again. That is
+   what its landing gives guest memory, which writes only those words, from its copy back: the merge changes the
+   other words of its buffer only, so its landing stays as recorded and needs no take */
+static int gfx_rebase_logged(GfxOut* o) {
+    /* a composed one holds earlier pending results' bytes in the words no log marks, which guest memory does not hold
+       until they land: the merge would put guest memory there */
+    if (o->composed) return 0;
+    if (o->cpu == ~0ull || o->keep || o->no_input || (o->off & 3) || (o->size & 3) || !o->nlogs ||
+        !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
+        range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
+        return 0;
+    for (u32 k = 0; k < o->nlogs; k++)
+        if ((o->logs[k].at | o->logs[k].len) & 3) return 0;
+    VkBuffer in;
+    u64 in_off;
+    u8* p = vk_stage(o->size, 4, &in, &in_off);
+    if (!p) return 0;
+    o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
+    read_untracked(o->addr, p, o->size);
+    vk_render_end();
+    copy_barrier(merge_src_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    for (u32 k = 0; k < o->nlogs; k++) {
+        const struct OutLog* w = &o->logs[k];
+        if (!vk_wlog_merge(w->log, w->part, 0, w->len, o->buf, o->off + w->at, in, in_off + w->at))
+            return 0; /* out of descriptors: nothing in its buffer changed yet */
+    }
+    copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferCopy copy = {in_off, o->off, o->size};
+    rec_CmdCopyBuffer(vk_cmd(), in, o->buf, 1, &copy);
+    copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    g_buffer.wstat.copied += o->size;
+    if (copy_stats_on()) {
+        g_merges++;
+        g_merge_bytes += o->size;
+    }
+    return 1;
+}
 static int gfx_rebase(GfxOut* o) {
     /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
        half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
        before its merge. A batch of draw_batches=1 records in slot 1 too, while the renderer thread waits: it lands o
        as before, which costs a submit but never the order */
     if (vk_render_slot()) return 0;
-    if (o->cpu == ~0ull || !o->org || o->initial || o->keep || o->no_input || (o->off & 3) ||
+    if (!o->org) return gfx_rebase_logged(o);
+    /* after a merge with its landing kept, buf holds guest bytes of then where org says the draw's: another merge would
+       take them for the draw's, and a byte the CPU wrote back to its original value since would keep the old one */
+    if (o->kept_merged) return 0;
+    const int gpu_base = o->initial && baseline_on_gpu(o);
+    if (o->cpu == ~0ull || !o->org || (o->initial && !gpu_base) || o->keep || o->no_input || (o->off & 3) ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
         range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
         return 0;
@@ -1781,10 +1857,25 @@ static int gfx_rebase(GfxOut* o) {
     VkBuffer in;
     u64 in_off;
     u8* p = vk_stage(gap + words * 4, a, &in, &in_off);
-    if (!p || (o->frame != vk_submit_number() && !out_take_into_submit(o))) return 0;
-    memcpy(p, o->org, o->size);
+    if (!p) return 0;
+    /* A result that a later one meets cannot move to land at this submit's end: it would land over the later one's
+       bytes. Its landing stays as recorded at its own submit's end, and org with it: it lands the bytes its draw
+       changed over guest memory, as a landing here would have. The merge gives this frame's readers the CPU's bytes
+       in its buffer. In one run, 415 of the 475 landings for a draw came from this refusal */
+    int later = 0, landing_kept = 0;
+    if (o->frame != vk_submit_number() && !out_take_into_submit(o, &later)) {
+        if (!later) return 0;
+        landing_kept = 1;
+    }
+    if (!gpu_base) memcpy(p, o->org, o->size);
     vk_render_end();
-    copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    if (gpu_base) { /* the original bytes from the baseline's copy, with no wait for the fence */
+        copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                     VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferCopy copy = {o->initial_off, in_off, o->size};
+        rec_CmdCopyBuffer(vk_cmd(), o->initial_buf, in, 1, &copy);
+    }
+    copy_barrier(merge_src_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     /* the merge reads its input at the submission, so the guest bytes come after it is recorded: a merge that fails
        leaves o's original bytes as they were, which landing o still needs */
@@ -1793,10 +1884,18 @@ static int gfx_rebase(GfxOut* o) {
                  out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     /* guest memory into o's original bytes, and from them into the merge's input: the staging ring can be memory
-       that the CPU writes only (a BAR heap), never one that it reads back */
+       that the CPU writes only (a BAR heap), never one that it reads back. A kept landing keeps org: guest memory
+       goes into the input alone */
     o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
-    read_untracked(o->addr, o->org, o->size);
-    memcpy(p + gap, o->org, o->size);
+    if (landing_kept) {
+        read_untracked(o->addr, p + gap, o->size);
+        o->kept_merged = 1;
+    } else {
+        read_untracked(o->addr, o->org, o->size);
+        memcpy(p + gap, o->org, o->size);
+        o->initial = NULL; /* org is the new baseline: guest memory as the merge read it */
+        o->initial_buf = VK_NULL_HANDLE;
+    }
     g_buffer.wstat.copied += o->size;
     if (copy_stats_on()) {
         g_merges++;
@@ -1898,12 +1997,12 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
            that doesn't composes a result of its own over it. One whose input was not copied (a write-only binding)
            has no guest memory in its staging either, so a reader of it composes too */
         (match->org || !match->no_input) && (!writable || match->org || g_bind_log) &&
-        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
+        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match, NULL))) {
         /* Draws may overlap, and the game supplies their storage dependencies through explicit barriers (render.c
            stage_set_): a writable view alone does not create a dependency, unless the setting asks for the
            conservative order (ordered). Read-only consumers and new submissions retain their automatic visibility
            checks. */
-        u64 work = g_vk_drawn + g_vk_dispatches;
+        u64 work = vk_work_id();
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
            this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
@@ -2010,16 +2109,26 @@ static int gfx_composed_pages(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* o
    from another entry over the same memory. The table has a leaf of 1024 pages per 4 MB that has been written, with
    the newest generation in the leaf beside it so whole leaves are skipped */
 #define WW_LEAF_SHIFT 22
-static u32* g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
-static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
+/* atomic, as the stamps are written only under vk_lock and read with no lock too (vk_written_since_plain): a leaf's
+   table is published after its first stamps (release), and is never freed */
+static _Atomic u32* _Atomic g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
+static _Atomic u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
+static _Atomic u32* ww_table(u64 l) { return atomic_load_explicit(&g_wleaf[l], memory_order_acquire); }
+static u32 ww_max(u64 l) { return atomic_load_explicit(&g_wleaf_max[l], memory_order_relaxed); }
+static u32 ww_stamp(_Atomic u32* t, u64 pg) { return atomic_load_explicit(&t[pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)], memory_order_relaxed); }
 /* The CPU writes a GPU stream may see come before its submission or the end of one of its waits: each of those starts
    a write epoch (vk_ww_new_epoch). A leaf scanned whole in an epoch isn't scanned again in it, and a scan covers whole
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
-   g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
-static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
+   g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock). The
+   clock, g_ww and g_wleaf_seen change only under vk_lock, and are atomic for vk_ww_take_plain, which a split's draws
+   call with no lock: a leaf's seen is stored after its stamps (release), so a load of it (acquire) sees them */
+static _Atomic u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static _Atomic u32 g_ww_epoch; /* atomic */
-static u32 g_wclock = 1;
-static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
+static _Atomic u32 g_wclock = 1;
+static _Atomic int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
+static u32 ww_clock(void) { return atomic_load_explicit(&g_wclock, memory_order_relaxed); }
+static int ww_state(void) { return atomic_load_explicit(&g_ww, memory_order_relaxed); }
+static void ww_state_set(int v) { atomic_store_explicit(&g_ww, v, memory_order_relaxed); }
 /* the pages the stamps above marked since the page cache last took their bytes (vk_ww_dirty_clear): a bit a 4 KiB page
    of guest memory, set with each stamp. NULL until the page cache is on (vk_ww_dirty_init), or when there was no
    memory for it: no bits are set then */
@@ -2060,22 +2169,23 @@ static void ww_mark(u8* p, u64 n) {
     u64 bumped = 0; /* the granules of the generations by address done (addr_gens.h), past the stamps */
     for (u64 pg = o >> 12, e = (o + n - 1) >> 12; pg <= e && pg < (AS_SIZE >> 12); pg++) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12);
-        if (!g_wleaf[l]) {
+        _Atomic u32* t = ww_table(l);
+        if (!t) {
             /* a leaf without a table stands for all its pages at its newest generation (ww_mark_range, or a table
                that couldn't be allocated): a new table starts them there */
-            u32* t = calloc(1u << (WW_LEAF_SHIFT - 12), 4);
-            if (t && g_wleaf_max[l])
-                for (u32 i = 0; i < 1u << (WW_LEAF_SHIFT - 12); i++) t[i] = g_wleaf_max[l];
-            g_wleaf[l] = t;
+            t = calloc(1u << (WW_LEAF_SHIFT - 12), sizeof *t);
+            for (u32 i = 0; t && ww_max(l) && i < 1u << (WW_LEAF_SHIFT - 12); i++)
+                atomic_store_explicit(&t[i], ww_max(l), memory_order_relaxed);
+            if (t) atomic_store_explicit(&g_wleaf[l], t, memory_order_release);
         }
-        if (g_wleaf[l]) {
-            g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] = g_wclock;
+        if (t) {
+            atomic_store_explicit(&t[pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)], ww_clock(), memory_order_relaxed);
             if (g_wdirty) g_wdirty[pg >> 6] |= 1ull << (pg & 63);
         } else /* no table: the stamp below stands for the whole leaf */
             ww_dirty_set(l << (WW_LEAF_SHIFT - 12), (l + 1) << (WW_LEAF_SHIFT - 12));
-        g_wleaf_max[l] = g_wclock;
+        atomic_store_explicit(&g_wleaf_max[l], ww_clock(), memory_order_relaxed);
         /* after the stamp. Without a table the stamp stands for the whole leaf, and so does the bump */
-        const u64 at = g_wleaf[l] ? pg << 12 : l << WW_LEAF_SHIFT, len = g_wleaf[l] ? 0x1000 : 1ull << WW_LEAF_SHIFT;
+        const u64 at = t ? pg << 12 : l << WW_LEAF_SHIFT, len = t ? 0x1000 : 1ull << WW_LEAF_SHIFT;
         if (at + len > bumped) {
             const u64 from = at > bumped ? at : bumped, to = (at + len + (1ull << ADDR_GENS_SHIFT) - 1) &
                                                              ~((1ull << ADDR_GENS_SHIFT) - 1);
@@ -2094,8 +2204,8 @@ static void ww_mark_pages(u64 o, u64 e) {
     const u64 lp = 1ull << (WW_LEAF_SHIFT - 12);
     for (u64 pg = o >> 12, pe = (e + 4095) >> 12; pg < pe;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) * lp, end = pe < lend ? pe : lend;
-        if (!g_wleaf[l] && pg == l * lp && end == lend) {
-            g_wleaf_max[l] = g_wclock;
+        if (!ww_table(l) && pg == l * lp && end == lend) {
+            atomic_store_explicit(&g_wleaf_max[l], ww_clock(), memory_order_relaxed);
             ww_dirty_set(pg, end);
             addr_gens_bump(ADDR_GENS_CPU, pg << 12, (end - pg) << 12); /* after the stamp, as ww_mark bumps */
         } else
@@ -2134,6 +2244,9 @@ static void ww_mark_range(u64 o, u64 e) {
 #define WW_CHG_N 32
 static WwRange g_wchg[WW_CHG_N];
 static _Atomic int g_wchg_n; /* atomic: read without the lock to skip it */
+/* nonzero from before ww_take_changed empties the list to after its last mark: a reader with no share lock
+   (vk_ww_take_plain) that sees the list empty meanwhile does not yet see the stamps of what it took */
+static _Atomic u32 g_wchg_busy;
 static PMutex g_wchg_lock = PMUTEX_INIT;
 void vk_mem_changed(u64 cpu, u64 len) {
     if (cpu >= AS_SIZE || !len) return;
@@ -2156,10 +2269,13 @@ static void ww_take_changed(void) {
     pm_lock(&g_wchg_lock);
     int n = atomic_load_explicit(&g_wchg_n, memory_order_relaxed);
     memcpy(c, g_wchg, (size_t)n * sizeof *c);
-    atomic_store_explicit(&g_wchg_n, 0, memory_order_relaxed);
+    /* busy before the list reads empty: a reader that sees it empty (acquire) then sees busy too */
+    atomic_fetch_add_explicit(&g_wchg_busy, 1, memory_order_relaxed);
+    atomic_store_explicit(&g_wchg_n, 0, memory_order_release);
     pm_unlock(&g_wchg_lock);
-    if (n) g_wclock++; /* what it marks is newer than every baseline taken before (vk_written_since) */
+    if (n) atomic_fetch_add_explicit(&g_wclock, 1, memory_order_relaxed); /* what it marks is newer than every baseline taken before (vk_written_since) */
     for (int i = 0; i < n; i++) ww_mark_range(c[i].a, c[i].e);
+    atomic_fetch_sub_explicit(&g_wchg_busy, 1, memory_order_release); /* after the stamps: a reader that sees 0 sees them */
 }
 
 /* Scans, on the scanner thread as soon as an epoch starts and on the checks' thread for what it hasn't scanned yet.
@@ -2432,7 +2548,7 @@ static void ww_mark_scanned(u64 o, u64 e) {
 static void ww_take_scanned(void) {
     if (!atomic_load_explicit(&g_wres_n, memory_order_acquire)) return;
     pm_lock(&g_wres_lk);
-    if (atomic_load_explicit(&g_wres_n, memory_order_relaxed)) g_wclock++;
+    if (atomic_load_explicit(&g_wres_n, memory_order_relaxed)) atomic_fetch_add_explicit(&g_wclock, 1, memory_order_relaxed);
     pm_lock(&g_wland_lk);
     if (g_wland_n) {
         landed_sort();
@@ -2548,16 +2664,17 @@ static void ww_used_epoch(u32 seen) {
 
 /* the leaves [lo, hi] taken in for the epoch seen - 1: those not taken in yet scanned in it (by the scanner already,
    or here) and what the scans found marked. 0, or -1 when the tracking failed (under vk_lock) */
+static u32 ww_seen(u64 l, memory_order o) { return atomic_load_explicit(&g_wleaf_seen[l], o); }
 static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     u64 l, a;
-    for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
+    for (l = lo; l <= hi && (i32)(ww_seen(l, memory_order_relaxed) - seen) >= 0; l++) {}
     if (l > hi) return 0;
     u64 first = hi + 1, last = 0;
     ww_used_epoch(seen);
     if (atomic_load_explicit(&g_wleaf_top, memory_order_relaxed) <= hi)
         atomic_store_explicit(&g_wleaf_top, hi + 1, memory_order_relaxed);
     for (a = l; a <= hi; a++) {
-        if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
+        if ((i32)(ww_seen(a, memory_order_relaxed) - seen) >= 0) continue;
         atomic_store_explicit(&g_wleaf_used[a], seen, memory_order_relaxed);
         if (!(atomic_load_explicit(&g_wleaf_ever[a >> 6], memory_order_relaxed) >> (a & 63) & 1)) {
             atomic_fetch_or_explicit(&g_wleaf_ever[a >> 6], 1ull << (a & 63), memory_order_relaxed);
@@ -2595,7 +2712,8 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     }
     ww_take_scanned();
     for (a = l; a <= hi; a++)
-        if ((i32)(g_wleaf_seen[a] - seen) < 0) g_wleaf_seen[a] = seen;
+        if ((i32)(ww_seen(a, memory_order_relaxed) - seen) < 0)
+            atomic_store_explicit(&g_wleaf_seen[a], seen, memory_order_release);
     return 0;
 }
 /* the other addresses of a range's pages (mem_alias_peers), noted to be taken in after the memory lock goes; past
@@ -2628,25 +2746,25 @@ static void ww_take_peers(void) {
 /* the scans and changes over [host, host + len) taken in, so the stamps of its pages are up to date: 0, or -1 when
    write tracking can't tell (vk_written_since) */
 static int ww_take(const u8* host, u64 len) {
-    if (!g_ww || !host || !len) return -1;
-    if (g_ww < 0) {
-        g_ww = mem_ww_probe(ww_mark) == 0;
+    if (!ww_state() || !host || !len) return -1;
+    if (ww_state() < 0) {
+        ww_state_set(mem_ww_probe(ww_mark) == 0);
         LOG("vulkan: %s\n",
-            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
-        if (!g_ww) return -1;
+            ww_state() ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
+        if (!ww_state()) return -1;
         pc_init(&g_wscan_cv);
         if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
             atomic_store_explicit(&g_wscan_on, 1, memory_order_release);
     }
     if (atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) {
-        g_ww = 0;
+        ww_state_set(0);
         LOG("vulkan: write tracking failed, caches check contents\n");
         return -1;
     }
     /* Existing cache baselines cannot be ordered against a wrapped clock. Fall back
        to content checks permanently before consuming any dirty pages at wrap. */
-    if (g_wclock == UINT32_MAX) {
-        g_ww = 0;
+    if (ww_clock() == UINT32_MAX) {
+        ww_state_set(0);
         return -1;
     }
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
@@ -2669,31 +2787,39 @@ static int ww_take(const u8* host, u64 len) {
             r = ww_take_leaves(peers.r[i].a >> WW_LEAF_SHIFT, (peers.r[i].e - 1) >> WW_LEAF_SHIFT, seen);
     ww_take_peers();
     if (r < 0) {
-        g_ww = 0;
+        ww_state_set(0);
         LOG("vulkan: write tracking failed, caches check contents\n");
         return -1;
     }
     if (peers.over) return -1;
     return 0;
 }
-int vk_written_since(const u8* host, u64 len, u32 since) {
-    int r = ww_take(host, len);
-    if (r) return r;
-    u64 o = (u64)(host - g_mem);
+/* 1 if a page of guest memory [o, o + len) was stamped after since, from the stamps as they are now */
+static int ww_written(u64 o, u64 len, u32 since) {
     for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
-        if (g_wleaf_max[l] > since) {
-            if (!g_wleaf[l]) return 1; /* the whole leaf was marked */
+        if (ww_max(l) > since) {
+            _Atomic u32* t = ww_table(l);
+            if (!t) return 1; /* the whole leaf was marked */
             for (u64 q = pg; q <= e && q < lend; q++)
-                if (g_wleaf[l][q & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) return 1;
+                if (ww_stamp(t, q) > since) return 1;
         }
         pg = lend;
     }
     return 0;
 }
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    int r = ww_take(host, len);
+    return r ? r : ww_written((u64)(host - g_mem), len, since);
+}
+int vk_written_since_plain(const u8* host, u64 len, u32 since, int* written) {
+    if (!vk_ww_take_plain(host, len)) return 0;
+    *written = ww_written((u64)(host - g_mem), len, since);
+    return 1;
+}
 int vk_written_quick(const u8* host, u64 len, u32 since) {
-    if (g_ww <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
-        g_wclock == UINT32_MAX)
+    if (ww_state() <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
+        ww_clock() == UINT32_MAX)
         return -1;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
     /* a write through another address of these pages reads as none here (vk_written_since takes their peers). Any
@@ -2703,33 +2829,24 @@ int vk_written_quick(const u8* host, u64 len, u32 since) {
     if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches */
     const u32 seen = vk_ww_epoch() + 1;
     for (u64 l = lo; l <= hi; l++)
-        if ((i32)(g_wleaf_seen[l] - seen) < 0) return -1; /* not taken in for this epoch yet */
+        if ((i32)(ww_seen(l, memory_order_acquire) - seen) < 0) return -1; /* not taken in for this epoch yet */
     ww_take_changed();
-    for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
-        u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
-        if (g_wleaf_max[l] > since) {
-            if (!g_wleaf[l]) return 1; /* the whole leaf was marked */
-            for (u64 q = pg; q <= e && q < lend; q++)
-                if (g_wleaf[l][q & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) return 1;
-        }
-        pg = lend;
-    }
-    return 0;
+    return ww_written(o, len, since);
 }
-int vk_ww_take(const u8* host, u64 len) {
+int vk_ww_take_plain(const u8* host, u64 len) {
     /* nothing to take: the range's leaves taken in for this epoch already, no change noted, no alias and no import */
-    if (g_ww > 0 && host && len && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire) &&
-        g_wclock != UINT32_MAX && !atomic_load_explicit(&g_wchg_n, memory_order_acquire) && !mem_alias_any()) {
-        u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
-        if (vk_uma_import_in(o, o + len, &end) >= o + len) {
-            const u32 seen = vk_ww_epoch() + 1;
-            for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
-            if (l > hi) return 0;
-        }
-    }
-    return ww_take(host, len);
+    if (ww_state() <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
+        ww_clock() == UINT32_MAX || atomic_load_explicit(&g_wchg_n, memory_order_acquire) ||
+        atomic_load_explicit(&g_wchg_busy, memory_order_acquire) || mem_alias_any())
+        return 0;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
+    if (vk_uma_import_in(o, o + len, &end) < o + len) return 0;
+    const u32 seen = vk_ww_epoch() + 1;
+    for (l = lo; l <= hi && (i32)(ww_seen(l, memory_order_acquire) - seen) >= 0; l++) {}
+    return l > hi;
 }
-u32 vk_ww_now(void) { return g_wclock; }
+int vk_ww_take(const u8* host, u64 len) { return vk_ww_take_plain(host, len) ? 0 : ww_take(host, len); }
+u32 vk_ww_now(void) { return ww_clock(); }
 int vk_ww_gen(const u8* host, u64 len, u32* gen) {
     if (!host || host < g_mem) return 0;
     return addr_gens_read(ADDR_GENS_CPU, (u64)(host - g_mem), len, gen);
@@ -2742,7 +2859,7 @@ void vk_ww_stats(u32 presents) {
         l[i] = atomic_exchange_explicit(&g_wscan_leaves[i], 0, memory_order_relaxed);
         ns[i] = atomic_exchange_explicit(&g_wscan_ns[i], 0, memory_order_relaxed);
     }
-    if (g_ww > 0 && presents)
+    if (ww_state() > 0 && presents)
         LOG("vulkan: write scans over %u presents: %.1f epochs a present; the scanner %.1f leaves of 4 MiB a present "
             "(%.2f ms), the checks %.1f (%.2f ms, and %.1f the scanner had)\n",
             presents, (double)(e - epoch0) / presents, (double)l[0] / presents, (double)ns[0] / 1e6 / presents,
@@ -2763,7 +2880,7 @@ static int ww_cool_range(u64 a, u64 e) {
     return 1;
 }
 void vk_ww_cool(const u8* host, u64 len) {
-    if (g_ww <= 0 || !host || !len) return;
+    if (ww_state() <= 0 || !host || !len) return;
     u64 o = (u64)(host - g_mem);
     if (o >= AS_SIZE) return;
     if (len > AS_SIZE - o) len = AS_SIZE - o;
@@ -2783,7 +2900,7 @@ void vk_ww_cool(const u8* host, u64 len) {
    trap */
 void vk_ww_watching(u64 lo, u64 hi) {
     const u64 first = lo >> WW_LEAF_SHIFT, last = (hi - 1) >> WW_LEAF_SHIFT;
-    if (g_ww <= 0 || atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) return; /* no baseline to miss it */
+    if (ww_state() <= 0 || atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) return; /* no baseline to miss it */
     ww_claim_all(first, last);
     t_buffer.wstage = &g_wstage_check;
     if (ww_scan_free(lo, hi) < 0) atomic_store_explicit(&g_wscan_failed, 1, memory_order_release);
@@ -2840,7 +2957,9 @@ void vk_ww_open(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ct
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 static int page_written(u64 pg, u32 since) {
     u64 l = pg >> (WW_LEAF_SHIFT - 12);
-    return g_wleaf_max[l] > since && (!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since);
+    if (ww_max(l) <= since) return 0;
+    _Atomic u32* t = ww_table(l);
+    return !t || ww_stamp(t, pg) > since;
 }
 int vk_ww_page_after(u64 cpu, u32 since) { return page_written(cpu >> 12, since); }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
@@ -2936,6 +3055,10 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     }
     o->initial = vk_stage_back(len, &back, &at, &o->initial_mem);
     if (!o->initial) return 0;
+    o->initial_buf = back;
+    o->initial_off = at;
+    o->initial_split = vk_share_on() ? vk_share_serial() : 0;
+    o->initial_slot = (u8)vk_render_slot();
     vk_render_end();
     vk_guest_read(gva, len, o->ptr, buf, off);
     g_buffer.wstat.copied += len;
@@ -3775,8 +3898,24 @@ static int draw_map_none(VkBuffer* buf, u64* off) {
         snx_le32_array(map, DRAW_MAP_WORDS); /* the shader reads the table little-endian */
         t_lookup.map_none_frame = vk_frame_id() + 1;
     }
+    t_lookup.map_none_split = vk_share_on() ? vk_share_serial() : 0;
     *buf = t_lookup.map_none;
     *off = t_lookup.map_none_off;
+    return 1;
+}
+int vk_buf_draw_plain(const VkDrawStorage* draw) { return !draw_has_writable(draw) || !draw_may_alias(draw); }
+int vk_buf_draw_prepare_plain(VkDrawStorage* draw) {
+    /* the map staged under the share lock in this split: its frame's ring outlives the split, and the frame number
+       that draw_map_none reads changes under the lock */
+    if (!vk_share_on() || !t_lookup.map_none_split || t_lookup.map_none_split != vk_share_serial() ||
+        !vk_buf_draw_plain(draw))
+        return 0;
+    for (int s = 0; s < VK_DRAW_STAGES; s++)
+        if (draw->n[s]) {
+            draw->map_buf[s] = t_lookup.map_none;
+            draw->map_off[s] = t_lookup.map_none_off;
+            draw->map_size[s] = DRAW_MAP_WORDS * 4;
+        }
     return 1;
 }
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
@@ -3952,11 +4091,20 @@ typedef struct {
     u64 patches, bytes, cpu_pages, gpu_pages, region_bytes, none[VK_UMA_NONE_N];
     u64 staged, staged_dear, staged_region;
     u64 patch_lk[LK_N], patch_nf[NF_N]; /* the patches' bytes by lookup and by why the fast path did not bind it */
-    /* a draw's read-only storage lookups (sized and bare): bound in place, a pending result bound or composed, and
-       copied by why the fast path did not bind it (NF_*); with their bytes */
-    u64 storage[2][2 + NF_N];
+    u64 prefetched_from; /* g_buffer.prefetched at the last line */
 } GCopy;
 static GCopy g_gcopy;
+/* a draw's read-only storage lookups (sized and bare): bound in place, a pending result bound or composed, and copied
+   by why the fast path did not bind it (NF_*); with their bytes. For each slot of the draws that look (vk_render_slot),
+   each on lines of its own: two threads that draw at once (draw_batches=2) added to one count at each lookup */
+static struct {
+    alignas(64) u64 n[2][2 + NF_N];
+} g_storage_slot[VK_RC_SLOTS];
+static u64 storage_sum(int s, int k) {
+    u64 v = 0;
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) v += g_storage_slot[i].n[s][k];
+    return v;
+}
 static void gcopy_log(void) {
     static const char* const why[VK_UMA_NONE_N] = {"no unified memory", "in a region",     "placed memory",
                                                    "a trapped page",    "unmovable",       "over the cap",
@@ -3975,9 +4123,9 @@ static void gcopy_log(void) {
         (unsigned long long)g_gcopy.patches, (double)g_gcopy.bytes / 1048576.0, (unsigned long long)g_gcopy.cpu_pages,
         (unsigned long long)g_gcopy.gpu_pages, (double)g_gcopy.region_bytes / 1048576.0, at ? line : " none");
     LOG("vulkan: buffer cache staging over the last 600 presents: %.1f MB, %.1f MB of it vertices, indices, windows and "
-        "constant buffers, %.1f MB in a region\n",
+        "constant buffers, %.1f MB in a region; %llu entries fetched ahead of a draw's lookups\n",
         (double)g_gcopy.staged / 1048576.0, (double)g_gcopy.staged_dear / 1048576.0,
-        (double)g_gcopy.staged_region / 1048576.0);
+        (double)g_gcopy.staged_region / 1048576.0, (unsigned long long)(g_buffer.prefetched - g_gcopy.prefetched_from));
     static const char* const lk[LK_N] = {"other",
                                          "draws' read-only storage",
                                          "its windows",
@@ -3994,15 +4142,19 @@ static void gcopy_log(void) {
         "%.1f, %s %.1f; by why the lookup was not bound in place: %s %.1f, %s %.1f, %s %.1f, %s %.1f\n",
         lk[0], mb[0], lk[1], mb[1], lk[2], mb[2], lk[3], mb[3], lk[4], mb[4], lk[5], mb[5], lk[6], mb[6], nf[0],
         mb[LK_N], nf[1], mb[LK_N + 1], nf[2], mb[LK_N + 2], nf[3], mb[LK_N + 3]);
-    const u64* sc = g_gcopy.storage[0];
-    const u64* sb = g_gcopy.storage[1];
+    u64 sc[2 + NF_N], sb[2 + NF_N];
+    for (int k = 0; k < 2 + NF_N; k++) {
+        sc[k] = storage_sum(0, k);
+        sb[k] = storage_sum(1, k);
+    }
     LOG("vulkan: draws' read-only storage lookups over 600 presents (MB): %llu in place (%.1f), %llu pending results "
         "(%.1f); copied: %llu %s (%.1f), %llu %s (%.1f), %llu %s (%.1f), %llu %s (%.1f)\n",
         (unsigned long long)sc[0], (double)sb[0] / 1048576.0, (unsigned long long)sc[1], (double)sb[1] / 1048576.0,
         (unsigned long long)sc[2], nf[0], (double)sb[2] / 1048576.0, (unsigned long long)sc[3], nf[1],
         (double)sb[3] / 1048576.0, (unsigned long long)sc[4], nf[2], (double)sb[4] / 1048576.0,
         (unsigned long long)sc[5], nf[3], (double)sb[5] / 1048576.0);
-    g_gcopy = (GCopy){0};
+    g_gcopy = (GCopy){.prefetched_from = g_buffer.prefetched};
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) g_storage_slot[i] = (typeof(g_storage_slot[0])){0};
 }
 /* len bytes at gva staged for a draw: counted (g_gcopy) */
 static void gcopy_staged(u64 gva, u64 len, int inplace);
@@ -4575,7 +4727,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         if (e && e->pg_sub == sub && e->epoch == epoch && !(e->off % (align ? align : 1)) &&
             !gpu_mem_dirty_since(e->gw, gva, len)) {
             vk_pages_read(gva, len);
-            e->used = g_vk_present;
+            if (e->used != g_vk_present) e->used = g_vk_present; /* stored only when it changes: the line stays shared */
             *buf = e->buf;
             *off = e->off;
             g_buf_kind = 32;
@@ -4753,7 +4905,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
            copy engine's source past a sixty-fourth of the memory budget: a texture's upload reads its source once,
            and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing read again, where a phone had
            1 GB available. Such a source takes one once it stays the same, as every other range does */
-        int at_once = len >= PATCH_MIN && g_ww > 0 && (strict != 2 || len <= copy_src_at_once());
+        int at_once = len >= PATCH_MIN && ww_state() > 0 && (strict != 2 || len <= copy_src_at_once());
         /* frequent, so a small code: 0 stays in the staging ring, 1 counts pending, 2 paged, 3 stable range, 4 big
            range with tracked writes */
         SNX_ZONE(z_choice, "vk mem buffer own choice");
@@ -4809,8 +4961,8 @@ int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
 static void storage_count(u64 len, int got) {
     const int k = !got ? -1 : g_buf_kind == 16 ? 0 : g_buf_kind == 4 || g_buf_kind == 8 ? 1 : 2 + t_lookup.nf;
     if (k < 0) return;
-    g_gcopy.storage[0][k]++;
-    g_gcopy.storage[1][k] += len;
+    g_storage_slot[vk_render_slot()].n[0][k]++;
+    g_storage_slot[vk_render_slot()].n[1][k] += len;
 }
 /* A draw's read-only storage buffer of its own size. Where imports are dear (vk_uma_imports_dear) it took the chain as
    vertices do, and so its own buffer, which each write in place on its pages made patch_dirty copy again on the CPU:
@@ -4949,20 +5101,25 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot
    and then the entry the slot names: 88% of buf_get's own time in one game. A caller that knows its ranges first
-   fetches every slot (step 0), then every entry they name (step 1), so the misses overlap */
+   fetches every slot (step 0), then every entry they name (step 1), so the misses overlap.
+   Where vertices, indices and constant buffers are read in place (vk_uma, its imports not dear), the fast path binds
+   nearly all of them before the cache is looked at (buf_get_'s vk_uma_read): there step 1's read of the slot was a
+   cache miss of its own, for an entry no lookup then read */
 void vk_buf_prefetch(u64 gva, u64 len, int step) {
     vk_shared_note(7);
     u32 sl;
     /* a hint: none while a run is split (draw_batches=2), where the index may grow under another thread */
-    if (vk_share_on() || !g_vbi || !len || len > 0xFFFFFFFFull) return;
+    if (vk_share_on() || !g_vbi || !len || len > 0xFFFFFFFFull || (vk_uma() && !vk_uma_imports_dear())) return;
     sl = vb_home(gva, (u32)len);
     if (!step) {
         __builtin_prefetch(&g_vbi[sl]);
         return;
     }
+    g_buffer.prefetched++;
     if (g_vbi[sl].idx && g_vbi[sl].start == gva && g_vbi[sl].len == (u32)len)
         for (size_t o = 0; o < sizeof(Vb); o += 64) __builtin_prefetch((const char*)&g_vb[g_vbi[sl].idx] + o);
 }
+u64 vk_buf_prefetched(void) { return g_buffer.prefetched; }
 /* A dispatch's read-only storage buffer (compute.c), checked with no delay as a constant buffer is: a changed word
    changes the program's result. With unified memory it is read where guest memory holds it, as vertices and constant
    buffers are: the import that holds the range, bound at its offset with no copy (vk_uma_get). An Ounce program binds
@@ -5022,7 +5179,7 @@ int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 }
 void vk_buf_storage_counts(u64 counts[2][VK_SREAD_N]) {
     for (int s = 0; s < 2; s++)
-        for (int k = 0; k < VK_SREAD_N; k++) counts[s][k] = g_gcopy.storage[s][k];
+        for (int k = 0; k < VK_SREAD_N; k++) counts[s][k] = storage_sum(s, k);
 }
 u64 vk_buf_copy_src_read(void) { return g_buffer.copy_src_read; }
 
@@ -5092,7 +5249,7 @@ void vk_buf_ordered(void) {
     vk_uma_ordered();
     g_buffer.order.owner_reads_ordered = g_buffer.order.owner_reads; /* the renderer's barrier is from all commands */
     g_buffer.order.submit = vk_submit_number();
-    g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
+    g_buffer.order.work = vk_work_id();
     g_buffer.order.visible = g_buffer.order.writes;
     g_buffer.order.read_pending = 0;
     g_buffer.order.required = 0;

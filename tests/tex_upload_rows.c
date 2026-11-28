@@ -293,6 +293,15 @@ int vk_release_pending(u64 gva, u64 len) {
     (void)gva, (void)len;
     abort();
 }
+/* no storage image is kept in the model: a texture's check has none to publish */
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
+    (void)gva, (void)size, (void)self;
+    return 0;
+}
+void vk_gfx_image_mem_need(u64 gva, u64 size) {
+    (void)gva, (void)size;
+    abort();
+}
 const Renderer* g_renderer; /* read by the stream's check alone */
 /* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
 int vk_astc_keep(Surf* t) {
@@ -818,6 +827,7 @@ void vk_shared_note(u32 which) { (void)which; }
 _Atomic int g_vk_share_on;
 _Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
 u32 vk_share_serial(void) { return 0; }
+u64 vk_work_id(void) { return (g_vk_dispatches + g_vk_drawn) << 2; } /* render.c's: a number for each draw */
 VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }
 void vk_surf_before_reset(const Surf* s) { (void)s; }
 int vk_compute_pending_held(u64 a, u64 n) { return (void)a, (void)n, 0; }

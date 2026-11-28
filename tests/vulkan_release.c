@@ -197,10 +197,11 @@ int gmem_read(u64 address, void* data, u64 size) {
     return 1;
 }
 static unsigned shader_writes; /* the landings that told the GPU side's write tracking of their bytes */
+static u8 stamped[8];          /* which pages of 0x30000 to 0x38000 they told of */
 void gpu_mem_written_shader(u64 address, u64 size) {
-    (void)address;
-    (void)size;
     shader_writes++;
+    for (u64 p = address >> 12; size && p <= (address + size - 1) >> 12; p++)
+        if (p >= 0x30 && p < 0x38) stamped[p - 0x30] = 1;
 }
 void vk_rt_before_write(u64 address, u64 size, int whole) {
     (void)address;
@@ -443,9 +444,17 @@ static void check_writeback_merge(void)
 
 					taken_runs(current, expected, n, &runs, &bytes);
 					memcpy(memory + mapping + at, current, sizeof current);
+					memset(stamped, 0, sizeof stamped);
 					vk_lock();
 					vk_write_changed(0x31000 + at, result, original, n);
 					vk_unlock();
+					/* the pages it told the write tracking of: those it wrote a byte on */
+					for (u32 p = 0; p < 8; p++) {
+						int wrote = 0;
+						for (u32 i = 0; i < n && !wrote; i++)
+							wrote = expected[i] != current[i] && ((0x31000 + at + i) >> 12) == 0x30 + p;
+						assert(stamped[p] == wrote);
+					}
 					assert(!memcmp(memory + mapping + at, expected, n));
 					assert(!memcmp(memory + mapping + at + n, current + n, sizeof current - n));
 					assert(!vk_result_landing());
@@ -470,6 +479,23 @@ static void check_writeback_merge(void)
 		}
 	}
 	writeback_direct = 0;
+}
+
+/* A landing tells the write tracking of the pages it wrote, not of its whole range: a 16 KiB result that changed one
+   byte on its fourth page stamps that page alone. Stamped whole, up to 16 MiB moved the generation of every texture
+   over it, and each took a full check */
+static void check_writeback_stamps(void) {
+    static u8 original[0x4000], result[0x4000];
+    memset(original, 0x11, sizeof original);
+    memcpy(result, original, sizeof result);
+    result[0x3345] = 0x22;
+    memset(memory + 0x1000, 0x11, sizeof original); /* memory holds what the shader started from */
+    memset(stamped, 0, sizeof stamped);
+    vk_lock();
+    vk_write_changed(0x31000, result, original, sizeof result);
+    vk_unlock();
+    assert(memory[0x1000 + 0x3345] == 0x22);
+    for (u32 p = 0; p < 8; p++) assert(stamped[p] == (p == 4));
 }
 
 int main(void) {
@@ -789,6 +815,23 @@ int main(void) {
     vk_release_submit();
     assert(submits == submitted + 1);
     g_vk_cs_open = 0;
+    /* a change of a GPU range drains the releases whose payloads are there, with those before them, and no others:
+       a map of fresh GPU memory waited for all of the GPU's queued work */
+    pending = 1;
+    u64 seq1 = g_rtail;
+    word4 = 41;
+    vk_release_write(0x10200, &word4, 4);
+    vk_submit(0, 0, 0); /* the second waits for a later submit than the first */
+    word4 = 42;
+    vk_release_write(0x10300, &word4, 4);
+    vk_release_drain_gpu(0x40000, 0x1000); /* fresh: no payload there */
+    assert(g_rtail == seq1 && g_rhead == seq1 + 2);
+    vk_release_drain_gpu(0x10200, 4);
+    assert(g_rtail == seq1 + 1 && snx_ld_le32(memory + 4096 + 0x200) == 41 && snx_ld_le32(memory + 4096 + 0x300) != 42);
+    vk_release_drain_gpu(0x102fc, 8); /* a range that meets the payload's first bytes only */
+    assert(g_rtail == seq1 + 2 && snx_ld_le32(memory + 4096 + 0x300) == 42 && lock_depth == 0);
+    pending = 0;
 	check_writeback_merge();
+	check_writeback_stamps();
     return 0;
 }

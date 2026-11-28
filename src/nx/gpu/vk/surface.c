@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
@@ -261,6 +262,44 @@ static void surf_changed(u64 gva) {
     if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }
 void vk_surf_changed(u64 gva) { surf_changed(gva); }
+/* The memo of vk_rt_note_read for draw_batches=2, one for each draw thread. A second read of a surface in the same
+   present, at the same memory generation and epochs, does nothing: the first touched it (last_used and its ended row
+   are this present's), and left it not put aside with s->gw at that generation. The other changes that make a read do
+   something come under the share lock, and each moves g_note_epoch: a row ended, a target put aside, a generation set
+   back. A surface made, freed or moved moves g_vk_surf_epoch. So a hit takes no lock */
+static _Atomic u32 g_note_epoch;
+static void note_changed(void) { atomic_fetch_add_explicit(&g_note_epoch, 1, memory_order_release); }
+#define NOTE_MEMO 64
+/* by draw thread (vk_render_slot), not thread-local: every thread's thread-local storage comes out of its stack on
+   glibc (tests/runtime_tls.py), and only the draw threads use it. The prep thread keeps none (gpu_spec) */
+typedef struct {
+    const Surf* s;
+    u64 gen;
+    u32 present, epoch, surf_epoch;
+} NoteMemo;
+static NoteMemo g_note[VK_RC_SLOTS][NOTE_MEMO];
+static u32 note_at(const Surf* s) { return (u32)(((uintptr_t)s >> 6 ^ (uintptr_t)s >> 12) & (NOTE_MEMO - 1)); }
+static void note_keep(const Surf* s, u64 gen) {
+    if (!vk_share_on() || gpu_spec()) return;
+    g_note[vk_render_slot()][note_at(s)] =
+        (NoteMemo){.s = s,
+                   .gen = gen,
+                   .present = g_vk_present,
+                   .epoch = atomic_load_explicit(&g_note_epoch, memory_order_acquire),
+                   .surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire)};
+}
+int vk_rt_note_read_plain(const Surf* s) {
+    if (gpu_spec()) return 0;
+    const NoteMemo* m = &g_note[vk_render_slot()][note_at(s)];
+    if (m->s != s || m->present != g_vk_present || m->gen != gpu_mem_generation() ||
+        m->epoch != atomic_load_explicit(&g_note_epoch, memory_order_acquire) ||
+        m->surf_epoch != atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire) ||
+        atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))
+        return 0;
+    vk_shared_note(2);
+    vk_shared_note(1);
+    return 1;
+}
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
    hardware does) */
@@ -1820,6 +1859,7 @@ static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
     if (kept) {
         gpu_mem_written_by(s->gva, size, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
         s->gw = gw0;
+        note_changed();
         s->draw_wseen = 0;
         s->mem_wseen = 0;
         return;
@@ -2007,6 +2047,7 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
            the merged guest bytes, even though note_writeback just hashed those same bytes. */
         s->hash ^= 1;
         s->gw = 0;
+        note_changed();
     }
 }
 static int rt_superseded(const Surf* s);
@@ -2609,17 +2650,20 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     u64 size = rt_bytes(s), cpu = 0;
     VkOwnRes* r;
     *k = (VkImageKeep){0};
-    if (!own_traps() || !size || (s->gva >> 63) || ((s->gva | size) & 0xFFF) || !surf_publishable(s) ||
-        gmmu_run(s->gva, size, &cpu) != size || vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS))
-        return 0;
+    if (!own_traps()) return k->why = VK_IMG_KEEP_NO_TRAPS, 0;
+    if (!size || (s->gva >> 63)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if ((s->gva | size) & 0xFFF) return k->why = VK_IMG_KEEP_UNALIGNED, 0;
+    if (!surf_publishable(s)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if (gmmu_run(s->gva, size, &cpu) != size) return k->why = VK_IMG_KEEP_RUNS, 0;
+    if (vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS)) return k->why = VK_IMG_KEEP_CPU_READ, 0;
     if ((r = span_owner(cpu, size, &k->off)))
         vk_own_res_ref(r);
     else { /* memory's bytes, with the targets pending over them, as a release's publish stages them */
         u32 mem_wgen = s->mem_wgen;
-        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return 0;
+        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
         if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
@@ -2628,7 +2672,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         vk_own_publish(cpu, size, r, 0);
         if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         k->made = 1;
         if (!s->is_rt) vk_tex_note_writeback(s); /* its image is memory's bytes, by their owner */
@@ -3040,17 +3084,28 @@ static void rt_aside_check(Surf* s);
 void vk_rt_note_read(Surf* s) {
     vk_shared_note(2);
     vk_surf_touch(s);
-    if (!s->is_rt) return;
+    if (!s->is_rt) {
+        note_keep(s, gpu_mem_generation());
+        return;
+    }
     if (s->aside && gpu_spec()) { /* a resolve ahead of the renderer thread (prep.c) changes no target */
         gpu_spec_fail("a target put aside");
         return;
     }
     if (s->aside) rt_aside_check(s);
+    /* a storage image kept over the target's memory (image_out.c), stored into since: a store kept over an owner
+       already there moves nothing asked below, and the target kept its old pixels. Published first, it does, as
+       texture.c's tex_check does for a texture */
+    if (vk_gfx_image_pending_besides(s->gva, rt_bytes(s), s)) vk_gfx_image_mem_need(s->gva, rt_bytes(s));
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
-    if (s->gw == gpu_mem_generation()) return;
+    if (s->gw == gpu_mem_generation()) {
+        if (!s->aside) note_keep(s, s->gw);
+        return;
+    }
     if (!gpu_mem_dirty_since(s->gw, s->gva, rt_bytes(s))) {
         s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check asks only about later writes */
+        if (!s->aside) note_keep(s, s->gw);
         return;
     }
     if (gpu_spec()) {
@@ -3606,6 +3661,7 @@ static void rt_aside(Surf* s) {
     s->aside_wseen = tracked ? vk_ww_now() : 0;
     s->aside_hash = tracked ? 0 : mem_hash(at, size);
     s->aside = 1;
+    note_changed();
     g_rt_sys.kept++;
 }
 /* s's first use since it was set aside: memory the guest wrote since then is newer than its pixels, which load from
@@ -3907,6 +3963,7 @@ static int ended_live(u32 r) {
 /* row r at the head of the list of ended textures, ended as `by` says */
 static void ended_link(u32 r, u8 by) {
     g_rows.ended_by[r] = by;
+    note_changed();
     g_rows.ended_at[r] = g_vk_present;
     link_before(g_rows.ended, &g_rows.ended_list, r, g_rows.ended_list.head);
 }

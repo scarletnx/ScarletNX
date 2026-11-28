@@ -1908,6 +1908,14 @@ void vk_render_stats_log(void) {
         }
     if (at) LOG("vulkan: new sets' buffer offsets that moved, by stage set/binding:%s\n", line);
     memset(g_dset_moved, 0, sizeof g_dset_moved);
+    if (n->cb_window[VK_CBW_PLACED] + n->cb_window[VK_CBW_ALONE] !=
+        w->cb_window[VK_CBW_PLACED] + w->cb_window[VK_CBW_ALONE])
+        LOG("vulkan: constant buffer windows in the last %llu presents: %llu banks in one, %llu bound alone, %llu "
+            "searches of the rings' chunks for the buffer\n",
+            (unsigned long long)presents,
+            (unsigned long long)(n->cb_window[VK_CBW_PLACED] - w->cb_window[VK_CBW_PLACED]),
+            (unsigned long long)(n->cb_window[VK_CBW_ALONE] - w->cb_window[VK_CBW_ALONE]),
+            (unsigned long long)(n->cb_window[VK_CBW_SEARCHED] - w->cb_window[VK_CBW_SEARCHED]));
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
@@ -4553,10 +4561,16 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
    descriptor and keeps its set, where each new copy's offset made a new set. RPCS3's constant ring windows, the idea
    only. A copy that is in no chunk, or past where a window from it can reach, binds alone with offset 0. A window
    stays within its frame (frame, vk_frame_id() + 1): a chunk the frame copies into lives through it, and one destroyed
-   later may give its handle to a smaller one */
+   later may give its handle to a smaller one.
+   A buffer in no chunk and not the mirror (a region of guest memory read in place, the buffer cache's own) is in none
+   until a chunk is made, which only then could take its handle: each bank keeps the last such buffer (none) and the
+   rings' count of chunks made when it was searched for (none_made), and binds it alone again with no search. Read in
+   place, every bank's buffer is such a one, and each bind searched the chunks for it */
 typedef struct {
     VkBuffer b;
     u64 base, range, frame;
+    VkBuffer none;
+    u64 none_made;
 } CbWindow;
 /* bank 18: the texture words of a program that reads the texture table (ShCaps.tex_table, table_words) */
 #define CB_WINDOW_WORDS 18
@@ -4656,7 +4670,13 @@ static int cb_window_place(int vs_fs, int bank, u32 page, VkBuffer b, u64 o, u32
     if (epoch) w = &g_cb_epoch[t_rc];
     if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
         /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
-        const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
+        const VkBuffer mirror = vk_mirror_buffer();
+        if (b != mirror && b == w->none && w->none_made == vk_ring_made()) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
+        if (b != mirror) g_stats.n.cb_window[VK_CBW_SEARCHED]++;
+        const u64 size = b == mirror ? (u64)AS_SIZE : vk_stage_buffer_size(b),
                   align = g_vk.props.limits.minUniformBufferOffsetAlignment;
         u64 at = align ? o / align * align : o;
         /* a copy in the bank's part of the ring: the window starts at the part's start, and holds the whole part. At
@@ -4666,13 +4686,24 @@ static int cb_window_place(int vs_fs, int bank, u32 page, VkBuffer b, u64 o, u32
         if (!epoch && vk_stage_upload_part(page, b, o, &start) &&
             !(align && start % align) && o + sz <= start + 65536)
             at = start;
-        if (!size || at >= size || (o - at) & 15) return 0;
+        if (!size) {
+            w->none = b;
+            w->none_made = vk_ring_made();
+        }
+        if (!size || at >= size || (o - at) & 15) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
         const u64 reach = size - at < 65536 ? size - at : 65536;
-        if (o + sz > at + reach) return 0;
-        *w = (CbWindow){b, at, reach, frame};
+        if (o + sz > at + reach) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
+        *w = (CbWindow){b, at, reach, frame, w->none, w->none_made};
     }
     *base = w->base;
     *range = w->range;
+    g_stats.n.cb_window[VK_CBW_PLACED]++;
     return 1;
 }
 /* A program of the texture table (ShaderInfo.tex_table): its words, one for each plain texture slot, in a window of
@@ -5749,6 +5780,16 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
+static alignas(64) typeof(g_vk_drawn) w_g_vk_drawn;
+/* The work each slot set up (t_rc): its draws, each on a line of its own. With g_vk_dispatches (the renderer thread's
+   alone), they number the work being set up for the checks that ask whether a use is the same work's (vk_work_id).
+   g_vk_drawn + g_vk_dispatches did that before, but in a split run (draw_batches=2) both threads added to g_vk_drawn
+   at each draw, and the two threads' draws could have one number */
+static struct {
+    alignas(64) u64 n;
+} g_work_n[RC_SLOTS];
+u64 vk_work_id(void) { return (g_vk_dispatches + g_work_n[t_rc].n) << 2 | t_rc; }
+static_assert(RC_SLOTS <= 4, "vk_work_id keeps the slot in two bits");
 static alignas(64) typeof(g_vk_skipped) w_g_vk_skipped;
 static alignas(64) typeof(g_vk_mesh_draws) w_g_vk_mesh_draws;
 static alignas(64) typeof(g_vk_mesh_drawn) w_g_vk_mesh_drawn;
@@ -7609,15 +7650,15 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     memset(pre.blend.en, 0, sizeof pre.blend.en);
     DrawCall call = *dc;
     call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
-    u64 drawn = g_vk_drawn;
+    u64 drawn = CNT(g_vk_drawn);
     g_predraw.phase = 1;
     render_draw(&pre, &call, o, NULL, NULL);
-    int saved = g_vk_drawn != drawn;
+    int saved = CNT(g_vk_drawn) != drawn;
     if (saved) {
-        g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
+        CNT(g_vk_drawn) = drawn; /* the guest's draw is counted, not the save draw */
         g_predraw.phase = 2;
         render_draw(ds, dc, o, NULL, NULL);
-        if (g_vk_drawn != drawn) CNT(g_vk_predraws)++;
+        if (CNT(g_vk_drawn) != drawn) CNT(g_vk_predraws)++;
     }
     g_predraw.phase = 0;
     g_predraw.n = g_predraw.in_place = 0;
@@ -8013,6 +8054,7 @@ static void cnt_fold(void) {
         ((u64*)&(x))[i_] += ((u64*)&w_##x)[i_];                                \
         ((u64*)&w_##x)[i_] = 0;                                                \
     }
+    FOLD(g_vk_drawn)
     FOLD(g_vk_skipped)
     FOLD(g_vk_dset_new)
     FOLD(g_vk_dset_reused)
@@ -8091,6 +8133,7 @@ static struct {
     /* the ring handed to the worker at the join, which a worker that needs it waits for (vk_split_ring_wait), and
        the worker's waits for it */
     _Atomic u32 granted;
+    _Atomic u32 asked; /* the worker waits for the ring: it adds no more uses before it (vk_pages_split_end) */
     _Atomic u64 handovers;
     u64 submit; /* the submission the worker's commands name their command buffer in */
     u64 inplace; /* vk_mirror_inplace_count at the split's start */
@@ -8219,6 +8262,7 @@ void vk_split_ring_wait(void) {
        the pass its list went on in ends there, and the join knows that none is open (render_split_join) */
     vk_render_end();
     g_split.took = 1;
+    atomic_store_explicit(&g_split.asked, 1, memory_order_release);
     const int paused = vk_share_pause();
     atomic_fetch_add_explicit(&g_split.handovers, 1, memory_order_relaxed);
     while (!atomic_load_explicit(&g_split.granted, memory_order_acquire))
@@ -8263,6 +8307,13 @@ static void render_split_join(void) {
         }
     } else
         vk_render_end();
+    /* The worker's uses of guest memory in place before the ring are all noted once it is done or waits for the
+       ring: its first ones get a barrier after this half's where they need one, before its list. That barrier ends
+       the pass, which the worker's commands go on in when they inherit it. The worker then orders its uses after the
+       ring with those of both halves */
+    while (!vk_prep_done() && !atomic_load_explicit(&g_split.asked, memory_order_acquire)) plat_spin_hint();
+    const int open = g_rp[0].open;
+    if (vk_pages_split_end() && g_split.inherit && open) split_pass_again();
     vk_rec_barrier_flush();
     atomic_store_explicit(&g_split.granted, 1, memory_order_release);
     plat_wake_word(&g_split.granted);
@@ -8337,6 +8388,8 @@ static void render_split(void) {
     if (g_split.inherit) g_split.pass = g_rp[0];
     g_split.took = 0;
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
+    atomic_store_explicit(&g_split.asked, 0, memory_order_relaxed);
+    vk_pages_split_begin(); /* the worker's uses in place, apart from this half's */
     vk_share_active(1); /* before the worker's first call */
     /* the last draw's probe off before the worker reads it: no draw of the split run probes (render_draw_main) */
     g_predraw.probe = 0;
@@ -8345,6 +8398,7 @@ static void render_split(void) {
     g_split.t_snap += t2 - t1;
     g_split.t_cmd += t3 - t2;
     if (!vk_prep_kick_work(render_split_run)) {
+        vk_pages_split_end(); /* no use noted */
         vk_share_active(0);
         gpu_ds_batch_end(); /* the queue's hold */
         vk_unlock();
@@ -10341,7 +10395,8 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
         zt_written(zt, o->pred, zt_undefined))
         target_written(zt);
     vk_share_unlock();
-    g_vk_drawn++;
+    CNT(g_vk_drawn)++;
+    g_work_n[t_rc].n++;
     if (mesh) CNT(g_vk_mesh_drawn)++;
     if (sh->task_compute) CNT(g_vk_mesh_task_compute)++;
 }
@@ -10365,7 +10420,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     u32 vertices = dc->topology == 0 ? 1 : dc->topology == 1 ? 2 : 3;
     slice.count = vertices;
     slice.instances = 1;
-    u64 before = g_vk_drawn;
+    u64 before = CNT(g_vk_drawn);
     g_capture_draw.images = images;
     g_capture_draw.snapshot = NULL;
     int complete = 1;
@@ -10378,9 +10433,9 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
             if (first > UINT32_MAX || !vk_capture_clear(images)) { complete = 0; break; }
             slice.first = (u32)first;
             g_capture_draw.primitive = primitive;
-            u64 drawn = g_vk_drawn;
+            u64 drawn = CNT(g_vk_drawn);
             render_draw(ds, &slice, owner, NULL, NULL);
-            if (g_vk_drawn != drawn + 1) { complete = 0; break; }
+            if (CNT(g_vk_drawn) != drawn + 1) { complete = 0; break; }
             u32 flags = images->flags | (ds->blend.mask[0] & 15);
             if (ds->tgt.srgb_write && target->f.vk != vk_srgb_as(target->f.vk, 0)) flags |= SH_BLEND_SRGB;
             int resolved = mixed ? vk_capture_mixed_resolve(images, mixed, ds, g_draw[t_rc].fs->si.sph[18])
@@ -10392,7 +10447,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     g_capture_draw.snapshot = NULL;
     draw_forget();
     if (complete) {
-        g_vk_drawn = before + 1;
+        CNT(g_vk_drawn) = before + 1;
         g_vk_capture_draws++;
         g_vk_capture_primitives += (u64)dc->instances * (dc->count / vertices);
     }

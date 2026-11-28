@@ -383,6 +383,43 @@ static int check_uma_constants(void) {
     return 0;
 }
 
+/* Where vertices and constant buffers are read in place (uma_copies=1), the fast path binds them before the buffer
+   cache is looked at: a draw fetches none of the cache's entries ahead (vk_buf_prefetch). Where they are copied
+   (uma_copies=2), the cache looks them up, and the draw fetches its entries. Each draw reads its constant buffer */
+#define UMA_CP  (HEAP_BASE + 0x29c00000)
+#define UMA_GCP 0x5fe000000ull
+static int check_uma_prefetch(void) {
+    const u8 yellow[4] = {255, 255, 0, 255};
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int copies = g_settings.guest_buffers_copied;
+    GpuChannel* channel = uma_constants_draw(UMA_CP, UMA_GCP);
+    CHECK(channel);
+    g_settings.guest_buffers_copied = 1;
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow)); /* the region made, through the chain */
+    u64 before = vk_buf_prefetched();
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow));
+    const int inplace = vk_uma_imports(UMA_CP, 0x1000);
+    const u64 fetched_inplace = vk_buf_prefetched() - before;
+    g_settings.guest_buffers_copied = 2;
+    before = vk_buf_prefetched();
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow));
+    const u64 fetched_copied = vk_buf_prefetched() - before;
+    g_settings.guest_buffers_copied = copies;
+    CHECK(!uma_constants_done(channel, UMA_CP));
+    g_renderer->mem_may_have_changed();
+    if (!inplace || fetched_inplace || !fetched_copied)
+        fprintf(stderr,
+                "buffer cache prefetch: read in place %d, %llu entries fetched ahead for its draw (0 expected), %llu "
+                "for the draw that copies (some expected)\n",
+                inplace, (unsigned long long)fetched_inplace, (unsigned long long)fetched_copied);
+    CHECK(inplace && !fetched_inplace && fetched_copied);
+    printf("in place: a draw fetches no entry of the buffer cache ahead, and one that copies fetches them\n");
+    return 0;
+}
+
 /* Where uma_copies copies constant buffers (vk_uma_imports_dear), their bytes are copied straight from guest memory
    into staging (render.c's cb_get), as on a GPU with memory of its own: the draw reads the 1.0 there. A draw that
    writes the page in place, recorded and not yet run, keeps the next lookup off that copy, whose bytes would be from
@@ -432,6 +469,61 @@ static int check_uma_constants_copied(void) {
     CHECK(copied && inplace && pending && cached);
     printf("in place: a constant buffer copied straight into staging where the buffer cache copies, and through the "
            "cache after a write in place over it\n");
+    return 0;
+}
+
+/* With the constant buffers in windows of the staging ring (vk_cb_windows), a bank read in place is in no chunk of the
+   rings: no window can be placed in its buffer, and it is bound alone. The rings' chunks are searched for that buffer
+   once, not at each draw: draws over it while no chunk is made search none. Each draw read the bank in place */
+#define UMA_CW  (HEAP_BASE + 0x29800000)
+#define UMA_GCW 0x5fd000000ull
+static int check_uma_constants_windows(void) {
+    const u8 yellow[4] = {255, 255, 0, 255};
+    VkDrawCounts before, after;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int copies = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 1;
+    GpuChannel* channel = uma_constants_draw(UMA_CW, UMA_GCW);
+    CHECK(channel);
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow)); /* the region made, through the chain */
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow)); /* read in place: its buffer searched for once */
+    const int inplace = vk_uma_imports(UMA_CW, 0x1000);
+    vk_draw_counts(&before);
+    const u64 made = vk_ring_made(), drawn = g_vk_drawn;
+    vk_lock();
+    for (u32 i = 0; i < 16; i++) {
+        channel->r3d_dirty = ~0u;
+        mx_draw_state_sync(channel);
+        DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+        vk_render_draw(&channel->ds, &call, &channel->owner);
+    }
+    vk_finish();
+    vk_unlock();
+    vk_draw_counts(&after);
+    const u64 alone = after.cb_window[VK_CBW_ALONE] - before.cb_window[VK_CBW_ALONE],
+              searched = after.cb_window[VK_CBW_SEARCHED] - before.cb_window[VK_CBW_SEARCHED],
+              chunks = vk_ring_made() - made;
+    CHECK(g_vk_drawn == drawn + 16);
+    CHECK(!mesh_pixel(channel, UMA_CB_TARGET, 0, yellow));
+    g_settings.guest_buffers_copied = copies;
+    CHECK(!uma_constants_done(channel, UMA_CW));
+    g_renderer->mem_may_have_changed();
+    if (!g_spirv_translate.cb_windows) {
+        printf("in place: constant buffers bound one by one, no window to place\n");
+        return 0;
+    }
+    /* one search for each chunk made meanwhile at most, which could have taken the handle of a buffer gone */
+    if (!inplace || alone < 16 || searched > chunks)
+        fprintf(stderr,
+                "constant buffer windows: read in place %d; over 16 draws %llu banks bound alone (16 expected), %llu "
+                "searches of the rings' chunks for their buffer with %llu chunks made (no more expected)\n",
+                inplace, (unsigned long long)alone, (unsigned long long)searched, (unsigned long long)chunks);
+    CHECK(inplace && alone >= 16 && searched <= chunks);
+    printf("in place: a constant buffer bank read in place is bound alone, its buffer searched for in the rings' "
+           "chunks once\n");
     return 0;
 }
 

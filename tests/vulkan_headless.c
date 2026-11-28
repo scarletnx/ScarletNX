@@ -9141,6 +9141,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
         if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
         if (!strcmp(name, "constants_copied") && ++ran) CHECK(!check_uma_constants_copied());
+        if (!strcmp(name, "constants_windows") && ++ran) CHECK(!check_uma_constants_windows());
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
@@ -9149,6 +9150,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
+        if (!strcmp(name, "prefetch") && ++ran) CHECK(!check_uma_prefetch());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
@@ -9165,6 +9167,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_producers") && ++ran) CHECK(!check_uma_pages_producers());
         if (!strcmp(name, "pages_counts") && ++ran) CHECK(!check_uma_pages_counts());
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
+        if (!strcmp(name, "pages_old") && ++ran) CHECK(!check_uma_pages_old());
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
 #if !defined(_WIN32)
@@ -9188,12 +9191,14 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "alias_order") && ++ran) CHECK(!check_uma_alias_order());
         if (!ran) {
             fprintf(stderr,
-                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
+                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, "
+                    "constants_windows, migrate, way, "
                     "region_writes, region_merge, region_trap, writes, atlas_pending, feedback, publish, dispatch, "
                     "dispatch_open, "
-                    "nvdec, texture_pending, dispatch_constants, "
+                    "nvdec, prefetch, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, texture_region, dma_region, region_dmabuf_trap, "
+                    "pages_producers, pages_counts, pages_partial, pages_old, "
+                    "texture_region, dma_region, region_dmabuf_trap, "
                     "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
                     "region_watch_engine, region_table, region_stays, "
                     "storage_region, "
@@ -9214,9 +9219,11 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_runtime_write());
         CHECK(!check_uma_constants());
         CHECK(!check_uma_constants_copied());
+        CHECK(!check_uma_constants_windows());
         CHECK(!check_uma_writes());
         CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
+        CHECK(!check_uma_prefetch());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_nvdec());
         CHECK(!check_uma_dispatch());
@@ -9239,6 +9246,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_pages_counts());
         CHECK(!check_uma_pages_producers());
         CHECK(!check_uma_pages_partial());
+        CHECK(!check_uma_pages_old());
         CHECK(!check_uma_texture_region());
         CHECK(!check_uma_dma_region());
         CHECK(!check_uma_alias_in_place());
@@ -9413,6 +9421,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_targetless_stores());
     CHECK(!check_deko_vertex_storage());
     CHECK(!check_storage_image_keep());
+    CHECK(!check_compute_storage_image_keep());
     CHECK(!check_storage_buffer_keep());
     CHECK(!check_storage_pages_keep());
     CHECK(!check_packed_depth());
@@ -9502,9 +9511,11 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_runtime_write());
     CHECK(!check_uma_constants());
     CHECK(!check_uma_constants_copied());
+    CHECK(!check_uma_constants_windows());
     CHECK(!check_uma_writes());
     CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
+    CHECK(!check_uma_prefetch());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_nvdec());
     CHECK(!check_uma_dispatch());
@@ -9531,6 +9542,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_pages_counts());
     CHECK(!check_uma_pages_producers());
     CHECK(!check_uma_pages_partial());
+    CHECK(!check_uma_pages_old());
     CHECK(!check_uma_texture_region());
     CHECK(!check_uma_dma_region());
     CHECK(!check_uma_alias_in_place());

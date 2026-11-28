@@ -122,7 +122,8 @@ static struct {
     u32 took[VK_POOL_FRAMES][FRAME_RINGS][2]; /* chunks ([0]) and big buffers the last frames took, by ring: [itook]
                                                  the one being recorded */
     u32 itook;
-    u64 made; /* chunks and big buffers made since the start (statistics, tests) */
+    _Atomic u64 made; /* chunks and big buffers made since the start (statistics, tests, cb_window_place's
+                         read of a split's worker with no lock) */
     u64 spilled; /* the device ring's chunks made in system memory since the start, for want of the device's */
     u32 recycles; /* frame slots recycled since the start (tests) */
     /* The stream: the chunk it hands out of (plus one) and the bytes handed out of that. Its chunks are no frame's:
@@ -699,7 +700,7 @@ void vk_stage_report(void) {
             (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20), (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
     LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s; the rings hold %llu MiB, %llu "
         "buffers made for them in all, %llu of the device ring's in system memory for want of the device's\n",
-        line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made,
+        line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)atomic_load_explicit(&g_cmd.made, memory_order_relaxed),
         (unsigned long long)g_cmd.spilled);
     memset(g_xfer, 0, sizeof g_xfer);
     for (u32 i = 0; i < DEVICE_SITES && g_device_sites[i].file; i++) {
@@ -798,7 +799,7 @@ static u32 chunk_new(u32 ring, u64 size, int bar, u32 slot) {
                              .slot = slot,
                              .bar = bar && xfer_where(&info) == XFER_MAPPED,
                              .spilled = spilled};
-    g_cmd.made++;
+    atomic_fetch_add_explicit(&g_cmd.made, 1, memory_order_relaxed);
     return i + 1;
 }
 static void chunk_destroy(Chunk* c) {
@@ -1682,7 +1683,7 @@ u64 vk_ring_bytes(void) {
     for (u32 i = 0; i < g_cmd.nchunk; i++) n += g_cmd.chunk[i].size;
     return n;
 }
-u64 vk_ring_made(void) { return g_cmd.made; }
+u64 vk_ring_made(void) { return atomic_load_explicit(&g_cmd.made, memory_order_relaxed); }
 
 u64 vk_submit_number(void) { return atomic_load_explicit(&g_gval, memory_order_relaxed) + 1; }
 u32 vk_cb_begun(void) { return g_cb_begun; }

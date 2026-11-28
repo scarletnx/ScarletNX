@@ -52,6 +52,8 @@ u64 g_as_size = 1ull << 39;
 MemLayout g_layout;
 u32 g_vk_present = 1;
 u64 g_vk_drawn, g_vk_dispatches;
+_Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
+u64 vk_work_id(void) { return (g_vk_dispatches + g_vk_drawn) << 2; } /* render.c's: a number for each draw */
 PFN_vkCreateBuffer vkCreateBuffer;
 PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
 PFN_vkDestroyBuffer vkDestroyBuffer;

@@ -427,6 +427,7 @@ int vk_prep_kick(void);
    renderer thread */
 void vk_shared_note(u32 which);
 void vk_prep_join_wait(void); /* waits for the work of vk_prep_kick_work, however late the thread takes it */
+int vk_prep_done(void);       /* the work of vk_prep_kick_work is done: vk_prep_join_wait does not wait */
 int vk_prep_kick_work(void (*work)(void)); /* a batch of draws on the thread (render.c), vk_lock lent to it */
 int vk_prep_join(void);
 void vk_prep_counts(u64* kicks, u64* cancels);
@@ -675,6 +676,9 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
    place is pending over the range: no barrier then */
 int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
 void vk_uma_fast_counts(u64* hits, u64* blk); /* the fast path's reads bound, and those a blk page sent to the chain */
+/* the questions about the pages read or written in place (order's, the hazard count's, front_write's) that walked the
+   tables of the pages in no region, since the last statistics: for the tests */
+u64 vk_uma_old_walks(void);
 /* draw_state_check=1, for a read the fast path bound at buf, off: uma.c's own reason the old chain would not have,
    NULL for none; a difference found (counted, and said in the log), and their count */
 const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
@@ -1601,6 +1605,8 @@ Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
+/* 1 when a read of s now would do nothing, as this thread's memo of its last read shows: no share lock (surface.c) */
+int vk_rt_note_read_plain(const Surf* s);
 /* The guest (or a GPU engine's result) writes [gva, gva + size): every pending target over those bytes goes to
    memory first, except one the write covers whole when whole says the caller writes every byte of its range. Such a
    target's image has nothing of its own to give back, so it is dropped instead: memory is the truth (rt_cover.h) */
@@ -1677,13 +1683,36 @@ void vk_surf_batch_end(void);
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
-/* A draw's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the bind on, with a
-   reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the span */
+/* A draw's or a dispatch's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the
+   bind on, with a reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the
+   span. why: what the bind did with it (VkImageKeepWhy), a refusal's reason where held is NULL. compute: a dispatch's,
+   whose publishes when read are counted apart */
 typedef struct {
     struct VkOwnRes* held;
     u64 off;
-    int made;
+    int made, why, compute;
 } VkImageKeep;
+/* what a bind did with a storage image (vk_gfx_image_report counts a dispatch's): kept, or joined to the write-back of
+   its image that waits; else published at the dispatch, as before, because it is a render target, over another image
+   of the same dispatch, under another's write-back, over 4 GB, or what vk_surf_keep_begin refused: no traps of guest
+   memory, a parked or unpublishable surface, a span of part pages or of more than one run, a span the CPU read lately,
+   no owner to be had (or memory landed over it) */
+enum {
+    VK_IMG_KEEP_KEPT,
+    VK_IMG_KEEP_JOINED,
+    VK_IMG_KEEP_TARGET,
+    VK_IMG_KEEP_OVERLAP,
+    VK_IMG_KEEP_PENDING,
+    VK_IMG_KEEP_BIG,
+    VK_IMG_KEEP_NO_TRAPS,
+    VK_IMG_KEEP_UNPUBLISHABLE,
+    VK_IMG_KEEP_UNALIGNED,
+    VK_IMG_KEEP_RUNS,
+    VK_IMG_KEEP_CPU_READ,
+    VK_IMG_KEEP_NO_OWNER,
+    VK_IMG_KEEP_N
+};
+void vk_gfx_image_keep_note(int why); /* a dispatch's storage image's bind, counted for vk_gfx_image_report */
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
    (the queue frees it), or over the bytes the write-back after leaves; or kept (keep, its held reference the
    queue's), published at the release */
@@ -2748,6 +2777,7 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 /* the cache lines vk_buf_get(gva, len) will read, fetched ahead: step 0 its index slot, step 1 (after step 0 for every
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
 void vk_buf_prefetch(u64 gva, u64 len, int step);
+u64 vk_buf_prefetched(void);       /* the entries it fetched ahead (step 1) so far, for the tests */
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
 /* vk_buf_get_uniform for a binding that takes any offset that is a multiple of align: a constant buffer bound through
@@ -2932,6 +2962,11 @@ static inline int vk_draw_storage_any(const VkDrawStorage* draw) {
 }
 int vk_buf_draw_has_alias(const VkDrawStorage* draw);
 int vk_buf_draw_prepare(VkDrawStorage* draw);
+/* with no share lock: whether no binding of the draw can share a page with a writable one, which needs no page list
+   (vk_buf_draw_has_alias is 0 then), and vk_buf_draw_prepare of such a draw where this thread's map of a draw with
+   nothing aliased was staged in this split already (0 when the share lock's path must do it) */
+int vk_buf_draw_plain(const VkDrawStorage* draw);
+int vk_buf_draw_prepare_plain(VkDrawStorage* draw);
 /* Why an aliasing draw's group of bindings went to the page atlas, not in place (buffer.c's alias_in_place): the way
    is off (no unified memory, uma_copies=2); a binding not one run of mapped guest memory; the
    group in no one region; a region that a wait would make; an offset off the storage alignment; a write over newer
@@ -3053,6 +3088,12 @@ void vk_render_predicate_drop(u32 pred);
 void vk_release_retire(u32 id);
 int vk_release_wait(u32 id, u32 thresh, int block); /* renderer.h's release_wait */
 void vk_release_drain(void);
+/* the queued releases whose payloads meet GPU range [gva, gva + size), with all queued before them: performed before
+   the GMMU changes that range. A release writes its payload, and takes its pages' counts back, through the GMMU when
+   it is performed, so a change of its own range in between would point both at other memory. A release elsewhere
+   keeps its place in the queue: a map of fresh GPU memory waited for all of the GPU's queued work, with vk_lock held,
+   up to half a second at a time while one game streamed in its scenery */
+void vk_release_drain_gpu(u64 gva, u64 size);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
    (render.c), vk_query_flush outside a pass before a submit (cmd.c), where the reports' copies are recorded */
@@ -3108,6 +3149,8 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
+/* vk_written_since with no lock where it takes nothing in (vk_ww_take_plain): 1 with its answer in *written, or 0 */
+int vk_written_since_plain(const u8* host, u64 len, u32 since, int* written);
 /* vk_written_since where it needs no scan: its 4 MiB leaves taken in for this epoch already (by an earlier query), no
    alias of guest memory and no import over the range. -1 where it would scan or can't tell: vk_written_since asks then */
 int vk_written_quick(const u8* host, u64 len, u32 since);
@@ -3122,6 +3165,8 @@ int vk_ww_gen(const u8* host, u64 len, u32* gen);
 /* vk_written_since without its answer: the scans and changes over [host, host + len) taken in, so the stamps and the
    dirty bits of its pages are up to date. 0, or -1 where vk_written_since is -1. Under vk_lock */
 int vk_ww_take(const u8* host, u64 len);
+/* 1 when vk_ww_take has nothing to take, so it is 0 with no lock (a split's draws call it before the share lock) */
+int vk_ww_take_plain(const u8* host, u64 len);
 /* 1 if the page at guest address cpu was stamped written after the clock read since (as vk_written_since asks) */
 int vk_ww_page_after(u64 cpu, u32 since);
 /* The page cache's dirty bits, a bit a 4 KiB page of guest memory, set with each stamp of the write tracking and
@@ -3705,6 +3750,7 @@ int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+u64 vk_work_id(void); /* the draw or dispatch being set up on this thread: a number no other work has (render.c) */
 /* vertex streams restrided on the GPU for a draw so far (render.c's restride): a stride that isn't a multiple of its
    attributes' components, without VK_EXT_legacy_vertex_attributes */
 u64 vk_render_restrided(void);
@@ -3780,6 +3826,9 @@ enum { VK_GENS_HEADERS_KEPT, VK_GENS_HEADERS_CHECKED, VK_GENS_RESULTS_KEPT, VK_G
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
+/* A windowed constant buffer bank's binding (render.c's cb_window_place): in a window, or bound alone; and the searches
+   of the rings' chunks for the buffer a window would be in */
+enum { VK_CBW_PLACED, VK_CBW_ALONE, VK_CBW_SEARCHED, VK_CBW_N };
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3794,6 +3843,7 @@ typedef struct {
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
     u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
+    u64 cb_window[VK_CBW_N];
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
                       before them, bank 2, the root tables */

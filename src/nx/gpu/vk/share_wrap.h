@@ -37,6 +37,9 @@ static inline int sh_vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, 
 }
 static inline int sh_vk_buf_draw_has_alias(const VkDrawStorage* draw) {
     if (!vk_share_on()) return vk_buf_draw_has_alias(draw);
+    /* the draw's own bindings and the GPU's page table, which render.c reads with no lock: about 3,700 takes a
+       present in one game's world, nearly all of draws with no binding that can alias */
+    if (vk_buf_draw_plain(draw)) return 0;
     vk_share_lock_at(5);
     int const r = vk_buf_draw_has_alias(draw);
     vk_share_unlock();
@@ -44,6 +47,7 @@ static inline int sh_vk_buf_draw_has_alias(const VkDrawStorage* draw) {
 }
 static inline int sh_vk_buf_draw_prepare(VkDrawStorage* draw) {
     if (!vk_share_on()) return vk_buf_draw_prepare(draw);
+    if (vk_buf_draw_prepare_plain(draw)) return 1;
     vk_share_lock_at(6);
     int const r = vk_buf_draw_prepare(draw);
     vk_share_unlock();
@@ -128,13 +132,10 @@ static inline int sh_vk_buf_pending(u64 gva, u64 len) {
     vk_share_unlock();
     return r;
 }
-static inline u64 sh_vk_buffer_address(VkBuffer b) {
-    if (!vk_share_on()) return vk_buffer_address(b);
-    vk_share_lock_at(18);
-    u64 const r = vk_buffer_address(b);
-    vk_share_unlock();
-    return r;
-}
+/* no lock: vkGetBufferDeviceAddress needs no host synchronization, and a buffer that a draw binds is freed only once
+   its frame is done (vk_defer_buffer). It was the share lock's most taken call, 16,100 takes a present, and the call
+   takes about 8 ns on either thread with the lock or without it */
+static inline u64 sh_vk_buffer_address(VkBuffer b) { return vk_buffer_address(b); }
 static inline VkResult sh_vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer, DevMem* memory, DevMemInfo* details) {
     if (!vk_share_on()) return vk_buffer_create(info, allocation, buffer, memory, details);
     vk_share_lock_at(19);
@@ -531,6 +532,7 @@ static inline void sh_vk_pages_read(u64 gva, u64 len) {
         vk_pages_read(gva, len);
         return;
     }
+    if (vk_pages_read_plain()) return;
     vk_share_lock_at(70);
     vk_pages_read(gva, len);
     vk_share_unlock();
@@ -708,6 +710,7 @@ static inline void sh_vk_rt_note_read(Surf* s) {
         vk_rt_note_read(s);
         return;
     }
+    if (vk_rt_note_read_plain(s)) return;
     vk_share_lock_at(93);
     vk_rt_note_read(s);
     vk_share_unlock();
@@ -1002,6 +1005,8 @@ static inline void sh_vk_vrs_keep(VkCommandBuffer cb) {
 }
 static inline int sh_vk_written_since(const u8* host, u64 len, u32 since) {
     if (!vk_share_on()) return vk_written_since(host, len, since);
+    int w;
+    if (vk_written_since_plain(host, len, since, &w)) return w;
     vk_share_lock_at(136);
     int const r = vk_written_since(host, len, since);
     vk_share_unlock();
@@ -1043,6 +1048,7 @@ static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, c
    and the write clock: a worker's check and the renderer thread's at once lose each other's written pages */
 static inline int sh_vk_ww_take(const u8* host, u64 len) {
     if (!vk_share_on()) return vk_ww_take(host, len);
+    if (vk_ww_take_plain(host, len)) return 0;
     vk_share_lock_at(141);
     int const r = vk_ww_take(host, len);
     vk_share_unlock();
