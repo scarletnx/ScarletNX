@@ -817,6 +817,8 @@ static void thread_main(void* p) {
     }
 #endif
     guest_stats_thread_start(kt_ix(t));
+    /* the console's sleeps and timed waits end on time: a game that polls with 20 us sleeps waited 71 us each */
+    (void)plat_thread_exact_timers();
     {
         char hint[16];
         pm_lock(&g_host.thread.core_lk); /* in line since kthread_start, it may be handed a core meanwhile */
@@ -1017,6 +1019,7 @@ int kernel_retire(int timeout_ms) {
 static void thread_resume_main(void* p) {
     KThread* t = (KThread*)p;
     int park = t->park;
+    (void)plat_thread_exact_timers();
     {
         char hint[16];
         snprintf(hint, sizeof hint, "core %u", (unsigned)core_of(t));

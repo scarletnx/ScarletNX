@@ -6,6 +6,7 @@
 #define _GNU_SOURCE
 #endif
 #include "common/platform/thread.h"
+#include "common/platform/time.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -30,6 +31,70 @@
 #include <sys/syscall.h>
 #endif
 #endif
+
+/* ================================================================ short waits */
+/* A timed wait of the word this short does not go to the system: Linux's futex ends one about 50 us late (the
+   timer slack, a wake and a switch), and Windows' WaitOnAddress counts in milliseconds. The thread watches the word's
+   cache line instead, where the CPU can: x86's UMONITOR/UMWAIT (WAITPKG) or MONITORX/MWAITX, which wake on a write
+   to the line or at a limit of TSC cycles, else a loop with the CPU's spin hint. A write that changes the word ends
+   the wait at once, so its waker's plat_wake_word finds nobody in the system and costs what it did */
+#if defined(_WIN32)
+#define SHORT_WAIT_NS 300000
+#else
+#define SHORT_WAIT_NS 50000
+#endif
+/* the TSC cycles of one watch before the clock is read again: under a microsecond at the clocks these CPUs run at */
+#define SHORT_WATCH_TSC 2000u
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#include <x86intrin.h>
+enum { WATCH_NONE = 1, WATCH_UMWAIT, WATCH_MWAITX };
+static _Atomic int g_watch; /* 0 until the first short wait asks the CPU */
+static int watch_kind(void) {
+    int k = atomic_load_explicit(&g_watch, memory_order_relaxed);
+    if (k) return k;
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    k = WATCH_NONE;
+    if (__get_cpuid_count(7, 0, &a, &b, &c, &d) && (c >> 5 & 1)) k = WATCH_UMWAIT; /* CPUID.7.0:ECX.WAITPKG */
+    else if (__get_cpuid(0x80000001u, &a, &b, &c, &d) && (c >> 29 & 1)) k = WATCH_MWAITX; /* ECX.MONITORX */
+    atomic_store_explicit(&g_watch, k, memory_order_relaxed);
+    return k;
+}
+/* C0.1 (control 1): the lighter state, which wakes sooner than C0.2 */
+[[gnu::target("waitpkg")]] static void watch_umwait(_Atomic uint32_t* w, uint32_t v) {
+    _umonitor((void*)w);
+    if (atomic_load_explicit(w, memory_order_acquire) == v) _umwait(1, __rdtsc() + SHORT_WATCH_TSC);
+}
+/* extension 2: MWAITX ends at the timer's count, hint 0 */
+[[gnu::target("mwaitx")]] static void watch_mwaitx(_Atomic uint32_t* w, uint32_t v) {
+    _mm_monitorx((void*)w, 0, 0);
+    if (atomic_load_explicit(w, memory_order_acquire) == v) _mm_mwaitx(2, 0, SHORT_WATCH_TSC);
+}
+static void watch_word(_Atomic uint32_t* w, uint32_t v) {
+    switch (watch_kind()) {
+    case WATCH_UMWAIT: watch_umwait(w, v); break;
+    case WATCH_MWAITX: watch_mwaitx(w, v); break;
+    default: _mm_pause(); break;
+    }
+}
+#else
+static void watch_word(_Atomic uint32_t* w, uint32_t v) {
+    (void)w;
+    (void)v;
+#if defined(__aarch64__) || defined(__arm__)
+    __asm__ volatile("yield");
+#elif defined(__riscv)
+    __asm__ volatile(".insn i 0x0F, 0, x0, x0, 0x010"); /* pause (Zihintpause), a hint where there is none */
+#endif
+}
+#endif
+/* 1 when the wait was short and is over: the word changed, or the time went by */
+static int short_wait(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
+    if (timeout_ns <= 0 || timeout_ns > SHORT_WAIT_NS) return 0;
+    const uint64_t end = plat_ns() + (uint64_t)timeout_ns;
+    while (atomic_load_explicit(w, memory_order_acquire) == v && plat_ns() < end) watch_word(w, v);
+    return 1;
+}
 
 /* The waits pm_lock and pc_wait note while they block: a slot per thread, taken the first time it waits, read by the
    hang report while the threads run (each field alone is atomic; a report may catch a wait as it changes) */
@@ -339,6 +404,7 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns) {
 }
 
 void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
+    if (short_wait(w, v, timeout_ns)) return;
     DWORD ms = INFINITE;
     if (timeout_ns >= 0) {
         uint64_t r = (uint64_t)timeout_ns / 1000000u + ((uint64_t)timeout_ns % 1000000u != 0); /* as cond_wait rounds it */
@@ -461,6 +527,7 @@ extern int __ulock_wake(uint32_t operation, void* addr, uint64_t wake_value);
 #define SNX_ULF_NO_ERRNO        0x1000000u
 #endif
 void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
+    if (short_wait(w, v, timeout_ns)) return;
 #if defined(__linux__)
     struct timespec ts;
     if (timeout_ns >= 0) {
