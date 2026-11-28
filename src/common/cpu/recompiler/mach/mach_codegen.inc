@@ -281,7 +281,7 @@ enum {
     GLUE_ISLAND,
     GLUE_PARTS
 };
-/* a piece of the machine's as a region's last instruction (below): the checks, the frame and the polls go through it */
+/* a piece of the machine's as a region's last instruction (below): what the machine wrote between regions */
 static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0);
 static void glue_count(Unit* u) {
     u->g->x.seen.glue[u->glue_part] += u->b.n - u->glue_at;
@@ -297,7 +297,7 @@ static void glue_out(Unit* u) {
     glue_count(u);
     u->glue_part = GLUE_OTHER;
 }
-#define jmp(u, label)                 (glue_in((u), GLUE_JUMP), jmp((u), (label)), glue_out(u))
+#define jmp(u, label)                 region_glue((u), SGX_FN_JMP, 0, (label), 0)
 #define jcc(u, cc, label)             (glue_in((u), GLUE_JUMP), jcc((u), (cc), (label)), glue_out(u))
 #define pins_of(u, b, store, caller)  (glue_in((u), GLUE_PINS), pins_of((u), (b), (store), (caller)), glue_out(u))
 #define prologue(u)                   region_glue((u), SGX_FN_PROLOGUE, 0, 0, 0)
@@ -547,7 +547,8 @@ enum {
     SGX_FN_POLL_THEN,
     SGX_FN_POLL_JZ,
     SGX_FN_POLL_SLOW,
-    SGX_FN_TAILDYN_PC
+    SGX_FN_TAILDYN_PC,
+    SGX_FN_JMP
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -561,8 +562,8 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
            taken, to the header where no poll is pending, else to the poll's stub (imm) */
         int skip = new_label(u);
         jcc(u, i->cc ^ 1, skip);
-        (poll_jz)(u, i->disp); /* the emitter itself: its name alone is a region's instruction, as below */
-        jmp(u, (int)i->imm);
+        (poll_jz)(u, i->disp); /* the emitters themselves: their names alone are a region's instruction, as below */
+        (jmp)(u, (int)i->imm);
         bind(u, skip);
         break;
     }
@@ -614,6 +615,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
         calldyn(u, 1);
         break;
 #endif
+    case SGX_FN_JMP: (jmp)(u, i->disp); break;      /* to the label disp */
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
