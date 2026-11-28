@@ -12,6 +12,7 @@ static struct {
     NdsVkBuffer staging[NDS_VK_SLOTS]; /* each submission's copy of the video memory and the lines, the CPU's side */
     NdsVkBuffer vram, lines;           /* the device's */
     NdsVkBuffer readback;
+    NdsVkImage native; /* the frame at the screens' own size, for a read back of a frame drawn larger */
     NdsVkImage frame;
     /* the display capture: its pixels as the compositor wrote them, read back into the bank DISPCAPCNT names once
        the GPU has made them. The game's CPU and the next frame both read that bank, so it is the one thing of a frame
@@ -32,6 +33,20 @@ static struct {
 
 NdsVkImage* nds_vk_frame_image(void) { return &g_frame.frame; }
 
+/* the compositor for the frame's scale, a specialization of its SCALE */
+static bool compose_pipeline(const NdsVk* v) {
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = (size_t)snx_nds_compose_spv_size,
+                                   .pCode = snx_nds_compose_spv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(v->device, &mi, NULL, &module) != VK_SUCCESS) return false;
+    VkSpecializationMapEntry entry = {0, 0, sizeof(uint32_t)};
+    VkSpecializationInfo spec = {1, &entry, sizeof v->scale, &v->scale};
+    VkResult r = snx_vk_module_pipeline(v->device, VK_NULL_HANDLE, g_frame.layout, module, &spec, &g_frame.pipeline);
+    vkDestroyShaderModule(v->device, module, NULL);
+    return r == VK_SUCCESS;
+}
+
 bool nds_vk_frame_init(char* error, size_t error_size) {
     NdsVk* v = nds_vk();
     bool ok = true;
@@ -43,18 +58,20 @@ bool nds_vk_frame_init(char* error, size_t error_size) {
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false) &&
          nds_vk_buffer(&g_frame.lines, NDS_VK_LINES_BYTES,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false) &&
-         nds_vk_buffer(&g_frame.readback, NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                       true) &&
-         nds_vk_image(&g_frame.frame, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2,
+         nds_vk_buffer(&g_frame.readback, NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2 * 4,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) &&
+         nds_vk_image(&g_frame.frame, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH * v->scale,
+                      NDS_SCREEN_HEIGHT * 2 * v->scale,
                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                       VK_IMAGE_ASPECT_COLOR_BIT) &&
+         (v->scale == 1 ||
+          nds_vk_image(&g_frame.native, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT)) &&
          nds_vk_image(&g_frame.capture, VK_FORMAT_R16_UINT, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT,
                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT) &&
-         nds_vk_buffer(&g_frame.capture_read, NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                       true) &&
-         snx_vk_compute_layouts(v->device, 2, 3, 0, &g_frame.set, &g_frame.layout) == VK_SUCCESS &&
-         snx_vk_compute_pipeline(v->device, VK_NULL_HANDLE, g_frame.layout, snx_nds_compose_spv,
-                                 (size_t)snx_nds_compose_spv_size, &g_frame.pipeline) == VK_SUCCESS;
+         nds_vk_buffer(&g_frame.capture_read, NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2,
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, true) &&
+         snx_vk_compute_layouts(v->device, 2, 3, 0, &g_frame.set, &g_frame.layout) == VK_SUCCESS && compose_pipeline(v);
     if (!ok) {
         snprintf(error, error_size, "cannot make the 2D engines' buffers and pipeline on the Vulkan device");
         nds_vk_frame_free();
@@ -74,6 +91,7 @@ void nds_vk_frame_free(void) {
     nds_vk_buffer_free(&g_frame.vram);
     nds_vk_buffer_free(&g_frame.lines);
     nds_vk_buffer_free(&g_frame.readback);
+    nds_vk_image_free(&g_frame.native);
     nds_vk_buffer_free(&g_frame.capture_read);
     nds_vk_image_free(&g_frame.frame);
     nds_vk_image_free(&g_frame.capture);
@@ -169,7 +187,7 @@ void nds_vk_frame_compose(NdsBoard* board) {
     vkUpdateDescriptorSets(v->device, 2, writes, 0, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_frame.pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_frame.layout, 0, 1, &set, 0, NULL);
-    vkCmdDispatch(cb, NDS_SCREEN_WIDTH / 8, NDS_SCREEN_HEIGHT / 8, 2);
+    vkCmdDispatch(cb, NDS_SCREEN_WIDTH * v->scale / 8, NDS_SCREEN_HEIGHT * v->scale / 8, 2);
     /* a capture this frame: its pixels back, for the bank and the place DISPCAPCNT names, when the GPU has them */
     uint32_t cap = board->lines[0][0].words[20];
     if (cap >> 31) {
@@ -192,11 +210,23 @@ bool nds_vk_frame_read(unsigned char* rgba) {
     NdsVk* v = nds_vk();
     if (!v || !g_frame.up) return false;
     VkCommandBuffer cb = snx_vk_ring_commands(&v->ring);
+    NdsVkImage* read = &g_frame.frame;
     nds_vk_layout(cb, &g_frame.frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    if (v->scale > 1) { /* a frame drawn larger: each screen pixel's first frame pixel, the screens' own size */
+        read = &g_frame.native;
+        nds_vk_layout(cb, read, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        int32_t w = (int32_t)(NDS_SCREEN_WIDTH * v->scale), h = (int32_t)(NDS_SCREEN_HEIGHT * 2 * v->scale);
+        VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .srcOffsets = {{0, 0, 0}, {w, h, 1}},
+                            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .dstOffsets = {{0, 0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 1}}};
+        vkCmdBlitImage(cb, g_frame.frame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, read->image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+        nds_vk_layout(cb, read, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    }
     VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageExtent = {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 1}};
-    vkCmdCopyImageToBuffer(cb, g_frame.frame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_frame.readback.buffer, 1,
-                           &region);
+    vkCmdCopyImageToBuffer(cb, read->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_frame.readback.buffer, 1, &region);
     uint64_t serial = snx_vk_ring_submit(&v->ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
     if (!snx_vk_ring_wait(&v->ring, serial, UINT64_MAX)) return false;
     memcpy(rgba, g_frame.readback.map, NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2 * 4);

@@ -18,6 +18,8 @@
 #define NO_VIDEO      "it has no video decoder"
 #define CPU_SCREEN    "it draws its screen on the CPU"
 #define NO_SHADERS    "its GPU runs no shaders of the game's"
+#define NO_UPSCALER   "its games have no upscaler of their own"
+#define PICA_SHADERS  "its shaders are the PICA's, which snx-shaderc does not read"
 #define ONE_PIPELINE  "its picture takes one pipeline"
 #define NEAREST       "its GPU samples the nearest texel, with no mipmaps"
 #define NO_BUFFERS    "its GPU reads no buffers of the game's"
@@ -72,8 +74,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {"stats"},
     {"stats_corner"},
     /* Graphics */
-    {"resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = LATER(SOON)}},
-    {"internal_resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = LATER(SOON)}},
+    {"resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN)}},
+    {"internal_resolution", {[C] = NA(OWN_ROW), [V] = NA(NO_UPSCALER), [G] = NA(CPU_SCREEN), [D] = NA(NO_UPSCALER)}},
     {"render_upscaler", OTHERS(NA(SWITCH_GPU))},
     {"render_anti_aliasing", OTHERS(NA(SWITCH_GPU))},
     {"smaa_quality", OTHERS(NA(SWITCH_GPU))},
@@ -84,7 +86,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"dlss_preset", OTHERS(NA(SWITCH_GPU))},
     {"shadows", OTHERS(NA(SWITCH_GPU))},
     {"vsync"},
-    {"frame_pacing", OTHERS(LATER(SOON))},
+    {"frame_pacing"},
     {"anisotropy", {[G] = NA(CPU_SCREEN), [D] = NA(NEAREST)}},
     {"upscaler"},
     {"upscaler_sharpness"},
@@ -225,14 +227,14 @@ const SnxConsoleSetting g_console_settings[] = {
     {"gpu_hook_trace", OTHERS(NA(SWITCH_GPU))},
     {"gpu_hook_trace_from", OTHERS(NA(SWITCH_GPU))},
     {"gpu_hook_trace_words", OTHERS(NA(SWITCH_GPU))},
-    {"shader_corpus", {[C] = LATER(SOON), [V] = NA(OWN_ROW), [G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
+    {"shader_corpus", {[C] = NA(PICA_SHADERS), [V] = NA(OWN_ROW), [G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
     {"pipeline_stats", OTHERS(NA(SWITCH_GPU))},
     {"gl_call_census", OTHERS(NA(SWITCH_GPU))},
     {"astc_dump", OTHERS(NA(SWITCH_GPU))},
     {"sm86_dump", OTHERS(NA(SWITCH_GPU))},
     {"gpu_trace_target", OTHERS(NA(SWITCH_GPU))},
-    {"vk_gpu_profile", OTHERS(LATER(SOON))},
-    {"vk_checkpoints", OTHERS(LATER(SOON))},
+    {"vk_gpu_profile"},
+    {"vk_checkpoints"},
     {"vk_debug_hide_commands"},
     {"vk_mesh_path", OTHERS(NA(SWITCH_GPU))},
     {"vk_memory", {[V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = NA(NO_BUFFERS)}},

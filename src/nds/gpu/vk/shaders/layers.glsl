@@ -11,7 +11,7 @@ bool differs(ivec2 at, int id, float depth) {
     // past the picture's border lies the clear plane: its polygon ID, at its depth
     int other = clear_id;
     float beyond = clear_depth;
-    if (at.x >= 0 && at.y >= 0 && at.x <= 255 && at.y <= 191) {
+    if (all(greaterThanEqual(at, ivec2(0))) && all(lessThan(at, textureSize(attribute_buffer, 0)))) {
         other = int(texelFetch(attribute_buffer, at, 0).r * 63.0 + 0.5);
         beyond = texelFetch(depth_buffer, at, 0).r;
     }

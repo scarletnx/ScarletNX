@@ -498,3 +498,12 @@ int snx_vk_cache_file(VkPhysicalDevice phys, const char* directory, const char* 
     snx_path_native(path);
     return 0;
 }
+
+int snx_vk_whole_scale(float asked, int most, char* line, size_t size) {
+    int scale = asked >= (float)most ? most : asked >= 1.0f ? (int)asked : 1;
+    if (size) line[0] = 0;
+    if ((float)scale != asked)
+        snprintf(line, size, "resolution=%g: drawn at %dx, the whole scale from 1 to %d at or under it", (double)asked,
+                 scale, most);
+    return scale;
+}

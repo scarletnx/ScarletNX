@@ -97,6 +97,10 @@ void snx_vk_driver_path(char* out, size_t n, const char* dir, const char* name, 
 /* The file of a game's Vulkan cache kept between runs (vk_pipeline_cache), name's on the device phys and its driver:
    <directory>/shader_cache/<name>-<the driver's tag>.bin, as the Switch's and the 3DS's are, its folder made where it
    is missing. 0, else -1 with why saying the folder that could not be made and the system's reason */
+/* The resolution setting (asked, the Switch's 0.25 to 16) as a renderer that scales by whole steps takes it: 1 to
+   most, below 1 as 1, a fraction down to the step under it, past most as most. line gets what a run says where the
+   scale is not the value asked, with both ("" where it is) */
+int snx_vk_whole_scale(float asked, int most, char* line, size_t size);
 int snx_vk_cache_file(VkPhysicalDevice phys, const char* directory, const char* name, char* path, size_t n, char* why,
                       size_t wn);
 /* Whether size bytes at data, a pipeline cache's file, may go to the driver: they start with the header Vulkan puts

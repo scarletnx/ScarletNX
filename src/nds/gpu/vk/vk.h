@@ -8,6 +8,7 @@
 #define SNX_NDS_VK_H
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/window.h"
 #include "nds/board/nds.h"
@@ -61,6 +62,9 @@ typedef struct {
     SnxVkRing ring;
     VkFormat depth_format;
     bool headless;
+    SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    uint32_t scale;     /* the 3D picture's and the frame's size in the screens' pixels, the resolution setting's */
+    bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
 } NdsVk;
 
 /* the device, once nds_vk_init made it; NULL before, and after nds_vk_free */

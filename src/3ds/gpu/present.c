@@ -71,6 +71,7 @@ static struct {
     VkDeviceMemory readback_memory;
     unsigned char* readback_view;
     SnxVkSwapchain swap[2]; /* the combined window's, or each screen's own */
+    SnxVkPaced paced[2];    /* their presents' ids, for frame_pacing */
     /* each screen drawn into the window by the effects (common/gpu/vk/present_fx.h): the upscaler and the
        anti-aliasing as the settings say, or the screen sampled in sharp pixels with both Off. A screen's own, as both
        are drawn in one recording, whose frame slot each keeps its images by */
@@ -295,6 +296,8 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
     if (g_present.swap[0].swapchain) {
         char said[160];
         snx_vk_present_said(g_present.swap[0].mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "3ds gpu: %s\n", said);
+        snx_vk_pacing_said(&v->pacing, g_settings.frame_pacing, said, sizeof said);
         fprintf(stderr, "3ds gpu: %s\n", said);
     }
     return true;
@@ -861,6 +864,9 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
         snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
+        snx_vk_pacing_present(&v->pacing, &g_present.paced[window_index], v->device,
+                              g_present.swap[window_index].swapchain,
+                              g_settings.vsync && g_present.pace == SNX_PACE_CONSOLE, &present, "3ds gpu");
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }
