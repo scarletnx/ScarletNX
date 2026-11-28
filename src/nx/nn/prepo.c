@@ -16,8 +16,8 @@
    context holds the limit's Result and the report is left; an event id Save refuses stops the SDK's Send, so that
    case runs the SDK's own code.
 
-   A 32-bit game's SDK (0.12.16 and 4.4.0, the ones read) has the same Save over a report of 4-byte fields
-   (PlayReport32).
+   A 32-bit game's SDK (0.12.16, 4.4.0 and 10.6.0, the ones read) has the same Save over a report of 4-byte fields
+   (PlayReport32), with the limit below in 10.6.0, and 10.6.0 has AddSessionId too, the id by reference as in 64 bits.
 
    From SDK 9 Save has a limit, 900 calls in any 90 minutes as SDK 20's is: a call past the limit returns success and
    leaves the report as it is. The SDK also signals its own event for that (GetOverSaveFrequencyLimitEvent), which stays with the SDK's
@@ -36,6 +36,7 @@
 #include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "common/platform/thread.h"
@@ -113,7 +114,7 @@ u32 nnprepo_save_user_unlimited(CPU* c, const HookLayout_nn_prepo_PlayReport* L,
     (void)uid;
     return save(c, L, report);
 }
-/* a 32-bit SDK's report: the same fields, 4 bytes each. Its Save has no limit */
+/* a 32-bit SDK's report: the same fields, 4 bytes each. 0.12.16's and 4.4.0's Save has no limit */
 u32 nnprepo_save32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report) {
     if (!event_id_ok(c, report)) return PREPO_EVENT_ID_INVALID;
     LOGV("prepo: the report %.31s (%u bytes) is kept nowhere\n", (const char*)hook_host(c, report),
@@ -125,6 +126,14 @@ u32 nnprepo_save32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report
 u32 nnprepo_save_user32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report, u64 uid) {
     (void)uid;
     return nnprepo_save32(c, L, report);
+}
+/* a 32-bit SDK's Save with the limit, 10.6.0's: its ring of 900 saves first, as the 64-bit SDK's from 9 */
+u32 nnprepo_save_limited32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report) {
+    return over_limit() ? 0 : nnprepo_save32(c, L, report);
+}
+u32 nnprepo_save_user_limited32(CPU* c, const HookLayout_nn_prepo_PlayReport32* L, u64 report, u64 uid) {
+    (void)uid;
+    return nnprepo_save_limited32(c, L, report);
 }
 u32 nnprepo_request_immediate_transmission(CPU* c) {
     (void)c;
@@ -167,14 +176,22 @@ void nnprepo_send(CPU* c, const HookLayout_nn_prepo_PlayReport* L, const HookLay
     context(c, A, out, 0);
 }
 
+/* the game's stack pointer: sp, a 32-bit game's r13 */
+static u64 stack_at(CPU* c) { return g_arm_mod ? arm_cpu(c)->r[13] : c->x[31]; }
+static void stack_put(CPU* c, u64 sp) {
+    if (g_arm_mod)
+        arm_cpu(c)->r[13] = (u32)sp;
+    else
+        c->x[31] = sp;
+}
 /* AddSessionId: the session's id, 8 zero bytes, put below the caller's stack, where no frame is, and added under key by
    the SDK's own PlayReport::Add(key, Any64BitId), whose Result it gives */
 u32 nnprepo_add_session_id(CPU* c, u64 report, u64 key) {
-    u64 add = kernel_find_symbol_exact(PREPO_SYM_ADD_ID), sp = c->x[31], id = (sp - 8) & ~15ull;
+    u64 add = kernel_find_symbol_exact(PREPO_SYM_ADD_ID), sp = stack_at(c), id = (sp - 8) & ~15ull;
     if (!add) fatal("nn::prepo: the SDK exports no %s, which AddSessionId adds the id with", PREPO_SYM_ADD_ID);
     snx_st_le64(hook_host(c, id), 0);
-    c->x[31] = id;
+    stack_put(c, id);
     hook_guest_call(c, add, report, key, id, 0);
-    c->x[31] = sp;
-    return (u32)c->x[0];
+    stack_put(c, sp);
+    return g_arm_mod ? arm_cpu(c)->r[0] : (u32)c->x[0];
 }

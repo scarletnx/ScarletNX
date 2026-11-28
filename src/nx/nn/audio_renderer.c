@@ -24,9 +24,10 @@
    is two of the VoiceInfoManager's methods, one a section; before SDK 1 a config has no SplitterInfoManager and an
    update no splitter section.
 
-   A 32-bit game (g_arm_mod; SDK 0.12.16 is the one read) calls the same handlers through audio_renderer.hook's a32
-   declarations. Its handle is a word of 4 bytes, its config holds its managers and buffers in 4-byte fields
-   (AudioRendererConfig32), and a manager's method leaves its result in r0 */
+   A 32-bit game (g_arm_mod; SDKs 0.12.16, 4.4.0 and 10.6.0 are the ones read) calls the same handlers through
+   audio_renderer.hook's a32 declarations. Its handle is one word of 4 bytes in 0.12.16 and two from 4.4.0, its config
+   holds its managers, buffers and render info's address in 4-byte fields (AudioRendererConfig32), and a manager's
+   method leaves its result in r0 */
 #include "nx/nn/audio.h"
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
@@ -540,7 +541,11 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
         SNX_PLOT("audio update out us", (double)((plat_ns() - t_out) / 1000));
 #endif
         if (!rc && frames) {
-            snx_st_le64(hook_host(c, snx_ld_le64(hook_host(c, config + frames))), snx_ld_le64(hook_host(c, at)));
+            /* a 32-bit SDK copies the render info's 16 bytes through its 4-byte pointer */
+            if (g_arm_mod)
+                memcpy(hook_host(c, word_at(c, config + frames)), hook_host(c, at), REN_INFO);
+            else
+                snx_st_le64(hook_host(c, snx_ld_le64(hook_host(c, config + frames))), snx_ld_le64(hook_host(c, at)));
             if (snx_ld_le32(header + HEADER_INFO) != REN_INFO) rc = SNX_RC_AUDIO_INVALID_UPDATE_INFO;
         }
         if (!rc && snx_ld_le32(header + HEADER_TOTAL) != out_size) rc = SNX_RC_AUDIO_INVALID_UPDATE_INFO;
@@ -582,6 +587,14 @@ u32 nnaudio_request_update_first32(CPU* c, const HookLayout_nn_audio_AudioRender
     return request_update(c, id, config, hook_get_u32(c, L->in, config), hook_get_u32(c, L->in_size, config),
                           hook_get_u32(c, L->out, config), hook_get_u32(c, L->out_size, config), 0,
                           UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
+}
+/* a 32-bit game's of SDK 9 on's update (10.6.0), its handle two words: the render info goes where the config's word at
+   0x20 points */
+u32 nnaudio_request_update_frames32(CPU* c, const HookLayout_nn_audio_AudioRendererConfig32* L, u64 id, u64 context,
+                                    u64 config) {
+    (void)context;
+    return request_update(c, id, config, hook_get_u32(c, L->in, config), hook_get_u32(c, L->in_size, config),
+                          hook_get_u32(c, L->out, config), hook_get_u32(c, L->out_size, config), 0x20, 0);
 }
 /* a 32-bit game's of SDK 3 to 5's update, its handle two words */
 u32 nnaudio_request_update32(CPU* c, const HookLayout_nn_audio_AudioRendererConfig32* L, u64 id, u64 context,

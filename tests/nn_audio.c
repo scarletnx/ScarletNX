@@ -778,10 +778,10 @@ static void test_table(void) {
 #undef CALL
 }
 
-/* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions SDK 0.12.16 has, and those and
-   six more in 4.4.0, each SDK read a group of its own. The AudioOut and the AudioOutBuffer are laid out as a 64-bit
-   game's; a buffer comes back as its address in r0, a volume is a float in s0, and the samples played (4.4.0's) a
-   count of 8 bytes in r0 and r1 */
+/* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions SDK 0.12.16 has, those and six
+   more in 4.4.0, and 4.4.0's and the out's volume in 10.6.0, each SDK read a group of its own. The AudioOut and the
+   AudioOutBuffer are laid out as a 64-bit game's; a buffer comes back as its address in r0, a volume is a float in s0,
+   and the samples played (4.4.0's) a count of 8 bytes in r0 and r1 */
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
 static SnxArmCPU arm;
 static u32 call32(const char* symbol, u32 r0, u32 r1) {
@@ -800,9 +800,14 @@ static void test_a32(void) {
     u32 bits;
     AudOut* q;
     arm.mem = g_mem, arm.mem_size = 0x10000;
-    CHECK(HOOK32_COUNT == 44 && hook32_read_count(1) == 19 && hook32_read_count(2) == 25);
-    for (int i = 0; i < HOOK32_COUNT; i++)
-        CHECK(hook32_read_group(i) && (hook32_read_group(i) == 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
+    CHECK(HOOK32_COUNT == 71 && hook32_read_count(1) == 19 && hook32_read_count(2) == 25 && hook32_read_count(3) == 27);
+    for (int i = 0; i < HOOK32_COUNT; i++) {
+        const char* s = hook32_symbol[i];
+        CHECK(hook32_read_group(i) && (hook32_read_group(i) >= 2 || hook32_read_entry(s, 2) >= 0));
+        /* every one of 4.4.0's in 10.6.0, and the out's volume in 10.6.0 alone */
+        CHECK(hook32_read_group(i) != 2 || hook32_read_entry(s, 3) >= 0);
+        CHECK(!strstr(s, "AudioOutVolume") || hook32_read_group(i) == 3);
+    }
     parameter(48000, 2);
     memset(GP(T_OUT), 0xCC, 0x120);
     CHECK(call32("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", T_OUT, PARAMS) == 0);
@@ -837,6 +842,16 @@ static void test_a32(void) {
     memcpy(&got, &bits, sizeof got);
     CHECK(got == 0.5f && arm.d[0] >> 32 == 0x12345678u);
     nnaudio_set_device_output_volume(&cpu, NAME, 1.0f);
+    /* 10.6.0's: the out's own volume from and to s0, the other half of d0 as it was */
+    memcpy(&bits, &half, sizeof bits);
+    arm.d[0] = 0x1234567800000000ull | bits;
+    call32("_ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf", T_OUT, 0);
+    CHECK(q->volume == 0.5f && q->output->volume == 0.5f);
+    arm.d[0] = 0x12345678deadbeefull;
+    call32("_ZN2nn5audio17GetAudioOutVolumeEPKNS0_8AudioOutE", T_OUT, 0);
+    bits = (u32)arm.d[0];
+    memcpy(&got, &bits, sizeof got);
+    CHECK(got == 0.5f && arm.d[0] >> 32 == 0x12345678u);
     call32("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", T_OUT, 0);
     call32("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", T_OUT, 0);
     CHECK(out_at(T_OUT) == NULL && snx_ld_le32(GP(T_OUT + 12)) == 1);

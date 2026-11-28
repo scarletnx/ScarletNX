@@ -202,19 +202,42 @@ int main(void) {
     CHECK_STOPS(nntime_set_automatic_correction_enabled(c, 0));
     CHECK(nntime_is_automatic_correction_enabled(c) && nntime_is_accuracy_sufficient(c) && nntime_initial_year(c) == 2019);
 
-    /* a 32-bit game: the 28 functions SDK 0.12.16 has, and the 48 of 4.4.0, each SDK read a group of its own; the
-       adjustable and ephemeral clocks and the snapshots in 4.4.0's alone, and no timespec (a long is 4 bytes there) */
+    /* a 32-bit game: the 28 functions SDK 0.12.16 has, the 48 of 4.4.0 and the 53 of 10.6.0, each SDK read a group
+       of its own; the adjustable and ephemeral clocks and the snapshots in 4.4.0's and 10.6.0's alone, the steady
+       clock's time point, the initial year, the system user's Initialize and the two detail functions in 10.6.0's
+       alone, and no timespec (a long is 4 bytes there) */
     {
+        static const char* const only_1060[5] = {
+            "_ZN2nn4time23InitializeForSystemUserEv",
+            "_ZN2nn4time38GetStandardSteadyClockCurrentTimePointEPNS0_20SteadyClockTimePointE",
+            "_ZN2nn4time6detail56GetStandardUserSystemClockAutomaticCorrectionUpdatedTimeEPNS0_20SteadyClockTimePointE",
+            "_ZN2nn4time37GetStandardUserSystemClockInitialYearEv",
+            "_ZN2nn4time6detail35GetDeviceLocationNameAndUpdatedTimeEPNS0_12LocationNameEPNS0_20SteadyClockTimePointE"};
         static SnxArmCPU a;
         a.mem = mem, a.mem_size = sizeof mem;
-        CHECK(HOOK32_COUNT == 76 && hook32_read_count(1) == 28 && hook32_read_count(2) == 48);
+        CHECK(HOOK32_COUNT == 129 && hook32_read_count(1) == 28 && hook32_read_count(2) == 48 &&
+              hook32_read_count(3) == 53);
         for (int i = 0; i < HOOK32_COUNT; i++) {
             const char* s = hook32_symbol[i];
             CHECK(hook32_read_group(i) && !strstr(s, "timespec"));
             if (strstr(s, "Adjustable") || strstr(s, "Snapshot") || strstr(s, "Ephemeral"))
-                CHECK(hook32_read_group(i) == 2);
+                CHECK(hook32_read_group(i) >= 2);
             if (hook32_read_group(i) == 1) CHECK(hook32_read_entry(s, 2) >= 0); /* every one of 0.12.16's in 4.4.0 */
+            if (hook32_read_group(i) == 2) CHECK(hook32_read_entry(s, 3) >= 0); /* and every one of 4.4.0's in 10.6.0 */
         }
+        for (int k = 0; k < 5; k++)
+            CHECK(hook32_read_entry(only_1060[k], 3) >= 0 && hook32_read_entry(only_1060[k], 2) == -1 &&
+                  hook32_read_entry(only_1060[k], 1) == -1);
+        /* 10.6.0's: the initial year in r0, the steady clock's time point (24 bytes) through the pointer in r0 */
+        a.r[1] = 0x1234, a.r[14] = 0x5000;
+        hook32_fn[hook32_read_entry(only_1060[3], 3)](&a);
+        CHECK(a.r[0] == 2019 && a.r[1] == 0x1234 && a.r[15] == 0x5000);
+        memset(mem + 0xc00, 0xee, 0x20);
+        memset(mem + 0xc40, 0xee, 0x20);
+        CHECK(nntime_steady_get_current_time_point(c, 0xc40) == 0);
+        a.r[0] = 0xc00, a.r[14] = 0x5000;
+        hook32_fn[hook32_read_entry(only_1060[1], 3)](&a);
+        CHECK(a.r[0] == 0 && !memcmp(mem + 0xc08, mem + 0xc48, 16) && mem[0xc18] == 0xee);
         /* now(): the time point through the pointer in r0, the same on both clocks, and r1 as it was */
         CHECK(nntime_user_get_current_time(c, 0x100) == 0);
         memset(mem + 0xa00, 0xee, 0x30);
