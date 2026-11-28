@@ -48,8 +48,9 @@ static u32 result(const char* function, int r) {
         }
         return (u32)r;
     }
-    fatal("nn::ro::%s: loading the game's modules failed with the result %#x, which the SDK stops the game on",
-          function, (unsigned)r);
+    fatal_as(SNX_ERROR_GAME_STOPPED,
+             "nn::ro::%s: loading the game's modules failed with the result %#x, which the SDK stops the game on",
+             function, (unsigned)r);
 }
 
 void nnro_initialize(CPU* c) { (void)c; }
@@ -111,9 +112,10 @@ void nnro_unregister_module_info(CPU* c, u64 info) {
     u64 nrr = snx_ld_le64(hook_host(c, info + INFO_NRR));
     int r = ldr_own_unregister(nrr);
     if (r)
-        fatal("nn::ro::UnregisterModuleInfo: the list of modules at %llx is not registered (the result %#x), which "
-              "the SDK stops the game on",
-              (unsigned long long)nrr, (unsigned)r);
+        fatal_as(SNX_ERROR_GAME_STOPPED,
+                 "nn::ro::UnregisterModuleInfo: the list of modules at %llx is not registered (the result %#x), which "
+                 "the SDK stops the game on",
+                 (unsigned long long)nrr, (unsigned)r);
     snx_st_le32(hook_host(c, info + INFO_STATE), 0);
 }
 /* flag asks for each PLT slot bound at its first call or at once: the runtime's linker binds them at once either

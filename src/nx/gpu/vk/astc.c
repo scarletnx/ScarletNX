@@ -1684,7 +1684,7 @@ void vk_astc_stream_submit(void) {
     vk_queue_unlock(g_vk.compute);
     if (r == VK_ERROR_DEVICE_LOST) {
         vk_ck_report();
-        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+        fatal_as(SNX_ERROR_GPU_LOST, "vulkan: the GPU device was lost (driver reset or crash)");
     }
     if (!VK_OK(r)) { /* never signaled by the GPU: the host signals it, so that the waits for it end */
         const VkSemaphoreSignalInfo s = {

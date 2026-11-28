@@ -30,6 +30,8 @@ def main():
             args = [driver, *extra]
             if explicit:
                 args += ['-x', '--output', str(output)]
+            else:  # a game played: headless, no one is at its window, which a host without Vulkan would stop on
+                args += ['--headless']
             args += [str(source)]
             # no 3DS keys but the case's own: the home folder is the test's (the user's ~/.3ds is not read)
             env = {**(env or os.environ), 'HOME': str(root), 'USERPROFILE': str(root)}
@@ -180,7 +182,9 @@ def main():
         p = subprocess.run([str(expected / name), '--script=100:1', '--seconds=20'], capture_output=True, text=True,
                            cwd=root, timeout=30, env=env)
         assert p.returncode == 0 and run_message in p.stdout + p.stderr, (p.returncode, p.stdout + p.stderr)
-        p = subprocess.run([driver, f'--game={expected}'], capture_output=True, text=True, cwd=root, timeout=30, env=env)
+        p = subprocess.run(  # headless, as run()'s games
+            [driver, '--headless', f'--game={expected}'], capture_output=True, text=True, cwd=root, timeout=30, env=env
+        )
         assert p.returncode == 0 and run_message in p.stdout + p.stderr, (p.returncode, p.stdout + p.stderr)
         if sys.platform != 'win32' and sys.platform != 'darwin':
             # An installed build's (its folder is the user's data folder) is in the XDG cache folder

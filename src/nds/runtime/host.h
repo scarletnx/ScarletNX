@@ -34,6 +34,8 @@ bool nds_host_thumb(NdsHost* host, uint8_t* thumb);
 bool nds_host_held(NdsHost* host);
 /* the last frame, both screens, as a PPM at path: 0, or -1 */
 int nds_host_shot(NdsHost* host, const char* path);
+/* the GPU stopped answering (its ring's loss, common/gpu/vk/ring.h): 1 with why, else 0 */
+int nds_host_lost(const NdsHost* host, char* why, size_t why_size);
 void nds_host_close(NdsHost* host);
 /* the gain the game's sound plays at, the player's Volume over 100; -1 without sound */
 float nds_host_volume(const NdsHost* host);

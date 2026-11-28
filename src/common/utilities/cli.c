@@ -48,6 +48,8 @@ static const CliOption options[SNX_CLI_COUNT] = {
                         "the buttons)"},
     [SNX_CLI_FULLSCREEN] = {"--fullscreen", 'f', NULL, NULL, NULL, "Start fullscreen, for this run (=0: windowed)"},
     [SNX_CLI_HEADLESS] = {"--headless", 'H', NULL, NULL, NULL, "Run without a window"},
+    [SNX_CLI_FROM_LAUNCHER] = {"--from-launcher", 0, NULL, "1", "1",
+                               "The launcher started this run: an error's action goes to it, in the run's output"},
     [SNX_CLI_OPT] = {"--opt", 'O', NULL, "LEVEL", "a level",
                      "LLVM's optimization level, which went with it: said, and nothing done"},
     [SNX_CLI_JOBS] = {"--jobs", 0, NULL, "N", "a whole number",
@@ -194,6 +196,10 @@ int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t
     SnxCliArg arg;
     int id = snx_cli_match(argc, argv, i, cli->accepted, cli->program, &arg, error, size);
     if (id <= 0) return id;
+    if (id == SNX_CLI_FROM_LAUNCHER && strcmp(arg.value, "1")) {
+        snprintf(error, size, "%s: --from-launcher=%s is not 1", cli->program, arg.value);
+        return SNX_CLI_ERROR;
+    }
     if (id == SNX_CLI_FULLSCREEN)
         cli->fullscreen = arg.value[0] == '1';
     else if (id == SNX_CLI_SECONDS)

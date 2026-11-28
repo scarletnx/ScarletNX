@@ -43,16 +43,17 @@ static void rt_undef(CPU* c, u64 pc, u32 w) {
          (unsigned long long)pc, what);
     kernel_dump_regs(c);
     save_hints();
-    fatal("The game ran an instruction the recompiler cannot run (%08x at %llx). See the .log for details.", w,
-          (unsigned long long)pc);
+    fatal_as(SNX_ERROR_NOT_YET,
+             "The game ran an instruction the recompiler cannot run (%08x at %llx). See the .log for details.", w,
+             (unsigned long long)pc);
 }
 static void rt_brk(CPU* c, u64 pc, u32 imm) {
     WARN("\n*** The game stopped at BRK #%x at %llx ***\n", imm, (unsigned long long)pc);
     fs_save_report(); /* a save a newer version wrote, which a game's own checks often stop on */
     kernel_dump_regs(c);
     save_hints();
-    fatal("The game stopped at a breakpoint (BRK #%x at %llx). See the .log for details.", imm,
-          (unsigned long long)pc);
+    fatal_as(SNX_ERROR_GAME_STOPPED, "The game stopped at a breakpoint (BRK #%x at %llx). See the .log for details.",
+             imm, (unsigned long long)pc);
 }
 
 /* Guest floating point runs in the helpers, which read FPCR themselves: the host's FP environment stays as it is */
@@ -79,8 +80,9 @@ void rt_missed_report(CPU* c, u64 pc, const char* why) {
     fs_save_report(); /* a save a newer version wrote, whose pointers a game may call through */
     kernel_dump_regs(c);
     save_hints();
-    fatal("The game reached code at %llx that the recompiler missed, and %s. See the .log for details.",
-          (unsigned long long)pc, why);
+    fatal_as(SNX_ERROR_NOT_YET,
+             "The game reached code at %llx that the recompiler missed, and %s. See the .log for details.",
+             (unsigned long long)pc, why);
 }
 
 /* snx_lookup found no function for pc: first the AOT module's variant table, which the build linked in from a profile

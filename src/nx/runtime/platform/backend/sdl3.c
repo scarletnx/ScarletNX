@@ -22,7 +22,10 @@
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/ctrl_scan.h"
 #include "nx/runtime/platform/connect.h"
-#include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/error_console.h"
+#include "common/utilities/error_sdl.h"
+#include "common/utilities/error_spawn.h"
+#include "common/utilities/fatal_screen.h"
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
@@ -130,10 +133,11 @@ static struct {
     void* driver_module;
     int driver_looked;
 #endif
-    char* _Atomic fatal_left; /* an error another thread left for the main thread to show */
-    _Atomic int fatal_taken;  /* the main thread is showing it */
-    /* fatal_screen's: as many as the renderer's list, a long message's rows on a wide window */
-    SnxUiQuad fatal_quads[4096];
+    SnxError* _Atomic fatal_left; /* an error another thread left for the main thread to show, malloc'd */
+    /* what a crash's error carries besides its own (fatal_fill's, made as the window opened): the crash's handler may
+       make nothing, and fills its kind and message in here, the one crash that reports */
+    SnxError fatal_known;
+    _Atomic int fatal_taken; /* the main thread is showing it */
     int fps_was; /* the limit the fps hotkey took off, to put back (0 for none yet: the game's pace) */
     /* The mouse is held for the game while it plays with it: a Joy-Con on a table has no window's edge to stop at. The
        menu takes it back. With game_mouse at Hotkey (the default) the mouse reaches the game, and is held, only while
@@ -595,7 +599,7 @@ void backend_controller_hide(u32 ticket) {
     ui_unlock();
 }
 
-/* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
+/* the atlas the renderer uploads, when the window opens */
 static void controls_atlas(void) { ui_atlas_build(); }
 static void controls_say(const char* line) { LOG("%s\n", line); }
 /* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected */
@@ -606,8 +610,10 @@ static void controls_auto(void) { snx_vpad_sdl_auto(g_touch_seen); }
    another reason than the device's Vulkan version was said as that before */
 static void renderer_failed(const char* what) {
     const char* why = g_renderer->start_failure ? g_renderer->start_failure() : "";
-    if (why && why[0]) fatal("%s: %s.", what, why);
-    fatal("%s (see the log).", what);
+    /* a device with no Vulkan 1.3 is one another driver of it may give it; a start that failed otherwise, its driver's */
+    int kind = why && strstr(why, "needs Vulkan 1.3") ? SNX_ERROR_GPU_OLD : SNX_ERROR_GPU_START;
+    if (why && why[0]) fatal_as(kind, "%s: %s.", what, why);
+    fatal_as(kind, "%s (see the log).", what);
 }
 /* The Vulkan driver this run picked (the game's vulkan_driver, docs/hosts/apple.md): on a Mac the library SDL loads, and for
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
@@ -632,7 +638,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     free(self);
     /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system has
        not plays auto's in its place, so that a game still starts, and the warning names it */
-    if (!found) fatal("%s", reason);
+    if (!found) fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "vulkan_driver"}, "%s", reason);
     if (g_sdl3.driver.instead)
         WARN("vulkan: vulkan_driver=%s: %s\n", asked, reason);
     else if (reason[0])
@@ -642,7 +648,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     if (g_sdl3.driver.icd && setenv("VK_DRIVER_FILES", g_sdl3.driver.icd, 1)) {
         char error[256];
         LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", g_sdl3.driver.icd, snx_os_error(error, sizeof error));
-        fatal("vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
+        fatal_as(SNX_ERROR_GPU_START, "vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
     }
     /* the setting's driver over a library SDL_VULKAN_LIBRARY names, which only auto leaves */
     if (g_sdl3.driver.library)
@@ -651,6 +657,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     return &g_sdl3.driver;
 }
 
+static void fatal_prepare(void);
 void video_init(const char* title, const char* addons) {
     /* MoltenVK's library or the KosmicKrisp loader, before SDL opens the window and loads one of its own, or the
        headless renderer one (docs/hosts/apple.md); and the setting checked on every system */
@@ -665,7 +672,8 @@ void video_init(const char* title, const char* addons) {
     /* a finger and the mouse each reach the touch screen once, and Android's Back opens the game's menu (overlay.c) */
     snx_vpad_sdl_hints();
     snx_sdl_desktop_hints();
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
+        fatal_as(SNX_ERROR_GPU_START, "SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     joycon2_start(); /* the Joy-Con 2 host, when joycon2 is on: each one it connects is a gamepad too */
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
@@ -694,13 +702,14 @@ void video_init(const char* title, const char* addons) {
        each way, which the display server stretches, the game and what is drawn over it blurred alike */
     g_sdl3.win =
         SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!g_sdl3.win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
+    if (!g_sdl3.win) fatal_as(SNX_ERROR_GPU_START, "SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_sdl3.win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
     overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
 #endif
     controls_atlas();
+    fatal_prepare();
     vpad_set_say(controls_say);
     vpad_set_touch(touch_changed);
     controls_auto();
@@ -726,7 +735,7 @@ void video_init(const char* title, const char* addons) {
 /* the shared GPU driver loader (common/gpu/vk/gpu_driver_load.h), told what this run asks and where to say it: its
    lines go to the run's log, and one that stops the run is a fatal error of it */
 static void gpu_driver_say(const char* line) { LOG("%s", line); }
-static void gpu_driver_stop(const char* line) { fatal("%s", line); }
+static void gpu_driver_stop(const char* line) { fatal_as(SNX_ERROR_GPU_START, "%s", line); }
 static void* gpu_driver_begin(void) {
     SnxGpuDriverRun run = {.driver = g_settings.gpu_driver,
                            .freedreno = g_settings.freedreno_variables,
@@ -833,35 +842,8 @@ static void set_fullscreen(int on) {
     else
         LOG("video: %s\n", why);
 }
-/* ---- a fatal error's box (log.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
-   to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was
-   lost), and an SDL renderer of its own draws the panel's quads from the same atlas ---- */
-
-/* ui.h's quads, as the Vulkan renderer draws them (gpu/vk/ui.c): the atlas's premultiplied texels times their colour */
-/* one quad as it is drawn (ui_drawn: a bar of the ring where it is) */
-static void ui_draw_quad_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiQuadView* q) {
-    static const int corners[6] = {0, 1, 2, 0, 2, 3};
-    float a = (float)(q->rgba >> 24) / 255.0f;
-    if (!q->uw || q->ink == UI_SHAPE) return; /* a blank cell (ui_cells): nothing drawn; no shape on the panel */
-    SDL_FColor c = {(float)(q->rgba & 0xFF) / 255.0f * a, (float)(q->rgba >> 8 & 0xFF) / 255.0f * a,
-                    (float)(q->rgba >> 16 & 0xFF) / 255.0f * a, a};
-    float u0 = (float)q->u / (float)aw, v0 = (float)q->v / (float)ah;
-    float u1 = (float)(q->u + q->uw) / (float)aw, v1 = (float)(q->v + q->vh) / (float)ah;
-    SDL_Vertex v[4] = {{{q->x, q->y}, c, {u0, v0}},
-                       {{q->x + q->w, q->y}, c, {u1, v0}},
-                       {{q->x + q->w, q->y + q->h}, c, {u1, v1}},
-                       {{q->x, q->y + q->h}, c, {u0, v1}}};
-    SDL_RenderGeometry(r, atlas, v, 4, corners, 6);
-}
-static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, const SnxUiList* l) {
-    int i;
-    for (i = 0; i < l->n; ++i) {
-        SnxUiQuadView ground, drawn = ui_drawn(&l->q[i]);
-        if (ui_drawn_ground(&l->q[i], &ground)) ui_draw_quad_sdl(r, atlas, aw, ah, &ground); /* a backed letter's */
-        ui_draw_quad_sdl(r, atlas, aw, ah, &drawn);
-    }
-}
-/* 0 when no box could be shown (no window, the renderer didn't let go, no renderer or atlas here) */
+/* ---- a fatal error's panel (log.c's fatal, common/utilities/error_panel.h): in the game's window once the game's
+   renderer lets go of it (its device may be what was lost), drawn as rectangles by an SDL renderer of its own ---- */
 #ifdef __ANDROID__
 /* the activity's share(path) (GameActivity.java): the file, to the app the player picks */
 static int android_share(const char* path) {
@@ -907,270 +889,152 @@ char* backend_exit_reason(long long pid, long long started) {
                                                : "the system's reason is unknown: GameActivity.exitReason failed");
 }
 #endif
-/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android and
-   iOS; its path in saved once written (else left as it was), what it did in said */
-static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
-                        size_t size) {
-    char made[1300], *folder = snx_dirname(game_log);
-    int ok = folder && !fatal_share_log(folder, snx_build_log_line(), msg, game_log, made, sizeof made);
-    if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
 #ifdef __ANDROID__
-    else if (!android_share(made))
-        snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
+static int fatal_share(const char* path) { return android_share(path); }
 #elif defined(SDL_PLATFORM_IOS)
-    else if (!gui_apple_share(g_sdl3.win, made))
-        snprintf(said, size, "Log saved to %s, but the share sheet did not open.", made);
+static int fatal_share(const char* path) { return gui_apple_share(g_sdl3.win, path); }
 #endif
-    else
-        snprintf(said, size, "Log saved to %s.", made);
-    if (ok) snprintf(saved, saved_size, "%s", made);
-    free(folder);
-}
-/* Copy path: the log Share Log saved, else the game's own, to paste where it is asked for */
-static void fatal_copy(const char* path, char* said, size_t size) {
-    if (SDL_SetClipboardText(path))
-        snprintf(said, size, "Path copied: %s", path);
-    else
-        snprintf(said, size, "The path could not be copied: %s", SDL_GetError());
-}
-/* said, Share Log's or Copy path's line, as the screen shows it (fatal_shown): the path it names is the whole one in
-   the file's name and on the clipboard, and ~ for its home folder here. Out of memory it stays as it is */
-static void fatal_said_shown(char* said, size_t size) {
-    char* shown = fatal_shown(said);
-    if (shown) snprintf(said, size, "%s", shown);
-    free(shown);
-}
-enum { FATAL_LINK = SNX_OVERLAY_ERROR_ITEMS, FATAL_OUT }; /* past the items: the log's link, and the rest */
-/* what a press at x, y is on: an item, the link or the rest */
-static int fatal_at(const SnxOverlayError* panel, float x, float y) {
-    int i;
-    if (overlay_error_hit(&panel->link, x, y)) return FATAL_LINK;
-    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i)
-        if (overlay_error_hit(&panel->items[i], x, y)) return i;
-    return FATAL_OUT;
-}
-/* the box's renderer (Vulkan first: the window was made for it) and its atlas, the panel's sprites as a texture of it;
-   either made again when *r or *atlas is NULL. 0, with nothing left made, when one can't be */
-static int fatal_draw_make(SDL_Renderer** r, SDL_Texture** atlas, int* aw, int* ah) {
-    const u32* px;
-    u32 version;
-    if (!*r) *r = SDL_CreateRenderer(g_sdl3.win, "vulkan");
-    if (!*r) *r = SDL_CreateRenderer(g_sdl3.win, NULL);
-    if (!*r) {
-        LOG("video: no renderer for the error's box: %s\n", SDL_GetError());
-        return 0;
-    }
-    if (*atlas) return 1;
-    controls_atlas(); /* the renderer freed its copy once it had it */
-    ui_lock();
-    px = ui_atlas(aw, ah, &version);
-    if (px) {
-        SDL_Surface* image = SDL_CreateSurfaceFrom(*aw, *ah, SDL_PIXELFORMAT_RGBA32, (void*)px, *aw * 4);
-        if (image) *atlas = SDL_CreateTextureFromSurface(*r, image);
-        SDL_DestroySurface(image);
-    }
-    ui_unlock();
-    if (!*atlas) {
-        LOG("video: no atlas for the error's box: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(*r);
-        *r = NULL;
-        return 0;
-    }
-    SDL_SetTextureBlendMode(*atlas, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-    SDL_SetTextureScaleMode(*atlas, SDL_SCALEMODE_NEAREST);
-    return 1;
-}
-static int fatal_screen(const char* msg) {
-#ifdef __ANDROID__
-    static const char* const how = "Share Log sends the game's log, which has what ran last.";
-#else
-    static const char* const how = "The game's log has what ran last: ";
-    char log_url[3608];
-#endif
-    SnxUiList l = {g_sdl3.fatal_quads, 0, 4096};
-    char name[256], what[1400], log_path[1200], said[1400], saved[1300] = "", *full;
-    char *shown_msg, *shown_log; /* fatal_shown's; NULL out of memory: the text as it is, rather than none */
-    SnxOverlayError panel;
-    SDL_FingerID finger = 0;
-    int pointer = 0, pressed = FATAL_OUT, button = -1; /* pointer: 1 the left button, 2 a finger, 3 another button */
-    SDL_Renderer* r = NULL;
-    SDL_Texture* atlas = NULL;
-    int aw = 0, ah = 0, done = 0, i;
-    Uint64 since;
-    if (!g_sdl3.win) return 0;
-    atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
-    /* no zones here: the fatal path closes the client before this screen, so no capture can receive them */
-    if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return 0;
-    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) return 0;
-    shown_msg = fatal_shown(msg);
-    for (i = 0; g_sdl3.title[i] && i < (int)sizeof name - 1; ++i)
-        name[i] = g_sdl3.title[i] >= 'a' && g_sdl3.title[i] <= 'z' ? (char)(g_sdl3.title[i] - 32) : g_sdl3.title[i];
-    name[i] = 0;
-    memset(&panel, 0, sizeof panel);
-    panel.name = name;
-    panel.msg = shown_msg ? shown_msg : msg;
-    panel.how = what;
-    panel.focus = SNX_OVERLAY_ERROR_CLOSE;
+static void fatal_say(const char* line) { LOG("%s\n", line); }
+/* what log.c does not know of the game's error: the game's name, its log, its program (what Try Again and the
+   launcher's pages take) and its folder */
+static void fatal_fill(SnxError* e) {
+    e->from_launcher = snx_error_from_launcher();
+    char log_path[1200], *full;
+    if (!e->game[0]) snprintf(e->game, sizeof e->game, "%s", g_sdl3.title[0] ? g_sdl3.title : g_exename);
     /* the log log.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
-       for ./MyGame): Share Log and a file URI need an absolute path */
+       for ./MyGame): Share Log and a file URI need an absolute path. A log that is not there yet (an error before the
+       game's code loaded) is none */
     snprintf(log_path, sizeof log_path, "%s%s.log", g_statedir, g_exename);
     full = snx_absolute(log_path);
-    if (full && strlen(full) < sizeof log_path) memcpy(log_path, full, strlen(full) + 1);
+    if (!e->log[0] && full && snx_is_file(full)) snprintf(e->log, sizeof e->log, "%s", full);
     free(full);
-    shown_log = fatal_shown(log_path); /* the link opens log_url and Copy path takes log_path, both whole */
-#ifdef __ANDROID__
-    snprintf(what, sizeof what, "%s", how);
+    if (!e->program[0] && g_exename[0]) {
+#ifdef _WIN32
+        snprintf(log_path, sizeof log_path, "%s%s.exe", g_exedir, g_exename);
 #else
-    /* a link only to a log that is there: log.c makes it once the game's code has loaded, so an error before that has
-       none, and the path stays plain text */
-    if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
-        snprintf(what, sizeof what, "%s", how);
-        panel.log = shown_log ? shown_log : log_path;
-    } else
-        snprintf(what, sizeof what, "%s%s", how, shown_log ? shown_log : log_path);
+        snprintf(log_path, sizeof log_path, "%s%s", g_exedir, g_exename);
 #endif
-    if (g_sdl3.win) SDL_SetWindowRelativeMouseMode(g_sdl3.win, false); /* the panel is clicked */
-    since = SDL_GetTicks();
-    while (!done) {
-        SDL_Event e;
-        int w = 0, h = 0, item = -1, at;
-        float x, y;
-        SDL_GetRenderOutputSize(r, &w, &h);
-        l.n = 0;
-        overlay_error_draw(&l, w, h, &panel);
-        while (SDL_PollEvent(&e)) {
-            switch (e.type) {
-                case SDL_EVENT_QUIT:
-                case SDL_EVENT_WINDOW_CLOSE_REQUESTED: done = 1; break;
-                /* a press made on this box: not a key held from the game, nor one that came as the error did. Up and
-                   Down move between the items, Enter and Space do the one in focus, any other key closes */
-                case SDL_EVENT_KEY_DOWN:
-                    if (e.key.repeat || SDL_GetTicks() - since <= 500) break;
-                    if (e.key.key == SDLK_UP)
-                        panel.focus = (panel.focus + SNX_OVERLAY_ERROR_ITEMS - 1) % SNX_OVERLAY_ERROR_ITEMS;
-                    else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_TAB)
-                        panel.focus = (panel.focus + 1) % SNX_OVERLAY_ERROR_ITEMS;
-                    else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE)
-                        item = panel.focus;
-                    else
-                        done = 1;
-                    break;
-                /* a gamepad's the same: the D-pad moves, A does the item in focus, any other button closes */
-                case SDL_EVENT_GAMEPAD_BUTTON_DOWN: button = e.gbutton.button; break;
-                case SDL_EVENT_GAMEPAD_BUTTON_UP:
-                    if (e.gbutton.button != button) break;
-                    button = -1;
-                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
-                        panel.focus = (panel.focus + SNX_OVERLAY_ERROR_ITEMS - 1) % SNX_OVERLAY_ERROR_ITEMS;
-                    else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
-                        panel.focus = (panel.focus + 1) % SNX_OVERLAY_ERROR_ITEMS;
-                    else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH)
-                        item = panel.focus;
-                    else
-                        done = 1;
-                    break;
-                /* a click or a tap does what it is let go on, if it went down there: an item, the log's link (which
-                   opens it), anywhere else closes. Any other mouse button closes, as before there were items */
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                    if (e.button.which == SDL_TOUCH_MOUSEID || pointer) break;
-                    pointer = e.button.button == SDL_BUTTON_LEFT ? 1 : 3;
-                    pressed = SDL_RenderCoordinatesFromWindow(r, e.button.x, e.button.y, &x, &y)
-                                  ? fatal_at(&panel, x, y)
-                                  : FATAL_OUT;
-                    break;
-                case SDL_EVENT_FINGER_DOWN:
-                    if (pointer) break;
-                    pointer = 2;
-                    finger = e.tfinger.fingerID;
-                    pressed = fatal_at(&panel, e.tfinger.x * (float)w, e.tfinger.y * (float)h);
-                    break;
-                case SDL_EVENT_MOUSE_BUTTON_UP:
-                case SDL_EVENT_FINGER_UP:
-                    if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                        if ((pointer != 1 && pointer != 3) || e.button.which == SDL_TOUCH_MOUSEID) break;
-                        at = pointer == 3 ? FATAL_OUT
-                             : SDL_RenderCoordinatesFromWindow(r, e.button.x, e.button.y, &x, &y)
-                                 ? fatal_at(&panel, x, y)
-                                 : FATAL_OUT;
-                    } else {
-                        if (pointer != 2 || e.tfinger.fingerID != finger) break;
-                        at = fatal_at(&panel, e.tfinger.x * (float)w, e.tfinger.y * (float)h);
-                    }
-                    if (pointer == 3 || (at == pressed && at == FATAL_OUT))
-                        done = 1;
-                    else if (at == pressed && at == FATAL_LINK) {
-#ifndef __ANDROID__
-                        if (!SDL_OpenURL(log_url)) LOG("video: could not open the log: %s\n", SDL_GetError());
-#endif
-                    } else if (at == pressed)
-                        item = at;
-                    pointer = 0;
-                    pressed = FATAL_OUT;
-                    break;
-                /* SDL made the renderer's device again and freed its textures' data (Android's Vulkan renderer does so
-                   as the app comes back to the foreground): the next draw reads the atlas, which is made again first.
-                   A device lost for good takes a renderer of its own as well; when one can't be made, SDL's own box
-                   shows the error */
-                case SDL_EVENT_RENDER_DEVICE_RESET:
-                case SDL_EVENT_RENDER_DEVICE_LOST:
-                    LOG("video: the error's box makes its %s again (SDL's %s)\n",
-                        e.type == SDL_EVENT_RENDER_DEVICE_LOST ? "renderer and atlas" : "atlas",
-                        e.type == SDL_EVENT_RENDER_DEVICE_LOST ? "device lost" : "device reset");
-                    SDL_DestroyTexture(atlas);
-                    atlas = NULL;
-                    if (e.type == SDL_EVENT_RENDER_DEVICE_LOST) {
-                        SDL_DestroyRenderer(r);
-                        r = NULL;
-                    }
-                    if (!fatal_draw_make(&r, &atlas, &aw, &ah)) {
-                        free(shown_msg);
-                        free(shown_log);
-                        return 0;
-                    }
-                    break;
-                case SDL_EVENT_FINGER_CANCELED:
-                    if (pointer == 2 && e.tfinger.fingerID == finger) {
-                        pointer = 0;
-                        pressed = FATAL_OUT;
-                    }
-                    break;
-            }
-            if (item == SNX_OVERLAY_ERROR_CLOSE) done = 1;
-            if (item == SNX_OVERLAY_ERROR_SHARE || item == SNX_OVERLAY_ERROR_COPY) {
-                panel.focus = item;
-                if (item == SNX_OVERLAY_ERROR_SHARE)
-                    fatal_share(msg, log_path, saved, sizeof saved, said, sizeof said);
-                else
-                    fatal_copy(saved[0] ? saved : log_path, said, sizeof said);
-                fatal_said_shown(said, sizeof said);
-                panel.said = said;
-            }
-            item = -1;
-        }
-        /* where the game's picture was: the device that drew it may be gone */
-        SDL_SetRenderDrawColor(r, 0x14, 0x14, 0x16, 255);
-        SDL_RenderClear(r);
-        ui_draw_sdl(r, atlas, aw, ah, &l);
-        SDL_RenderPresent(r);
-        SDL_Delay(16);
+        full = snx_absolute(log_path);
+        if (full && snx_is_file(full)) snprintf(e->program, sizeof e->program, "%s", full);
+        free(full);
     }
-    SDL_DestroyTexture(atlas);
-    SDL_DestroyRenderer(r);
-    free(shown_msg);
-    free(shown_log);
-    return 1;
+    if (!e->folder[0] && (e->kind == SNX_ERROR_DISK || e->kind == SNX_ERROR_SAVE) && g_exedir[0]) {
+        full = snx_absolute(g_exedir);
+        if (full) snprintf(e->folder, sizeof e->folder, "%s", full);
+        free(full);
+    }
 }
-/* SDL's box of an error: on Windows it is as wide as its longest line, so the text goes in broken into lines */
-static void fatal_box(const char* msg) {
+/* the panel in the game's window: the action taken there, or -1 where it could not show (no window, the renderer kept
+   the window, no renderer), said in the log */
+static int fatal_panel(SnxError* e) {
+    SnxErrorSdlHooks hooks = {.say = fatal_say};
+    char why[400];
+    int action;
+#if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+    hooks.share = fatal_share;
+#endif
+#ifdef __ANDROID__
+    hooks.back_key = 1;
+#endif
+    if (!g_sdl3.win) return -1;
+    atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
+    /* no zones here: the fatal path closes the client before this screen, so no capture can receive them */
+    if (g_renderer_up && g_renderer->release_window && !g_renderer->release_window()) return -1;
+    action = snx_error_sdl_run(g_sdl3.win, e, &hooks, why, sizeof why);
+    if (action < 0) LOG("error: %s\n", why);
+    return action;
+}
+/* the run's line that says the error and whether it showed (error_kind.h), which the launcher reads in its output */
+static void fatal_said(const SnxError* e, int shown) {
+    char line[160];
+    snx_error_said(e, shown, line, sizeof line);
+    LOG("%s\n", line);
+}
+/* SDL's box of an error, where no panel could show: on Windows it is as wide as its longest line, so the text goes in
+   broken into lines */
+static int fatal_box(const char* msg) {
     char* lines = fatal_lines(msg, FATAL_BOX_COLS);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
+    int shown = SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
+    if (!shown) LOG("error: SDL's box did not show either: %s\n", SDL_GetError());
     free(lines);
+    return shown;
 }
-/* log.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
-   From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
+/* the action taken on the error's panel done: for the launcher that waits, the run's line it reads; with none, Try
+   Again starts the game again and a page of the launcher's starts the launcher there (error_console.h) */
+static void fatal_done(const SnxError* e, int action) {
+    char line[160], why[1400], *self;
+    if (action == SNX_ACTION_CLOSE) return;
+    snx_error_action_said(e, action, line, sizeof line);
+    LOG("%s\n", line);
+    if (e->from_launcher) return; /* the launcher reads it in the run's output, where LOG put it */
+    self = snx_executable(NULL);
+    if (!self || snx_error_follow(e, action, self, NULL, why, sizeof why))
+        LOG("error: %s\n", self ? why : "the program's path is unknown: the action is not done");
+    free(self);
+}
+/* the panel in its own process (error_spawn.h): the action taken there, or -1 where it could not show, said */
+static int fatal_spawn(const SnxError* e) {
+    char why[300];
+    int action = snx_error_spawn(e, why, sizeof why);
+    if (action < 0) LOG("error: the panel's own process: %s\n", why);
+    return action;
+}
+/* the error shown on the main thread, which owns the window: the panel there, else in its own process, else SDL's box */
+static void fatal_show(SnxError* e) {
+    int action, shown = 1;
+    if (!snx_error_spawn_ready()) fatal_prepare(); /* an error before the window opened */
+    fatal_fill(e);
+    action = fatal_panel(e);
+    if (action < 0) action = fatal_spawn(e);
+    if (action < 0) {
+        shown = fatal_box(e->message);
+        action = SNX_ACTION_CLOSE;
+    }
+    fatal_said(e, shown); /* none showed (no display): the launcher shows it */
+    fatal_done(e, action);
+}
+void win_fatal_crash(const SnxError* e) {
+    SnxError* known = &g_sdl3.fatal_known;
+    int action;
+    if (g_opt_headless || unattended_active() || !snx_error_spawn_ready()) {
+        fatal_said(e, 0);
+        return;
+    }
+    known->kind = e->kind;
+    memcpy(known->key, e->key, sizeof known->key);
+    memcpy(known->line, e->line, sizeof known->line);
+    memcpy(known->hint, e->hint, sizeof known->hint);
+    memcpy(known->message, e->message, sizeof known->message);
+    /* no process is started from a crash's handler: Try Again only where the launcher waits, which starts it */
+    if (!known->from_launcher) known->program[0] = 0;
+    action = fatal_spawn(known);
+    fatal_said(known, action >= 0);
+    if (action >= 0 && known->from_launcher) fatal_done(known, action);
+}
+/* the panel's own process made ready as the window opens, with what a crash's error carries: this program, which takes
+   --error-screen whatever it is named, and the record beside the game's log */
+static void fatal_prepare(void) {
+    /* the state folder, else the game's own, else the system's temporary files' where neither is there (an error
+       before either is known, a game's folder that is not) */
+    const char* folder = g_statedir[0] && snx_is_dir(g_statedir) ? g_statedir
+                         : g_exedir[0] && snx_is_dir(g_exedir)   ? g_exedir
+                                                                 : NULL;
+    char *temp = folder ? NULL : snx_temp_root(), *self = snx_executable(NULL), why[400];
+    char* record = temp ? snx_path_join(temp, "scarletnx.error.txt")
+                        : snx_format("%s%s.error.txt", folder, g_exename[0] ? g_exename : "scarletnx");
+    free(temp);
+    if (self && record && snx_error_spawn_prepare(self, record, why, sizeof why)) LOG("error: %s\n", why);
+    if (!self || !record) LOG("error: the panel's own process is not made ready: out of memory\n");
+    free(self);
+    free(record);
+    fatal_fill(&g_sdl3.fatal_known);
+}
+/* log.c's fatal error: the panel on the main thread, which owns the window; SDL's box when it can't be drawn. From
+   another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
-void win_fatal_box(const char* msg) {
+void win_fatal_box(const SnxError* e) {
+    const char* msg = e->message;
     /* beside the launcher's log (docs/user/usage.md#folders), whose Share Log sends it, for a game of a data folder: in that
        folder's state folder; another folder's game beside its own log, or before it has one in its folder; on iOS in
        the app's Documents' logs/, which the Files app shows, since a phone shows no stderr */
@@ -1198,28 +1062,43 @@ void win_fatal_box(const char* msg) {
         free(path);
         free(folder);
     }
-    if (g_opt_headless || unattended_active()) return;
+    if (g_opt_headless || unattended_active()) {
+        fatal_said(e, 0);
+        return;
+    }
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
-        char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+        SnxError *left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire), shown = left ? *left : *e;
         atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-        if (!fatal_screen(left ? left : msg)) fatal_box(left ? left : msg);
+        fatal_show(&shown);
         return;
     }
     if (g_sdl3.win) {
-        char* none = NULL;
-        char* copy = SDL_strdup(msg);
+        SnxError *none = NULL, *copy = malloc(sizeof *copy);
         int i;
+        if (copy) *copy = *e;
         /* the renderer stops presenting and lets go of the window here: the main thread may be waiting for it */
         atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
         if (g_renderer_up && g_renderer->release_window) g_renderer->release_window();
         if (!copy || !atomic_compare_exchange_strong_explicit(&g_sdl3.fatal_left, &none, copy, memory_order_acq_rel,
                                                               memory_order_acquire))
-            SDL_free(copy); /* a second error: the first one shows */
+            free(copy); /* a second error: the first one shows */
         for (i = 0; i < 300; ++i) {
             if (atomic_load_explicit(&g_sdl3.fatal_taken, memory_order_acquire))
                 for (;;) SDL_Delay(1000); /* the main thread shows it and ends the process */
             SDL_Delay(10);
+        }
+    }
+    /* the main thread did not come (held up elsewhere): the panel in its own process, from this thread */
+    {
+        SnxError filled = *e;
+        int action;
+        fatal_fill(&filled);
+        action = fatal_spawn(&filled);
+        if (action >= 0) {
+            fatal_said(&filled, 1);
+            fatal_done(&filled, action);
+            return;
         }
     }
 #ifdef _WIN32
@@ -1228,6 +1107,9 @@ void win_fatal_box(const char* msg) {
         MessageBoxW(NULL, w, L"ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     else
         MessageBoxA(NULL, msg, "ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    fatal_said(e, 1);
+#else
+    fatal_said(e, 0);
 #endif
 }
 
@@ -1886,10 +1768,10 @@ static void keyboard_sync(void) {
 }
 /* another thread's fatal error, left for this thread to show: shown, and the process ends */
 static void fatal_left_show(void) {
-    char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+    SnxError* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
     if (!left) return;
     atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-    if (!fatal_screen(left)) fatal_box(left);
+    fatal_show(left);
     plat_exit_now(1);
 }
 /* what the window's own events say of it (its size, its safe part, whether it is seen, its display): taken as they

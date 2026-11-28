@@ -17,6 +17,9 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/utilities/error_kind.h"
+#include "common/utilities/error_sdl.h"
+#include "common/utilities/ui_rects.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
@@ -983,6 +986,14 @@ typedef struct App {
     char room_line[96];       /* the question: what it takes, what is free */
     char ask_line[4400];      /* GUI_ASK_CLEAN's to GUI_ASK_FOLDER's question, with what the change takes or where */
     char error_line[4400];    /* GUI_ASK_ERROR's: the failure, whole */
+    /* GUI_ASK_ERROR's box as the error's panel (common/utilities/error_panel.h), box_panel_on: a run's error its game
+       did not show, or the launcher's own failure; Run Amberlith's counts keep the theme's box. Its quads and
+       rectangles, made at its first draw */
+    SnxError box_error;
+    SnxErrorPanel box_panel;
+    SnxUiQuad* box_quads;
+    SnxUiRects box_rects;
+    bool box_panel_on;
     uint32_t errors_said[16]; /* the failures it said in the session, by their text's FNV-1a: each said once */
     uint32_t errors_logged[64]; /* and those it wrote in its log (gui_log), shown or not: each written once */
     int logged_count;
@@ -1286,6 +1297,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 /* a failure of the system's (a file not written, a picker that did not open): in a box over the screen, whole, until
    OK, once in the session; the tips or the note keep it after. Over a run or another question, those alone. In the
    launcher's log once in the session either way */
+static void error_box_open(App* app, const SnxError* e);
 static void say_failure(App* app, const char* text) {
     uint32_t hash = snx_fnv1a32(SNX_FNV32_BASIS, text, strlen(text));
     int i;
@@ -1300,13 +1312,100 @@ static void say_failure(App* app, const char* text) {
         if (app->errors_said[i] == hash) return;
     app->errors_said[app->errors_count++ % (int)SDL_arraysize(app->errors_said)] = hash;
     snprintf(app->error_line, sizeof app->error_line, "%s", text);
-    gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
+    {
+        SnxError box = {.notice = 1, .from_launcher = 1};
+        /* a line longer than the panel holds ends in "...": the launcher's log has it whole (gui_log above) */
+        snprintf(box.message, sizeof box.message, "%s", text);
+        if (strlen(text) >= sizeof box.message) memcpy(box.message + sizeof box.message - 4, "...", 4);
+        error_box_open(app, &box);
+    }
 }
 static SDL_Color rgb(GuiRgb c) {
     SDL_Color out = {c.r, c.g, c.b, 255};
     return out;
 }
 static Uint64 now_ms(const App* app) { return app->clock ? app->clock : SDL_GetTicks(); }
+/* GUI_ASK_ERROR's box as the error's panel, e in it, the action that fixes it in focus; as every panel, it takes no press
+   for SNX_ERROR_PANEL_WAIT_MS, so a key held from what came before (a run's game, the launcher's own row) does nothing */
+static void error_box_open(App* app, const SnxError* e) {
+    float scale = app->window ? SDL_GetWindowDisplayScale(app->window) : 0.0f;
+    app->box_error = *e;
+    app->box_panel =
+        (SnxErrorPanel){.percent = scale > 0.0f ? (int)(scale * 100.0f) : 100, /* as notice.h's snx_display_percent */
+                        .fingers = app->fingers,
+                        .open_log = !app->fingers}; /* a phone has no viewer that takes a file's path */
+#ifdef SDL_PLATFORM_ANDROID
+    app->box_panel.back_key = 1;
+#endif
+    snx_error_panel_start(&app->box_panel, now_ms(app));
+    app->box_panel_on = true;
+    gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
+}
+/* the box's panel in the screen's safe area, its letters and fills as rectangles (ui_rects.h) through the frame's draw
+   list; where its items are kept for the pointer. false, with nothing drawn, when out of memory for them */
+static bool error_box_draw(App* app) {
+    SDL_Rect view;
+    SnxUiList l;
+    u32 was = 0;
+    if (!app->box_quads) app->box_quads = malloc(SNX_ERROR_PANEL_QUADS * sizeof *app->box_quads);
+    if (!app->box_quads) return false;
+    SDL_GetRenderViewport(app->renderer, &view);
+    l = (SnxUiList){app->box_quads, 0, SNX_ERROR_PANEL_QUADS};
+    snx_error_panel_draw(&app->box_panel, &app->box_error, &l, view.w, view.h);
+    if (!snx_ui_rects(&app->box_rects, &l, view.w, view.h)) return false;
+    for (size_t i = 0; i < app->box_rects.count; ++i) {
+        const SnxUiRect* r = &app->box_rects.rect[i];
+        if (!i || r->rgba != was)
+            SDL_SetRenderDrawColor(app->renderer, (Uint8)r->rgba, (Uint8)(r->rgba >> 8), (Uint8)(r->rgba >> 16), 255);
+        was = r->rgba;
+        SDL_RenderFillRect(app->renderer, &(SDL_FRect){r->x, r->y, r->w, r->h});
+    }
+    return true;
+}
+static void box_say(const char* line) { gui_log("%s", line); }
+static void share_log(App* app, bool zip);
+static void leave_run(App* app);
+static void error_action(App* app, int action, const char* key, const char* game);
+/* the action taken on the box's panel: Share Log the launcher's (the run's output and its game's log with it), Copy
+   Text, Open Log and Open Folder the panel's, said on it; the rest close it, a run's error leaving the run's screen
+   (Back to Menu) for the page its action opens */
+static void error_box_done(App* app, int action) {
+    static const SnxErrorSdlHooks hooks = {.say = box_say};
+    if (action == SNX_ACTION_NONE) return;
+    if (action == SNX_ACTION_SHARE_LOG) {
+        share_log(app, false);
+        snprintf(app->box_panel.said, sizeof app->box_panel.said, "%s", app->message);
+        return;
+    }
+    if (snx_error_sdl_act(&app->box_panel, &app->box_error, action, &hooks)) return;
+    app->confirm.shown = app->box_panel_on = false;
+    if (app->box_error.notice) return;
+    gui_log("error: action %s", snx_error_action_name(action));
+    if (app->finished) leave_run(app);
+    if (action != SNX_ACTION_CLOSE) error_action(app, action, app->box_error.key, app->box_error.program);
+}
+/* a key on the box's panel: Up and Down move, Select does the item in focus, Back closes it (on Details, back), the
+   page keys scroll the message; nothing else does anything */
+static void error_box_key(App* app, GuiKey key) {
+    int k, input = app->pad_driven ? SNX_ERROR_INPUT_PAD : app->fingers ? SNX_ERROR_INPUT_TOUCH : SNX_ERROR_INPUT_KEYS;
+    switch (key) {
+        case GUI_UP: k = SNX_ERROR_KEY_UP; break;
+        case GUI_DOWN: k = SNX_ERROR_KEY_DOWN; break;
+        case GUI_SELECT: k = SNX_ERROR_KEY_DO; break;
+        case GUI_CANCEL: k = SNX_ERROR_KEY_BACK; break;
+        case GUI_PAGE_UP: k = SNX_ERROR_KEY_PAGE_UP; break;
+        case GUI_PAGE_DOWN: k = SNX_ERROR_KEY_PAGE_DOWN; break;
+        default: return;
+    }
+    error_box_done(app, snx_error_panel_key(&app->box_panel, &app->box_error, k, input, now_ms(app)));
+}
+/* a click or a tap at x, y (the safe area's pixels, as the panel is drawn there): the item under it done; off them,
+   nothing */
+static void error_box_press(App* app, float x, float y) {
+    Uint64 now = now_ms(app);
+    (void)snx_error_panel_press(&app->box_panel, &app->box_error, x, y, 1, app->fingers, now);
+    error_box_done(app, snx_error_panel_press(&app->box_panel, &app->box_error, x, y, 0, app->fingers, now));
+}
 #define GUI_KEYS_OK_MS     3000  /* how long the keys screen shows they were installed, then the menu */
 #define GUI_KEYS_FAILED_MS 10000 /* and why they were not, the menu's line saying it after */
 /* the keys screen's outcome, gone back to the menu once shown long enough; the seconds it still shows, 0 for none */
@@ -3560,6 +3659,13 @@ static int ask_place(App* app, GuiChoices* c) {
 }
 static void render_ask(App* app) {
     GuiChoices c;
+    if (app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on) {
+        box_shade(app); /* over another screen */
+        if (error_box_draw(app)) return;
+        gui_log("the error's panel has no memory for its %d letters and fills: the theme's box shows the line",
+                SNX_ERROR_PANEL_QUADS);
+        app->box_panel_on = false;
+    }
     ask_place(app, &c);
     box_shade(app); /* over another screen */
     choices_draw(app, &c, ask_question(app), NULL);
@@ -15832,6 +15938,7 @@ static void last_run_look(App* app) {
         gui_probe_said(&r, said, sizeof said);
         snprintf(app->error_line, sizeof app->error_line, snx_tr("%s. The report: %s"), said, report ? report : "?");
         gui_log("%s", app->error_line);
+        app->box_panel_on = false; /* counts, not an error: the theme's box */
         gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
         free(report);
     } else if (run.probe) /* without its summary, the relaunch that went on after it gone with the menu: Continue */
@@ -17853,6 +17960,128 @@ static void leave_run(App* app) {
     app->fade_ms = app->theme.fade_in_ms ? SDL_max(now_ms(app), 1) : 0;
     layout(app);
 }
+static void leave_run(App* app);
+static void open_recent(App* app, int shown, bool play);
+static void menu_entry(App* app, int item, uint32_t hit);
+/* the drivers that take --from-launcher=1 (game_ini.h): the Switch's and the consoles' with the error's panel */
+static bool from_launcher_takes(int item) {
+    return item == GUI_SWITCH || item == GUI_3DS || item == GUI_VITA || item == GUI_GBA || item == GUI_NDS;
+}
+/* Settings at the row of the setting key, in its group: 0, or nonzero for a key no row has, said in the message */
+static int settings_at_key(App* app, const char* key) {
+    GuiSettings* s;
+    open_settings(app);
+    s = screen_settings(app);
+    for (int i = 0; s && i < s->count; ++i) {
+        if (!s->values[i].key || strcmp(s->values[i].key, key)) continue;
+        for (int g = 0; g < GUI_GROUPS_MAX && g < app->groups; ++g)
+            if (app->group_first[g] >= 0 && i >= app->group_first[g] && i < app->group_first[g] + app->group_rows[g]) {
+                open_group(app, g);
+                app->editor.row = i - app->group_first[g];
+                return 0;
+            }
+    }
+    snprintf(app->message, sizeof app->message, snx_tr("Open Settings: no row is the setting %s"), key);
+    say_failure(app, app->message);
+    return 1;
+}
+/* an action of the error's panel the launcher does (error_kind.h): a page opened at what fixes the error, or the run
+   again. game: the run's game, for those of its own */
+static void error_action(App* app, int action, const char* key, const char* game) {
+    switch (action) {
+        case SNX_ACTION_OPEN_SETTINGS: (void)settings_at_key(app, key); break;
+        case SNX_ACTION_GPU_DRIVERS: open_drivers(app, NULL, NULL, 0); break;
+        case SNX_ACTION_INSTALL_KEYS: menu_entry(app, GUI_KEYS, UI_HIT_CLICK); break;
+        case SNX_ACTION_TRY_AGAIN: /* the game that ran is the newest of the recent ones */
+            if (game && game[0] && app->recent.count) open_recent(app, 0, true);
+            break;
+        case SNX_ACTION_ADDONS:
+        case SNX_ACTION_RECOMPILE:
+        case SNX_ACTION_LOCATE: /* the game's box, whose Updates and DLCs, Recompile and Locate... these are */
+            if (app->recent.count) open_recent(app, 0, false);
+            break;
+        default: break;
+    }
+}
+static char* share_game_log(const App* app, char* why, size_t size);
+/* a driver's stop as it says it ("scarletnx: why", "scarletnx-<x>: why", "FATAL: why"): why, else NULL */
+static const char* stop_of(const char* line) {
+    const char* colon = strstr(line, ": ");
+    if (!strncmp(line, "FATAL: ", 7)) return line + 7;
+    if (strncmp(line, "scarletnx", 9) || (line[9] != ':' && line[9] != '-') || !colon || colon - line > 24 ||
+        memchr(line, ' ', (size_t)(colon - line)))
+        return NULL;
+    return colon + 2;
+}
+/* a log's line, cut at its end ('\n', which becomes the end of the string): its CR before it gone (a Windows program's
+   text mode ends its lines with both); the next line, or NULL after the last */
+static char* line_end(char* line) {
+    char* next = strchr(line, '\n');
+    size_t n;
+    if (next) *next++ = 0;
+    n = strlen(line);
+    if (n && line[n - 1] == '\r') line[n - 1] = 0;
+    return next;
+}
+/* a log's time stamp ("[  15.22] ") before a line, skipped */
+static char* unstamped(char* line) {
+    char* end = line[0] == '[' ? strstr(line, "] ") : NULL;
+    return end ? end + 2 : line;
+}
+/* A run that ended on an error: the "error: " lines (error_kind.h) of path, the run's output or its game's log. Shown by
+   the run's own panel, the run's screen does not say it again, and the action taken there is done here: true when the
+   run's screen is left for it. One its game could not show (before its window, a crash its own process could not
+   show) shows here, on GUI_ASK_ERROR's box, with the message of its stop before it (stop_of) */
+static bool run_error_after(App* app, const char* path) {
+    size_t size = 0;
+    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    SnxErrorHeard heard, error = {.kind = -1}, act = {.kind = -1};
+    char *game = app->file ? snx_strdup(app->file) : NULL, stop[2048] = "", said[sizeof stop] = "";
+    for (char *at = text, *next; at && *at; at = next) {
+        char* line;
+        const char* why;
+        next = line_end(at);
+        line = unstamped(at);
+        if ((why = stop_of(line))) snprintf(stop, sizeof stop, "%s", why);
+        if (snx_error_heard(line, &heard) < 1) continue;
+        if (heard.action)
+            act = heard;
+        else {
+            error = heard, act = (SnxErrorHeard){.kind = -1};
+            memcpy(said, stop, sizeof said);
+        }
+    }
+    free(text);
+    if (error.kind >= 0 && !error.shown) {
+        const GuiStep* named = gui_steps_last(&app->steps, "LAUNCH");
+        char why[512], *log = share_game_log(app, why, sizeof why);
+        SnxError e = {.kind = error.kind, .from_launcher = 1};
+        snprintf(e.key, sizeof e.key, "%s", error.key);
+        snprintf(e.message, sizeof e.message, "%s", said[0] ? said : snx_error_line(&e));
+        snprintf(e.game, sizeof e.game, "%s",
+                 named && named->detail[0] ? named->detail
+                 : game                    ? snx_path_leaf(game)
+                                           : "");
+        snprintf(e.program, sizeof e.program, "%s", game ? game : "");
+        snprintf(e.log, sizeof e.log, "%s", log ? log : path);
+        if (e.kind == SNX_ERROR_DISK || e.kind == SNX_ERROR_SAVE)
+            snprintf(e.folder, sizeof e.folder, "%s", app->data_dir ? app->data_dir : "");
+        gui_log("run: its error (%s) did not show on its own panel: it shows here", snx_error_kind_name(error.kind));
+        error_box_open(app, &e);
+        free(log);
+    }
+    if (error.kind < 0 || !error.shown) {
+        free(game);
+        return false;
+    }
+    gui_log("run: its error (%s) showed on its own panel%s%s", snx_error_kind_name(error.kind),
+            act.action ? ", which took " : "", act.action ? snx_error_action_name(act.action) : "");
+    app->message[0] = 0;
+    leave_run(app);
+    if (act.action) error_action(app, act.action, act.key, game);
+    free(game);
+    return true;
+}
 /* The program a run of game, a recompiled game's program, plays where the app runs the game itself (a phone): a
    collection's Play Program N (app->play_program), the one that is made (game_ini.h's snx_program_pick: program 0,
    said in the message, for one that is not), else game; owned. A hand-over a run before left (<game>.next, its next
@@ -17922,6 +18151,8 @@ typedef struct {
     bool console = item == GUI_SWITCH || item_console(item) != SNX_SYSTEM_SWITCH; /* every console's, Linux's none */
     if (console && own->driver) argv[n++] = own->driver;
     if (console && own->freedreno) argv[n++] = own->freedreno;
+    /* last: the launcher reads the run's output, and an error's action comes back there (error_kind.h) */
+    if (from_launcher_takes(item)) argv[n++] = "--" SNX_FROM_LAUNCHER "=1";
     argv[n] = NULL;
     return n;
 }
@@ -18061,6 +18292,17 @@ static void game_end(App* app, const RunEnd* ended) {
     char *log = NULL, what[1024], lines[4096];
     SDL_PathInfo info;
     int end = -1;
+    /* its own panel said it; one it could not show, the box says over the run's screen this makes. A console's lines
+       are in the run's log, the Switch's in its game's */
+    {
+        bool console = app->played_game && program_driver(app->played_game) != GUI_SWITCH;
+        char* game_log = console ? NULL : newest_log(app);
+        const char* path = console ? app->run_log : game_log;
+        bool left = path && SDL_GetPathInfo(path, &info) && info.modify_time >= app->played_at &&
+                    run_error_after(app, path);
+        free(game_log);
+        if (left) return;
+    }
     if (app->played_game && program_driver(app->played_game) != GUI_SWITCH) {
         /* a console's: its driver's own words in the run's log, Exit. for an end that went well */
         lines[0] = 0;
@@ -19153,7 +19395,9 @@ static void pump(App* app) {
                 snprintf(app->message, sizeof(app->message), snx_tr("Program ended abnormally (status %d)."), status);
             else
                 snprintf(app->message, sizeof(app->message), snx_tr("The run ended with status %d."), status);
-            if (app->abnormal_exit && !app->aborting) {
+            /* its error showed on its own panel: not said again, and the action taken there done; else the host's
+               refusal after it */
+            if (app->abnormal_exit && !app->aborting && !run_error_after(app, app->run_log)) {
                 char how[sizeof app->message];
                 memcpy(how, app->message, sizeof how);
                 gui_steps_failure(&app->steps, how, app->message, sizeof app->message);
@@ -21512,6 +21756,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = "--update";
         argv[n++] = app->addons_with[k];
     }
+    /* last: the launcher reads the run's output, and an error's action comes back there (error_kind.h) */
+    if (from_launcher_takes(app->menu.selected) && !make) argv[n++] = "--" SNX_FROM_LAUNCHER "=1";
     argv[n] = NULL;
     /* R's, B's and a first compile, whichever console's: the queue runs them behind the screens, one at a time */
     if (make) {
@@ -21773,6 +22019,7 @@ static void probe_after(App* app, const RunEnd* end) {
     app->probe_launch = 0;
     if (app->finished) leave_run(app);
     probe_back(app);
+    app->box_panel_on = false; /* counts, not an error: the theme's box */
     gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
 }
 /* the answer to a run's room: Run Anyway, pressed twice, runs it as it was asked; Back runs nothing */
@@ -22014,6 +22261,22 @@ static void job_play(App* app, int i) {
 }
 /* the recompile running ended with status: its line kept as it ended (its output with it, for its row), the end of
    its log; one aborted taken out. Games and the recent ones follow what it made */
+/* the last stop of the newest run in the log at path, after its "$ " line (a log of the queue holds each of its runs):
+   into out, "" for none */
+static void log_stop(const char* path, char* out, size_t size) {
+    size_t n = 0;
+    char* text = path ? (char*)snx_read_file(path, &n) : NULL;
+    out[0] = 0;
+    for (char *line = text, *next; line && *line; line = next) {
+        const char* why;
+        next = line_end(line);
+        if (!strncmp(line, "$ ", 2))
+            out[0] = 0;
+        else if ((why = stop_of(line)))
+            snprintf(out, size, "%s", why);
+    }
+    free(text);
+}
 static void job_ended(App* app, int i, int status) {
     GuiJob* job = &app->queue.job[i];
     bool aborted = app->job_aborting, failed = aborted || status != 0;
@@ -22089,6 +22352,12 @@ static void job_ended(App* app, int i, int status) {
     app->ended_serial = job->serial;
     if (failed) app->log_due = true; /* Share Log blinks, its log holding this one's output */
     snprintf(app->message, sizeof app->message, "%s: %s", name, job->said);
+    if (failed) { /* and why, as the driver said it, unless the host's refusal after how it ended said it already */
+        char why[sizeof app->message];
+        log_stop(app->job_log, why, sizeof why);
+        if (why[0] && !strstr(job->said, why))
+            snprintf(app->message, sizeof app->message, "%s: %s %s", name, job->said, why);
+    }
     if (!failed && job->console == GUI_GBA && job->kind != GUI_JOB_AOT) cover_made(app, i);
 #ifdef SDL_PLATFORM_ANDROID
     app->told_result = failed                         ? SNX_TR_NOOP("Failed")
@@ -23979,6 +24248,10 @@ static void updates_answer(App* app, int taken);
 static void ask_key(App* app, GuiKey key) {
     GuiAsk ask = app->confirm.ask;
     bool second;
+    if (ask == GUI_ASK_ERROR && app->box_panel_on) {
+        error_box_key(app, key);
+        return;
+    }
     if (ask == GUI_ASK_ERROR) { /* its one choice: OK or Back close it, the focus never leaves it */
         if (key == GUI_SELECT || key == GUI_CANCEL) app->confirm.shown = false;
         return;
@@ -24030,6 +24303,10 @@ static void ask_key(App* app, GuiKey key) {
 static void ask_pointer(App* app, float x, float y, bool click) {
     GuiChoices c;
     bool on;
+    if (app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on) {
+        if (click) error_box_press(app, x, y);
+        return;
+    }
     ask_place(app, &c);
     if (!choices_pointer(app, &c, x, y, click, &on) && click && !on) ask_key(app, GUI_CANCEL);
 }
@@ -25919,6 +26196,8 @@ static void forget(App* app) {
     free(app->users_dir);
     SDL_DestroyTexture(app->font);
     SDL_free(app->glyphs);
+    free(app->box_quads);
+    snx_ui_rects_free(&app->box_rects);
     SDL_DestroyRenderer(app->renderer);
     gui_drawn_free();
     SDL_DestroyWindow(app->window);
@@ -26049,6 +26328,35 @@ int snx_gui_migrate(const char* self, const char* option) {
     return 2;
 }
 #endif
+/* --open's value, for the menu to open on once it is up (snx_gui_open) */
+static char g_gui_open[1200];
+void snx_gui_open(const char* value) { snprintf(g_gui_open, sizeof g_gui_open, "%s", value); }
+/* the page --open asked for: what an error's panel offered a game that ran with no launcher */
+static void open_asked(App* app) {
+    const char* v = g_gui_open;
+    if (!v[0]) return;
+    gui_log("--open=%s: an error's panel asked for it", v);
+    if (!strncmp(v, "settings:", 9) && v[9])
+        (void)settings_at_key(app, v + 9);
+    else if (!strcmp(v, "drivers"))
+        open_drivers(app, NULL, NULL, 0);
+    else if (!strcmp(v, "keys"))
+        menu_entry(app, GUI_KEYS, UI_HIT_CLICK);
+    else if (!strncmp(v, "addons:", 7) && v[7]) {
+        char* title = snx_strdup(snx_path_leaf(v + 7));
+        addons_open(app, v + 7, title, true);
+        free(title);
+    } else if ((!strncmp(v, "recompile:", 10) && v[10]) || (!strncmp(v, "locate:", 7) && v[7])) {
+        go_tab(app, GUI_TAB_GAMES); /* its row's box has Recompile and Locate... */
+        snprintf(app->message, sizeof app->message, snx_tr("%s: on Games, in its box"),
+                 snx_path_leaf(strchr(v, ':') + 1));
+    } else {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("--open=%s is not settings:KEY, drivers, keys, addons:, recompile: or locate: with a game"), v);
+        say_failure(app, app->message);
+    }
+    g_gui_open[0] = 0;
+}
 int snx_gui_main(const char* self) {
     App* app = app_new();
     if (!app) return 1;
@@ -26088,6 +26396,7 @@ int snx_gui_main(const char* self) {
     left_behind(app);   /* what an older version left: the setup's last pages, Old Files */
     setup_start(app);
     app->updates_due = true; /* Check for updates, once the menu is free */
+    if (!app->setup_on) open_asked(app); /* after the setup, which a first start shows first */
     app->games_fresh = true;
     watch_start(app);
     app->dump_icons.live = true; /* the dumps' icons asked on a thread of their own */

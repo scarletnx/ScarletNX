@@ -206,21 +206,10 @@ int overlay_states_stale(void); /* the slots page opened since the last overlay_
 /* the columns the menu's pages and the stopped panel take at scale on a picture sw wide: as many as three quarters of it
    holds, within OVERLAY_COLS and OVERLAY_COLS_MAX */
 int overlay_cols(int sw, int scale);
-/* a fatal error's panel (backend/sdl3.c), a dialog as the menu's pages are: the head, the game's name, the error, what it
-   means and what to do, cut to its width, then Share Log, Copy path and Close, one in focus */
+/* a rectangle of a dialog: its box, a link's rows, an item's row */
 typedef struct {
     float x, y, w, h;
 } SnxOverlayRect;
-enum { SNX_OVERLAY_ERROR_SHARE, SNX_OVERLAY_ERROR_COPY, SNX_OVERLAY_ERROR_CLOSE, SNX_OVERLAY_ERROR_ITEMS };
-typedef struct {
-    const char *name, *msg, *how;
-    const char* log;  /* the game's log, underlined as a link; NULL for none */
-    const char* said; /* what Share Log or Copy path did, over the items; NULL before either */
-    int focus;        /* one of SNX_OVERLAY_ERROR_SHARE, _COPY and _CLOSE */
-    /* drawn: where the log's link and each item are, empty when not shown */
-    SnxOverlayRect link, items[SNX_OVERLAY_ERROR_ITEMS];
-} SnxOverlayError;
-void overlay_error_draw(SnxUiList* l, int sw, int sh, SnxOverlayError* e);
 /* 1 when x, y falls in r, an empty one taking nothing */
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y);
 

@@ -49,6 +49,7 @@ static void holds(const char* folder, const char* name, const char* words) {
     free(text);
 }
 static void key(App* app, SDL_Keycode code) {
+    box_waited(app); /* an error box's wait passed, as a person waits (gui_screen.h) */
     SDL_Event e = {0};
     e.type = SDL_EVENT_KEY_DOWN;
     e.key.key = code;

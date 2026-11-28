@@ -59,7 +59,8 @@ static const unsigned nx_cli = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_S
                                SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
                                SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
                                SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
-                               SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
+                               SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) |
+                               SNX_CLI_BIT(SNX_CLI_FROM_LAUNCHER) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
          "  INPUT                  Extract, recompile if needed, then play XCI/NSP/XCZ/NSZ/DXCI/DNSP/NRO\n"
@@ -1704,7 +1705,8 @@ int snx_driver(int argc, char** argv) {
             case SNX_CLI_SECONDS:
             case SNX_CLI_FRAMES:
             case SNX_CLI_SHOT:
-            case SNX_CLI_SCRIPT: rest[n++] = argv[i]; break;
+            case SNX_CLI_SCRIPT:
+            case SNX_CLI_FROM_LAUNCHER: rest[n++] = argv[i]; break; /* the runtime's, as --from-launcher=1 */
             case SNX_CLI_HELP:
                 help = 1;
                 rest[n++] = argv[i]; /* -x's and -r's own help */

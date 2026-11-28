@@ -3,6 +3,7 @@
 /* The runtime's log and its fatal error, both in log.c */
 #ifndef SNX_LOG_H
 #define SNX_LOG_H
+#include "common/utilities/error_kind.h"
 #include <stdio.h>
 #include <stdatomic.h>
 
@@ -39,10 +40,16 @@ void log_sync(void);
 /* snx_error's sink (common.h) for the runtime: the line as a warning, in the log and on stderr */
 void log_error_line(const char* line);
 
-/* Logs "FATAL: ..." and ends the process with status, after the error box where there is one */
+/* Logs "FATAL: ..." and ends the process with status, after the error's panel where there is one. Its kind of error
+   (common/utilities/error_kind.h) is MEMORY for the words of running out of memory, else INTERNAL */
 [[gnu::format(printf, 2, 3), noreturn]] void fatal_code(int status, const char* fmt, ...);
 /* fatal_code with status 1 */
 [[gnu::format(printf, 1, 2), noreturn]] void fatal(const char* fmt, ...);
+/* fatal with the kind of error it is: what the person playing can do about it (error_kind.h) */
+[[gnu::format(printf, 2, 3), noreturn]] void fatal_as(int kind, const char* fmt, ...);
+/* fatal with what the caller knows of it in given: its kind, and the setting's key, the panel's line and second line
+   where it has them. The message, given's own, is fmt's */
+[[gnu::format(printf, 3, 4), noreturn]] void fatal_given(int status, const SnxError* given, const char* fmt, ...);
 
 /* log.c's thread state, this thread's */
 typedef struct {

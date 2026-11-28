@@ -117,7 +117,6 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/touch.c
              runtime/platform/audio_denoise.c
              runtime/platform/ui.c
-             runtime/platform/fatal_screen.c
              runtime/platform/prepare_screen.c runtime/platform/wait_screen.c runtime/platform/resources.c)
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
@@ -142,6 +141,8 @@ target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
 target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl)
+# what stops a game, its kinds and actions (src/common/utilities/error_kind.h)
+target_link_libraries(snx_platform PUBLIC snx_error snx_error_sdl)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
 target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 

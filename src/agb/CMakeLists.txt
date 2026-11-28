@@ -37,3 +37,5 @@ target_include_directories(snx_agb_program PUBLIC "${volk_SOURCE_DIR}")
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 set_target_properties(snx_agb_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/agb.cmake") # its tests
+# a stop noted for the error's panel, which the program shows once this driver returned (error_kind.h)
+target_link_libraries(snx_agb_program PUBLIC snx_error)

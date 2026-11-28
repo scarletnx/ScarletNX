@@ -84,6 +84,8 @@ if(SNX_TEST_SANITIZERS)
         snx_window_icon snx-test-window-icon snx-test-window-fullscreen snx_pad_sdl snx_gui_pad
         # the notice of the 3DS's, the Vita's and the GBA's windows
         snx_notice
+        # what stops a game, the same for every console: its kinds and text, its panel, the panel's SDL window
+        snx_error snx_error_sdl snx_error_panel
         # the on-screen controls, their consoles' tables and their side of an SDL window, and the settings each
         # console takes
         snx_vpad snx_vpad_consoles snx_vpad_sdl snx_console_settings
@@ -101,6 +103,12 @@ endif()
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME cpu_plan_tools COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_plan_tools.py")
+endif()
+# each stop of the Switch runtime that the person playing can do something about names its kind of error, whose panel
+# offers the action that fixes it (src/common/utilities/error_kind.h)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME error_kinds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/error_kinds.py"
+                                      "${PROJECT_SOURCE_DIR}")
 endif()
 # the GNU extensions with an ISO C counterpart stay out of our own sources (#68)
 if(Python3_Interpreter_FOUND)
@@ -2580,7 +2588,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/wait_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
@@ -2602,7 +2610,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
     add_test(NAME overlay COMMAND snx-test-overlay)
     # the controller applet's dialog: its request, cards and gestures, and its pictures drawn on the CPU
     add_executable(snx-test-ctrl-applet ctrl_applet.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_scan.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c" support/ui_raster.c support/ui_shape_ref.c)
@@ -2647,6 +2655,30 @@ snx_test_target(snx-test-ui-rects c23)
 target_link_libraries(snx-test-ui-rects PRIVATE snx_vpad scarletnx-common m)
 target_include_directories(snx-test-ui-rects PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME ui_rects COMMAND snx-test-ui-rects)
+# the kinds of error, their lines and actions, the record's file and the run's "error: " lines
+# (common/utilities/error_kind.c)
+add_executable(snx-test-error-kind error_kind.c)
+snx_test_target(snx-test-error-kind c23)
+target_link_libraries(snx-test-error-kind PRIVATE snx_error scarletnx-common)
+add_test(NAME error_kind COMMAND snx-test-error-kind "${CMAKE_CURRENT_BINARY_DIR}")
+# the error's panel: its layout from a GBA's window to a phone's, its colours, its keys and presses, Details
+# (common/utilities/error_panel.c)
+if(TARGET snx_error_panel)
+    add_executable(snx-test-error-panel error_panel.c)
+    snx_test_target(snx-test-error-panel c23)
+    target_link_libraries(snx-test-error-panel PRIVATE snx_error_panel snx_vpad scarletnx-common m)
+    target_include_directories(snx-test-error-panel PRIVATE "${PROJECT_BINARY_DIR}/generated") # the YoRHa colours
+    add_test(NAME error_panel COMMAND snx-test-error-panel)
+endif()
+# the panel in an SDL window, its keys and presses, and its own process (common/utilities/error_sdl.c, error_spawn.c), on
+# SDL's dummy video: this test starts itself as the panel's process
+if(TARGET snx_error_sdl AND NOT WIN32)
+    add_executable(snx-test-error-sdl error_sdl.c)
+    snx_test_target(snx-test-error-sdl c23)
+    target_link_libraries(snx-test-error-sdl PRIVATE snx_error_sdl scarletnx-common)
+    add_test(NAME error_sdl COMMAND snx-test-error-sdl)
+    set_tests_properties(error_sdl PROPERTIES ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_RENDER_DRIVER=software" TIMEOUT 60)
+endif()
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c")
@@ -2731,7 +2763,7 @@ add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 # showcase's and stats's keys; the rest of the runtime stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode gnu23)
-target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
+target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common snx_error) # --from-launcher's note
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
 # the game's .ini and picks through tests/config_files.h's situations (config_files_options.c), a process each
 add_test(NAME config_files_options COMMAND snx-test-options-tv-mode --config-files game.ini)
@@ -2791,7 +2823,7 @@ target_link_libraries(snx-test-joycon2-sdl PRIVATE scarletnx-common snx_pad_sdl 
 target_include_directories(snx-test-joycon2-sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME joycon2_sdl COMMAND snx-test-joycon2-sdl)
 
-add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c")
+add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c")
 snx_test_target(snx-test-fatal-screen gnu23)
 target_link_libraries(snx-test-fatal-screen PRIVATE scarletnx-common)
 add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
@@ -5796,7 +5828,7 @@ add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/c
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_replace.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
 snx_test_target(snx-test-platform-log gnu23)
-target_link_libraries(snx-test-platform-log PRIVATE scarletnx-common) # the runs' logs: snx_list_dir, snx_file_time
+target_link_libraries(snx-test-platform-log PRIVATE snx_error scarletnx-common) # the runs' logs: snx_list_dir, snx_file_time
 add_test(NAME platform_log COMMAND snx-test-platform-log "${CMAKE_CURRENT_BINARY_DIR}")
 if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cmake/dependencies.cmake)
     # written-page tracking, decommit, pread, file maps, replace, folders, waits and threads (platform/plat_posix.c,
@@ -6245,3 +6277,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endforeach()
 endif()
 snx_sanitizer_path()
+# the tests with a fatal of their own that build runtime code which stops with a kind of error (platform/log.h's
+# fatal_as, fatal_given): those through their fatal (support/fatal_kind.c)
+foreach(t arm-code-invalidate audio-clock audio-opus crash-runtime-thread fs-service gl-layer gvk-marshal misc-service
+          nn-fs nn-time options-tv-mode os-light-event os-sync-handoff room-service rtapi-miss runtime-linker sm-service)
+    if(TARGET snx-test-${t})
+        target_sources(snx-test-${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/fatal_kind.c")
+    endif()
+endforeach()

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/present.h"
+#include "common/gpu/vk/vk_common.h"
 #include "common/utilities/common.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
@@ -17,6 +18,7 @@
 #include <string.h>
 
 static struct {
+    char why[256]; /* the device's failure */
     char* shot;
     bool video;
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
@@ -32,9 +34,10 @@ static void on_signal(int signal) {
 }
 void vita_present_say(const char* line) { printf("%s\n", line); }
 void vita_present_init(const char* title, const char* ini, const char* shot) {
-    char error[256];
     snx_vpad_sdl_hints();
-    if (!vita_vk_init(title, error, sizeof error)) printf("vita: no Vulkan device, nothing is drawn: %s\n", error);
+    g_present.why[0] = 0;
+    if (!vita_vk_init(title, g_present.why, sizeof g_present.why))
+        printf("vita: no Vulkan device, nothing is drawn: %s\n", g_present.why);
     g_present.shot = shot && *shot ? strdup(shot) : NULL;
     {
         char* folder = ini ? snx_dirname(ini) : NULL;
@@ -114,7 +117,17 @@ static bool vblank(VitaProcess* p, bool again) {
     if (g_present.shot_req) shot_key(p);
     return !g_interrupted;
 }
+const char* vita_present_why(void) { return vita_vk() ? "" : g_present.why; }
+bool vita_present_lost(char* why, size_t why_size) {
+    const VitaVk* v = vita_vk();
+    if (!v || v->ring.lost == VK_SUCCESS) return false;
+    snprintf(why, why_size, "the GPU stopped answering (%s): no frame is drawn after it",
+             snx_vk_result_str(v->ring.lost));
+    return true;
+}
 bool vita_present_vblank(VitaProcess* p) {
+    char why[160];
+    if (vita_present_lost(why, sizeof why)) return false; /* the run ends: its driver says why */
     bool open = vblank(p, false);
     while (open && snx_vpad_window_paused()) { /* the game's thread held, the frame and the keys going on */
         SDL_Delay(16);

@@ -362,7 +362,7 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
                game */
             if (r == VK_ERROR_DEVICE_LOST) {
                 vk_ck_report();
-                fatal("vulkan: the GPU device was lost (driver reset or crash)");
+                fatal_as(SNX_ERROR_GPU_LOST, "vulkan: the GPU device was lost (driver reset or crash)");
             }
             return;
         }
@@ -393,9 +393,10 @@ void vk_wait_semaphore(VkSemaphore sem, u64 value) {
             stopped_wait_lost(sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report(); /* what the submissions it has not finished hold */
-            fatal("vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
-                  "%llu)",
-                  stuck_ns() / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
+            fatal_as(SNX_ERROR_GPU_LOST,
+                     "vulkan: the GPU stopped responding: no work finished for %llu s (at submission %llu, waiting for "
+                     "%llu)",
+                     stuck_ns() / 1000000000ull, (unsigned long long)now, (unsigned long long)value);
         }
     }
 }
@@ -443,8 +444,9 @@ int vk_host_wait(const VkHostTimeline* t, u64 value) {
             stopped_wait_lost(t->sem, value);
             vk_checkpoint_dump("GPU stopped");
             vk_ck_report();
-            fatal("vulkan: the GPU stopped responding: a submission of the runtime's own wasn't done for %llu s",
-                  stuck_ns() / 1000000000ull);
+            fatal_as(SNX_ERROR_GPU_LOST,
+                     "vulkan: the GPU stopped responding: a submission of the runtime's own wasn't done for %llu s",
+                     stuck_ns() / 1000000000ull);
         }
     }
 }
@@ -457,7 +459,7 @@ void vk_lost_stop(const char* msg) {
     pm_lock(&lk);
     vk_checkpoint_dump("device lost"); /* the driver's fault, and the draw or dispatch that each queue reached */
     vk_ck_report();                    /* the pieces of work of checkpoints.c (vk_checkpoints=1) */
-    fatal("%s", msg);
+    fatal_as(SNX_ERROR_GPU_LOST, "%s", msg);
 }
 static void gsem_lost(void) { vk_lost_stop("vulkan: the GPU device was lost (driver reset or crash)"); }
 /* The graphics timeline read: 1 with the submissions done in *done. A lost device stops the game here, as

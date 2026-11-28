@@ -53,6 +53,17 @@ int snx_switch_main(int argc, char** argv) {
     snx_menu_settings = runtime_settings;
 #endif
     if (argc > 1 && !strcmp(argv[1], "--mcp")) return snx_mcp(argc, argv);
+#ifdef SNX_WITH_GUI
+    /* an error's panel's action, from a game no launcher waited for: the menu, opened at that page */
+    if (argc == 2 && !strncmp(argv[1], "--open=", 7)) {
+        char* self = snx_executable(NULL); /* the program that runs Switch inputs: this one */
+        int status;
+        snx_gui_open(argv[1] + 7);
+        status = snx_menu(self ? self : argv[0]);
+        free(self);
+        return status;
+    }
+#endif
 #if defined(SNX_WITH_GUI) && !defined(__ANDROID__) && !defined(SNX_MENU_THEN_GAME)
     if (argc > 1 && !strncmp(argv[1], "--migrate", 9) && (!argv[1][9] || argv[1][9] == '=')) {
         if (argc > 2) {

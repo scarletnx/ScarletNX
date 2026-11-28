@@ -393,3 +393,10 @@ int nds_host_shot(NdsHost* host, const char* path) {
     free(rgba);
     return result;
 }
+int nds_host_lost(const NdsHost* host, char* why, size_t why_size) {
+    const NdsVk* v = host->gpu ? nds_vk() : NULL;
+    if (!v || v->ring.lost == VK_SUCCESS) return 0;
+    snprintf(why, why_size, "the GPU stopped answering (%s): no frame is drawn after it",
+             snx_vk_result_str(v->ring.lost));
+    return 1;
+}

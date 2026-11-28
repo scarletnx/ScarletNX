@@ -94,18 +94,27 @@ static int nn_sm_detail_IUserInterface_GetServiceHandle(SvcObj* self, const nn_s
             /* the SDK function that asked is in the calls of the thread that sent this request */
             WARN("\n*** The program opened %s, which the runtime answers only natively ***\n", s);
             kernel_dump_threads();
-            if (*off)
-                fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
-                      g_native_only[i][1], off);
+            if (*off) { /* the setting that turned them off, which Open Settings goes to */
+                SnxError e = {.kind = SNX_ERROR_SETTING};
+                snprintf(e.key, sizeof e.key, "%s", g_settings.native_hooks ? "hooks_off" : "hooks");
+                snprintf(e.line, sizeof e.line, "%s",
+                         g_settings.native_hooks ? "A hook family it needs is off." : "Native hooks is off.");
+                fatal_given(1, &e,
+                            "sm: the program opened %s, which the runtime answers only in the SDK's own functions, "
+                            "%s. %s",
+                            s, g_native_only[i][1], off);
+            }
             if (*unread)
-                fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s", s,
-                      g_native_only[i][1], unread);
-            fatal("sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
-                  "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
-                  "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
-                  "not supported: it has to call the SDK's functions, as Amberlith does with the word hooks in its "
-                  "mode file%s%s",
-                  s, g_native_only[i][1], s, *missed ? ". " : "", missed);
+                fatal_as(SNX_ERROR_SDK32,
+                         "sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. %s",
+                         s, g_native_only[i][1], unread);
+            fatal_as(SNX_ERROR_NOT_YET,
+                     "sm: the program opened %s, which the runtime answers only in the SDK's own functions, %s. A game "
+                     "got here through an SDK function that is not native yet (the calls of its thread, in the log's "
+                     "thread list before this, name it). A homebrew program that opens %s itself, as libnx does, is "
+                     "not supported: it has to call the SDK's functions, as Amberlith does with the word hooks in its "
+                     "mode file%s%s",
+                     s, g_native_only[i][1], s, *missed ? ". " : "", missed);
         }
     o = svc_open(s);
     if (!o) {

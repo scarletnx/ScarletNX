@@ -16,6 +16,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include "common/utilities/error_kind.h"
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
@@ -36,7 +37,8 @@ static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_
                                  SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
                                  SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
                                  SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
-                                 SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
+                                 SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_BIT(SNX_CLI_FROM_LAUNCHER) |
+                                 SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-vita [OPTIONS] game.vpk\n"
@@ -259,7 +261,7 @@ static int play(const char* folder, const char* ini, bool recompile, double seco
     if (!current && !asked->quiet) printf("Recompiling %s (Vita AArch32)\n", image.name);
     if ((!current && vita_aot_compile(folder, &image, asked, error, sizeof error)) ||
         !vita_native_open(module, &image, &native, error, sizeof error)) {
-        fprintf(stderr, "scarletnx-vita: %s\n", error);
+        snx_error_note(current ? SNX_ERROR_CODE_OLD : SNX_ERROR_RECOMPILE, "scarletnx-vita", "%s", error);
         goto done;
     }
     size_t hint_count = 0;
@@ -290,7 +292,7 @@ static int play(const char* folder, const char* ini, bool recompile, double seco
     }
     process = vita_process_new(&image, folder, error, sizeof error);
     if (!process) {
-        fprintf(stderr, "scarletnx-vita: %s\n", error);
+        snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-vita", "%s", error);
         goto done;
     }
     process->module = native.module;
@@ -312,7 +314,19 @@ static int play(const char* folder, const char* ini, bool recompile, double seco
     free(header);
     free(sfo);
     free(title);
+    /* a window someone plays at, not a timed run: without the device it would show nothing */
+    if (vita_present_why()[0] && !(seconds > 0)) {
+        snx_error_note(SNX_ERROR_GPU_START, "scarletnx-vita", "no Vulkan device for the game's window: %s",
+                       vita_present_why());
+        vita_present_free();
+        status = 1;
+        goto done;
+    }
     status = vita_run(process, seconds);
+    if (vita_present_lost(error, sizeof error)) {
+        snx_error_note(SNX_ERROR_GPU_LOST, "scarletnx-vita", "%s", error);
+        if (!status) status = 1;
+    }
     vita_present_shot(process);
     vita_gxm_free(process); /* the renderer, before the device it draws on */
     vita_present_free();
@@ -428,6 +442,9 @@ int snx_vita_main(int argc, char** argv) {
     }
     bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
     double seconds = cli.seconds;
+    /* a stop shows its panel where someone is at the window: not a recompile, whose launcher says it, nor a timed run */
+    snx_error_note_quiet(!!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)) || seconds > 0);
+    snx_error_launched(cli.value[SNX_CLI_FROM_LAUNCHER] != NULL);
     snx_cli_free(&cli);
     if (old_at)
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
