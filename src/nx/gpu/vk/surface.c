@@ -258,6 +258,7 @@ static void surf_changed(u64 gva) {
     /* item 7b's events: a surface made or freed changes no texel, its draws do (vk_rt_drawn), so its first byte alone */
     if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }
+void vk_surf_changed(u64 gva) { surf_changed(gva); }
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
    hardware does) */
@@ -1328,6 +1329,7 @@ void vk_surf_wrote(Surf* s) {
     if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     vk_shared_note(3);
     take_changed(s);
+    s->wgen_prev = s->wgen;
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }

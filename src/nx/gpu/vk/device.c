@@ -142,7 +142,12 @@ static _Thread_local u32 t_share_fn = SHARE_FNS; /* the function of the next tak
 static void share_add(_Atomic u64* c, u64 v) {
     atomic_store_explicit(c, atomic_load_explicit(c, memory_order_relaxed) + v, memory_order_relaxed);
 }
-void vk_share_active(int on) { atomic_store_explicit(&g_vk_share_on, on, memory_order_seq_cst); }
+static u32 g_share_serial; /* the renderer thread's to write, before the worker starts (render.c render_split) */
+void vk_share_active(int on) {
+    if (on) g_share_serial++;
+    atomic_store_explicit(&g_vk_share_on, on, memory_order_seq_cst);
+}
+u32 vk_share_serial(void) { return g_share_serial; }
 void vk_share_lock_at(u32 fn) {
     t_share_fn = fn;
     vk_share_lock();

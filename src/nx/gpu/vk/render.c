@@ -341,6 +341,10 @@ static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
         return;
     }
     if (g_draw_depth == 1 && !t_rc) g_bp.miss = 1; /* the batch probe: a lookup of the surface table */
+    /* the table before the lookups, in a split: a change after this read by the other draw thread's lookups
+       (draw_batches=2) may be one to what these found, so the next draw looks again. Outside a split only these
+       lookups change it, and the stamp is the table as they left it: one that made a target is kept the next time */
+    const u32 epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     int found = 1; /* every lookup made found its target */
     u32 lx = ds_msaa_log2_x(tg->msaa), ly = ds_msaa_log2_y(tg->msaa);
     *n = 0;
@@ -377,9 +381,8 @@ static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
             vk_zt_array(z->gva, z->width >> zx, z->height >> zy, z->format, z->mem, layers, z->layer_stride, depth_msaa);
         if (!*zt) found = 0;
     }
-    /* the table as the lookups left it: one that made a target changed it */
     g_targets[t_rc].gen = found ? gen : 0;
-    g_targets[t_rc].epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
+    g_targets[t_rc].epoch = vk_share_on() ? epoch : atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     g_targets[t_rc].n = *n;
     memcpy(g_targets[t_rc].rt, rt, sizeof g_targets[t_rc].rt);
     g_targets[t_rc].zt = *zt;
@@ -2264,7 +2267,10 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
-        if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+        if (m->copy) {
+            vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+            m->t->last_used = g_vk_present; /* in use: rt_copy frees the copies unused for 60 presents */
+        }
         x->t = m->copy ? m->t : tex_recheck_judged(m);
         if (state_check()) { /* resolved again in full, and that one taken */
             u32 tic[8];
@@ -2323,6 +2329,10 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     g_memo_miss[miss >= 0 ? miss : MEMO_WAY]++;
     vk_gmem_words(tic_at, x->tic, 8);
     vk_gmem_words(tsc_at, x->tsc, 8);
+    /* the surface table before the lookup: in a split, a change after this read by the other draw thread
+       (draw_batches=2) may be one to what the lookup found, so the memo checks it again at its next use. Outside a
+       split only the lookup's own change can come between, and the bucket's epoch already counts it */
+    const u32 table = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     x->t = vk_tex_from_tic(x->tic);
     if (m) m->t = NULL; /* what it held is gone: kept again below if it can be */
     Surf* at = x->t ? vk_rt_find(x->t->gva) : NULL;
@@ -2345,6 +2355,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         m->adds = adds;
         m->t_gva = x->t->gva;
         m->surf_epoch = vk_surf_epoch_at(x->t->gva);
+        if (vk_share_on() && table != atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed))
+            m->surf_epoch--; /* not the bucket's: a miss next time */
         m->ww_epoch = epoch;
         m->wseen = now;
         m->cgen_ok = m->pgen_ok = m->tgen_ok =
