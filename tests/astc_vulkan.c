@@ -38,6 +38,7 @@
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/gpu/vk/pool_map.h"
+#include "nx/gpu/vk/pending_pages.h"
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
@@ -52,6 +53,15 @@ int vk_own_make_room(void) { return 0; } /* no kept results here: the device rin
 /* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
 OwnState g_own;
 int vk_uma_pending(u64 gva, u64 size) { (void)gva; (void)size; return 0; }
+/* draw_batches=2 (render.c): no run is split here, so the share lock is never taken and no worker waits for the
+   ring. cmd.c counts the results added since its last submission: pending_pages.c and uma.c aren't here, so none */
+_Atomic int g_vk_share_on;
+void vk_share_lock(void) {}
+void vk_share_unlock(void) {}
+void vk_shared_note(u32 which) { (void)which; }
+void vk_split_ring_wait(void) {}
+PendPages g_pend_any;
+u64 vk_uma_writes(void) { return 0; }
 u64 gmmu_run(u64 gva, u64 size, u64* cpu) { (void)gva; (void)size; *cpu = 0; return 0; }
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     (void)addr; (void)size; (void)out; (void)max;

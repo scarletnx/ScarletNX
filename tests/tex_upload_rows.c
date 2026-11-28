@@ -810,6 +810,13 @@ void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, 
 static struct {
     u64 gen, at, len;
 } g_gpu_writes;
+/* draw_batches=2 (render.c, surface.c, compute.c): no run is split here */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) { (void)why; }
+void vk_shared_note(u32 which) { (void)which; }
+VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }
+void vk_surf_before_reset(const Surf* s) { (void)s; }
+int vk_compute_pending_held(u64 a, u64 n) { return (void)a, (void)n, 0; }
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     return g_gpu_writes.gen > since && g_gpu_writes.at < a + sz && a < g_gpu_writes.at + g_gpu_writes.len;
 }

@@ -83,6 +83,15 @@ int pc_wait(PCond* c, PMutex* m, int64_t timeout_ns);
 void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns);
 void plat_wake_word(_Atomic uint32_t* w);
 void plat_wake_word_one(_Atomic uint32_t* w);
+/* a hint to the host CPU, in a loop that spins on a word: the other hardware thread of the core gets its share. The
+   instruction of each architecture that has one, nothing elsewhere */
+static inline void plat_spin_hint(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __builtin_arm_yield();
+#endif
+}
 
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);

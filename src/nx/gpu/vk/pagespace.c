@@ -892,6 +892,7 @@ int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     return 1;
 }
 void vk_pages_read(u64 gva, u64 len) {
+    vk_shared_note(17);
     u64 cpu = 0;
     g_pages.stats.again++;
     if (g_pages.on > 0 && g_pages.owners && gmmu_run(gva, len, &cpu) == len) order_use(cpu, cpu + len, 0, 0);

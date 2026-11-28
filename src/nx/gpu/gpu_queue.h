@@ -39,6 +39,9 @@ void gq_drain_at(const char* file, int line);
 #define gq_drain() gq_drain_at(__FILE__, __LINE__) /* counted by where it is asked (the stats line) */
 void gq_stats_log(u64 presents); /* the stats line's: the front end's waits and the renderer thread's runs */
 void gq_present(void);           /* the renderer presented (any thread): gpu_split=2 measures by presents */
+u64 gq_presents(void);  /* the renderer's presents so far */
+u64 gq_run_ns(void);    /* the renderer thread's time in records so far */
+int gq_split_now(void); /* the renderer thread takes the records now */
 /* A call of the renderer's side: fn runs with a copy of the bytes the front end puts at the pointer that
    gq_call_begin returns, in the call's place in the queue. The front end fills them, then calls gq_call_end */
 typedef void (*GqFn)(const void* arg, u64 bytes);
@@ -46,6 +49,18 @@ void* gq_call_begin(GqFn fn, u64 bytes);
 void gq_call_end(void);
 /* a call with arg's bytes as they are */
 void gq_call(GqFn fn, const void* arg, u64 bytes);
+/* a name for fn's records in the stats line of the records' time, and names for the first word of their payload */
+void gq_name(GqFn fn, const char* name, const char* const* subs, u32 nsubs);
+void gq_seq(u64* all, u64* cb); /* the records run so far, and the constant buffer writes of them */
+/* the next record's payload while the taker runs one, when it is a call of fn (another thread may ask): NULL else */
+const void* gq_peek_call(GqFn fn, u64* bytes);
+/* the payloads of up to max calls of fn that follow the record the taker runs, while it runs that one: their count */
+u32 gq_peek_calls(GqFn fn, const void** args, u64* sizes, u32 max);
+/* the records after the one the taker runs stay in the ring until gq_keep_end, for a worker that reads them after the
+   taker ran them (draw_batches=2) */
+void gq_keep(void);
+void gq_keep_end(void);
+void gq_peek_log(GqFn base); /* the stats line of what gq_peek_call found, functions by their offset from base */
 
 /* the work of each record, and the front end's thread, in gpu.c */
 int gpu_on_thread(void);

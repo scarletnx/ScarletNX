@@ -44,12 +44,16 @@ static struct {
     u32 id;               /* the last conversion's id, 0 for none yet */
     int valid;            /* the last conversion made the image: draws of id read it */
     u64 palette[PALETTES]; /* the palettes of id */
-    /* what the frame's command buffer has bound for the draws: the command buffer (vk_cb_begun), the view, and
-       the palettes of that id (VK_VRS_NV) */
+} g_rate;
+/* what the frame's command buffer has bound for the draws: the command buffer (vk_cb_begun), the view, and the
+   palettes of that id (VK_VRS_NV). For each thread: a split run's worker (draw_batches=2) records into its own list,
+   which goes into the command buffer after the renderer thread's commands */
+static _Thread_local struct {
     u32 cb, bound_id;
     VkImageView bound;
     int bound_set;
-} g_rate;
+} t_bound;
+void vk_vrs_forget(void) { t_bound.bound_set = 0; }
 
 static int rate_init(void) {
     if (g_rate.pipe) return 1;
@@ -222,11 +226,15 @@ u32 vk_shading_rate(const GpuShadingRate* r) {
 }
 
 VkImageView vk_vrs_attachment(u32 id, VkExtent2D area) {
-    if (g_vk.vrs != VK_VRS_KHR || !id || id != g_rate.id || !g_rate.view) return VK_NULL_HANDLE;
+    /* the device's kind and a draw with no rate image need no share lock (a split run, draw_batches=2) */
+    if (g_vk.vrs != VK_VRS_KHR || !id) return VK_NULL_HANDLE;
+    vk_share_lock();
+    VkImageView view = id == g_rate.id ? g_rate.view : VK_NULL_HANDLE;
     /* the attachment covers the render area (VUID-VkRenderingInfo-imageView-06119): a larger pass shades each pixel */
     if ((u64)g_rate.w * g_vk.vrs_texel.width < area.width || (u64)g_rate.h * g_vk.vrs_texel.height < area.height)
-        return VK_NULL_HANDLE;
-    return g_rate.view;
+        view = VK_NULL_HANDLE;
+    vk_share_unlock();
+    return view;
 }
 
 typedef struct {
@@ -248,7 +256,7 @@ void vk_vrs_draw(VkCommandBuffer cb, u32 id) {
     g_draws += id != 0;
     if (g_vk.vrs != VK_VRS_NV) return;
     u32 serial = vk_cb_begun();
-    if (g_rate.bound_set && g_rate.cb == serial && g_rate.bound_id == id) return;
+    if (t_bound.bound_set && t_bound.cb == serial && t_bound.bound_id == id) return;
     NvBind x = {cb, id ? g_rate.view : VK_NULL_HANDLE, PALETTES};
     /* without an image every texel reads as index 0: entry 0 of each palette shades each pixel then */
     for (u32 v = 0; v < PALETTES; v++)
@@ -256,14 +264,14 @@ void vk_vrs_draw(VkCommandBuffer cb, u32 id) {
             x.e[v][i] = id ? (VkShadingRatePaletteEntryNV)((g_rate.palette[v] >> (4 * i)) & 15u)
                            : VK_SHADING_RATE_PALETTE_ENTRY_1_INVOCATION_PER_PIXEL_NV;
     vk_rec_call(nv_bind_run, &x, sizeof x);
-    g_rate.cb = serial;
-    g_rate.bound_id = id;
-    g_rate.bound = x.view;
-    g_rate.bound_set = 1;
+    t_bound.cb = serial;
+    t_bound.bound_id = id;
+    t_bound.bound = x.view;
+    t_bound.bound_set = 1;
 }
 
 void vk_vrs_keep(VkCommandBuffer cb) {
-    if (g_vk.vrs != VK_VRS_NV || (g_rate.bound_set && g_rate.cb == vk_cb_begun())) return;
+    if (g_vk.vrs != VK_VRS_NV || (t_bound.bound_set && t_bound.cb == vk_cb_begun())) return;
     vk_vrs_draw(cb, 0);
 }
 

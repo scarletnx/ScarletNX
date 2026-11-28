@@ -420,8 +420,10 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if (!vk_mirror_on() || !len || gmmu_run(gva, len, &cpu) != len) return 0;
     return vk_mirror_slice_at(gva, cpu, len, buf, off);
 }
+static void mir_order(void);
 int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off) {
     if (!vk_mirror_on() || !len || cpu + len > AS_SIZE) return 0;
+    mir_order(); /* a draw's writes in place before this use, and before the slice's copies */
     u32 now = vk_ww_now(), epoch = vk_ww_epoch(); /* before any byte is read */
     u64 gen = gpu_mem_generation();
     u64 g0 = cpu / MIR_G, g1 = (cpu + len - 1) / MIR_G;
@@ -618,6 +620,81 @@ void vk_mirror_wrote(u64 cpu, u64 len) {
     mir_pend_pages(r.first, r.end - 1, 1);
 }
 int vk_mirror_pending(u64 gva, u64 len) { return g_mir.on > 0 && len && pend_hit(&g_mir_pend, gva, len); }
+/* A draw's writes of the mirror in place (vk_mirror_write_in_place) come before the next use of the mirror that the
+   same thread records: each thread's own, as the two halves of a split run record their own commands. The join orders
+   one half's writes before the other's commands (vk_mirror_order_join) */
+static _Thread_local int t_mir_unordered;
+/* a write in place in the draw being set up: its stores come after each use of the mirror in its setup, so those
+   uses keep the barrier for the next one, and the next draw's start takes it (vk_mirror_draw_begin) */
+static _Thread_local int t_mir_inflight;
+static void barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2 sa, VkPipelineStageFlags2 ds,
+                    VkAccessFlags2 da);
+static _Atomic u64 g_mir_inplace; /* the writes in place, a count: a split's join looks at it */
+static void mir_order(void) {
+    if (!t_mir_unordered) return;
+    t_mir_unordered = t_mir_inflight;
+    vk_render_end();
+    barrier(vk_cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+}
+void vk_mirror_draw_begin(void) {
+    if (!t_mir_inflight) return;
+    t_mir_inflight = 0;
+    t_mir_unordered = 1;
+}
+u64 vk_mirror_inplace_count(void) { return atomic_load_explicit(&g_mir_inplace, memory_order_relaxed); }
+void vk_mirror_order_join(void) {
+    t_mir_unordered = 1; /* the worker's writes, for what the renderer thread records after its list */
+    mir_order();         /* the renderer thread's writes, before the worker's list */
+    t_mir_unordered = 1;
+}
+/* whether bytes of [cpu, cpu + len) have an owner that isn't the mirror */
+static int others_own(u64 cpu, u64 len) {
+    OwnRange o[16];
+    if (!own_any()) return 0;
+    u32 k = own_lookup(cpu, len, o, 16);
+    if (k > 16) return 1;
+    for (u32 i = 0; i < k; i++)
+        if (((const VkOwnRes*)o[i].res)->buf != g_mir.buf) return 1;
+    return 0;
+}
+/* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do. A draw
+   doesn't write a page in place for as long (vk_mirror_write_in_place) */
+#define MIR_HOT_PRESENTS 1200
+/* A writable binding of a draw over pages that the mirror's programs wrote and that haven't landed: the draw writes
+   them in the mirror, where they are, and the mirror lands its writes as a program's (vk_mirror_harvest). The mask
+   marks all of the range as written, in words of 32 bytes: the bytes that the draw doesn't write land as the mirror
+   holds them, which is guest memory's bytes, brought up to date by the slice, and a byte that the CPU writes after
+   that keeps the CPU's (land_entry, vk_mirror_publish).
+   Before, the binding needed those bytes on the CPU: the GPU's work was finished and landed, on the thread that
+   records the draws, about once a present in one game. An earlier result of a draw on the range, or bytes that
+   another owner holds, keep the old path (0).
+   So does a range that the CPU made land lately: the CPU reads it back, and it can write it again before the draws.
+   A byte that differs from the shadow lands as the CPU's (land_entry), so where the CPU wrote, the draws' stores
+   were lost, and the draws added to the bytes from before that write. The old path compares with the bytes taken at
+   the binding, and lands each byte that the draw changed. In one game, two buffers that its draws write about 230
+   times a present and its CPU reads back each frame were written in place: 64-pixel squares of wrong lighting
+   covered its world.
+   Only in split runs (draw_batches=2), where the finish stopped both threads. The CPU reads are noted where a trap
+   lands them, so with no traps the old path stays */
+int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    u64 cpu = 0;
+    if (g_settings.draw_batches != 2 || !own_traps() || g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
+        vk_own_cpu_read(cpu, len, MIR_HOT_PRESENTS))
+        return 0;
+    if (!vk_mirror_slice_at(gva, cpu, len, buf, off)) return 0;
+    /* the work before it, which reads or writes these bytes, before the mask's fill and the draw's stores */
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    const u64 m0 = cpu / 32 * 4, m1 = (cpu + len + 31) / 32 * 4;
+    rec_CmdFillBuffer(cb, g_mir.mask, m0, m1 - m0, ~0u);
+    vk_mirror_wrote(cpu, len);
+    t_mir_unordered = t_mir_inflight = 1;
+    atomic_fetch_add_explicit(&g_mir_inplace, 1, memory_order_relaxed);
+    return 1;
+}
 int vk_mirror_holds(u64 gva, u64 len) {
     u64 cpu = 0;
     return g_mir.on > 0 && len && own_any() && gmmu_run(gva, len, &cpu) == len && mirror_owns(cpu, len);
@@ -779,8 +856,6 @@ u32 vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFo
     return cleared;
 }
 
-/* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do */
-#define MIR_HOT_PRESENTS 1200
 /* records into cb the harvest of ranges r (n, joined and sorted, which it copies), with entries of entry words, as a
    batch of submit's */
 static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32 n, u32 entry) {
@@ -993,6 +1068,11 @@ static void own_entries(const u32* out, u32 n) {
 void vk_mirror_publish(void) {
     static int busy;
     if (g_mir.on <= 0 || !g_mir_nq || busy || vk_rec_unsafe()) return;
+    /* In a split run (draw_batches=2) nothing submits until its join (render.c's render_split), and a publish submits
+       its copies, and with UMA the readers of the imports over its pages (uma.c's quiesce). The pages wait for the
+       next read that needs them (vk_mirror_mem_need). A worker that has the ring (vk_rec_ring_held) can submit */
+    if (vk_share_on() && !vk_rec_ring_held()) return;
+    mir_order(); /* a draw's writes in place before the copies into the mirror */
     busy = 1;
     u32* q = g_mir_q;
     u32 n = g_mir_nq;
@@ -1286,6 +1366,7 @@ void vk_mirror_done(u64 done) {
 }
 
 /* a read of guest memory over pending writes: they land first, as other results do (buffer.c's land_reason) */
+int vk_mirror_recording(void) { return g_mir.on > 0 && g_mir_nnow; }
 static int mir_pending(u64 gva, u64 len) {
     return len == ~0ull ? g_mir_nnow || g_mir_nbatch : pend_hit(&g_mir_pend, gva, len); /* ~0: anywhere */
 }

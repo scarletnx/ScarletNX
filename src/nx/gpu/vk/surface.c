@@ -201,6 +201,7 @@ static void ended_unlink(u32 r) {
     g_rows.ended_by[r] = 0;
 }
 void vk_surf_touch(Surf* s) {
+    vk_shared_note(1);
     u32 r = s->row;
     if (r) ended_unlink(r); /* used: the game has an object there again */
     if (s->last_used == g_vk_present) return;
@@ -286,7 +287,8 @@ static _Thread_local struct {
     VkCommandBuffer cb;
     u32 n;
     int on;
-} g_surf_batch;
+} g_surf_batch; /* each thread's own, as on main: a batch of one thread's barriers must not go into another thread's
+                   command buffer. An entry for each slot, which the threads of slot 0 shared, broke the picture */
 static void surf_batch_flush(void) {
     if (!g_surf_batch.n) return;
     VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -438,11 +440,122 @@ void vk_surf_batch_end(void) {
     surf_batch_flush();
     g_surf_batch.on = 0;
 }
+/* The surfaces' state as a worker sees it while it records a batch into its list (parallel draw batches,
+   docs/dev/parallel-draw-batches.md): vk_surf_use there changes this view, ends the pass itself where it predicts a
+   barrier, and defers the real use to the splice (surf_use_splice), where the barrier comes from the real state. The
+   readers of a surface's layout ask vk_surf_layout. A surface in the view is never made over, loaded again or freed
+   before the list's calls ran: vk_surf_before_reset puts the list into the ring first */
+#define SURF_VIEWS 256
+static struct {
+    u32 n;
+    struct {
+        const Surf* s;
+        VkImageLayout layout;
+        VkPipelineStageFlags2 stage;
+        VkAccessFlags2 access;
+    } v[SURF_VIEWS];
+} t_sv_slot[VK_RC_SLOTS];
+/* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
+#define t_sv (t_sv_slot[vk_render_slot()])
+static int sv_find(const Surf* s) {
+    for (u32 i = 0; i < t_sv.n; i++)
+        if (t_sv.v[i].s == s) return (int)i;
+    return -1;
+}
+VkImageLayout vk_surf_layout(const Surf* s) {
+    const int i = t_sv.n ? sv_find(s) : -1;
+    if (i >= 0) return t_sv.v[i].layout;
+    /* the renderer thread changes a surface's layout, under the share lock while a run is split (draw_batches=2):
+       a worker's uses go to the splice, and a worker that would load, move or free a surface stops the run. So the
+       renderer thread reads it with no lock, and a worker with the lock */
+    if (!vk_rec_listing()) return s->layout;
+    vk_share_lock();
+    const VkImageLayout layout = s->layout;
+    vk_share_unlock();
+    return layout;
+}
+void vk_surf_view_reset(void) { t_sv.n = 0; }
+void vk_surf_before_reset(const Surf* s) {
+    if (!t_sv.n || sv_find(s) < 0) return;
+    vk_rec_list_flush(); /* the deferred uses of s run now, in their order */
+    t_sv.n = 0;
+}
+static int surf_access_writes(VkAccessFlags2 a) {
+    return (a & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
+}
+typedef struct {
+    Surf* s;
+    VkImageLayout layout;
+    VkPipelineStageFlags2 stage;
+    VkAccessFlags2 access;
+    int barrier; /* the worker's prediction: it ended the pass for a barrier here */
+} SurfUse;
+static u64 g_surf_mispredicted;
+static void surf_use_now(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
+                         VkAccessFlags2 access, int pass_ends);
+/* the real use, at the splice: the pass already ended in the list where the worker predicted a barrier */
+static void surf_use_splice(const void* arg) {
+    SurfUse u;
+    memcpy(&u, arg, sizeof u);
+    const int wrote = surf_access_writes(u.s->access), writes = surf_access_writes(u.access);
+    const int barrier = !(u.s->layout == u.layout && !writes && !wrote) || (u.stage & ~u.s->stage);
+    if (barrier != u.barrier && !g_surf_mispredicted++)
+        WARN("vulkan: draw_batches: a deferred surface use needed %s barrier than the worker predicted\n",
+             barrier ? "a" : "no");
+    surf_use_now(vk_cmd(), u.s, u.layout, u.stage, u.access, 0);
+}
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
+    vk_shared_note(0);
+    if (vk_rec_listing()) {
+        /* the same rule as surf_use_now, on the worker's view */
+        if (g_vk.has_unified_layouts && layout == VK_IMAGE_LAYOUT_GENERAL && !surf_access_writes(access)) {
+            stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            access = VK_ACCESS_2_MEMORY_READ_BIT;
+        }
+        /* the share lock (draw_batches=2) only for the first look at s: the rest is this thread's view */
+        Surf* const v = s->host ? s->host : s; /* a hosted target's state is its host's (surf_use_now) */
+        int i = sv_find(v);
+        if (i < 0) {
+            if (t_sv.n == SURF_VIEWS) { /* the view is full: the list's uses go first, the view starts again */
+                vk_rec_list_flush();
+                t_sv.n = 0;
+            }
+            i = (int)t_sv.n++;
+            t_sv.v[i].s = v;
+            vk_share_lock();
+            t_sv.v[i].layout = v->layout;
+            t_sv.v[i].stage = v->stage;
+            t_sv.v[i].access = v->access;
+            vk_share_unlock();
+        }
+        const int same = t_sv.v[i].layout == layout && !surf_access_writes(access) &&
+                         !surf_access_writes(t_sv.v[i].access);
+        const int barrier = !same || (stage & ~t_sv.v[i].stage);
+        if (same) {
+            t_sv.v[i].stage |= stage;
+            t_sv.v[i].access |= access;
+        } else {
+            t_sv.v[i].layout = layout;
+            t_sv.v[i].stage = stage;
+            t_sv.v[i].access = access;
+        }
+        if (barrier) vk_render_end(); /* no barriers on images inside a rendering pass: ended here, in the list */
+        const SurfUse u = {s, layout, stage, access, barrier};
+        vk_rec_defer(surf_use_splice, &u, sizeof u);
+        return;
+    }
+    vk_share_lock();
+    surf_use_now(cb, s, layout, stage, access, 1);
+    vk_share_unlock();
+}
+static void surf_use_now(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
+                         VkAccessFlags2 access, int pass_ends) {
     if (s->host) { /* a hosted target's use is its host's image's, whose state orders every write to it */
         Surf* h = s->host;
-        vk_surf_use(cb, h, layout, stage, access);
+        surf_use_now(cb, h, layout, stage, access, pass_ends);
         s->layout = h->layout;
         s->stage = h->stage;
         s->access = h->access;
@@ -467,7 +580,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            the last write visible didn't name (a copy after a blit read it): a barrier from the earlier readers
            extends that visibility to it */
         if (stage & ~s->stage) {
-            vk_render_end();
+            if (pass_ends) vk_render_end();
             surf_barrier(cb, s, s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        layout, stage, access, layout);
         }
@@ -475,7 +588,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         s->access |= access;
         return;
     }
-    vk_render_end(); /* no barriers on images inside a rendering pass */
+    if (pass_ends) vk_render_end(); /* no barriers on images inside a rendering pass */
     /* a reader barrier after a write: one a written-list barrier covers, or the next pass's batch would (step 6 of
        docs/dev/draw-cost.md, item 7, takes these away) */
     if (written_on() && !writes && s->layout == layout && layout == VK_IMAGE_LAYOUT_GENERAL) {
@@ -842,6 +955,7 @@ void vk_rt_host_counts(u64* hosted, u64* unhosted) {
    again, and the owner set where the memory is the GPU's own (DM_DEVICE), which blocks are emptied of */
 static int rt_move(VkCommandBuffer cb, Surf* s, const DevMemWant* want, u64* bytes) {
     if (s->host) return -1; /* its image is its host's, a texture's */
+    vk_surf_before_reset(s);
     if (vk_gfx_image_holds(s)) return -1; /* a storage result of it still lands in memory from its image */
     VkImageCreateInfo ii;
     VkViewFormats vf;
@@ -1116,6 +1230,7 @@ static void rtx_del(u64 gva) {
     g_rtx[i].s = NULL;
 }
 Surf* vk_rt_find(u64 gva) {
+    vk_shared_note(4);
     if (g_rtx_failed) {
         for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
             if (s->gva == gva && s->is_rt) return s;
@@ -1211,6 +1326,7 @@ static void take_changed(Surf* s) {
 void vk_surf_wrote(Surf* s) {
     /* item 7b's events: its pixels changed, by a draw or a copy, blit or pack into it */
     if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
+    vk_shared_note(3);
     take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
@@ -1430,6 +1546,7 @@ int vk_ms_load(Surf* s) { return vk_ms_moves(s) && (s->bl ? surf_load_bl(s) : su
 static void rt_reload(u64 gva) {
     Surf* s = vk_rt_find(gva);
     if (!s) return;
+    vk_surf_before_reset(s);
     vk_surf_wrote(s); /* the copies of it (crops) are out of date */
     if (s->f.depth || !s->f.raw || !moves_scaled(s)) {
         /* new memory over a target we can't load as is: memory is the truth. Its contents are undefined until it is
@@ -2917,14 +3034,23 @@ Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 laye
 
 static void rt_aside_check(Surf* s);
 void vk_rt_note_read(Surf* s) {
+    vk_shared_note(2);
     vk_surf_touch(s);
     if (!s->is_rt) return;
+    if (s->aside && gpu_spec()) { /* a resolve ahead of the renderer thread (prep.c) changes no target */
+        gpu_spec_fail("a target put aside");
+        return;
+    }
     if (s->aside) rt_aside_check(s);
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
     if (s->gw == gpu_mem_generation()) return;
     if (!gpu_mem_dirty_since(s->gw, s->gva, rt_bytes(s))) {
         s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check asks only about later writes */
+        return;
+    }
+    if (gpu_spec()) {
+        gpu_spec_fail("a target to reload");
         return;
     }
     vk_rt_reload(s->gva);
@@ -3362,6 +3488,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them), the BC7
    image being made for it too */
 static void surf_free(Surf* s) {
+    vk_surf_before_reset(s);
     const u32 r = s->row;
     vk_tex_unhost(s); /* its targets get images of their own first */
     if (s->host) { /* a view of its host's image: the image stays the host's */

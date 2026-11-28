@@ -1971,6 +1971,37 @@ setting Constant buffer windows
     help ranges of 64 KiB and its descriptors are not in heaps, but not on lavapipe, whose linear rasterizer smashes its
     help stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test runs it so);
     help a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound one by one
+setting Draw batches
+    key draw_batches
+    int 0 2
+    default 0
+    startup
+    words Off|On|Split
+    help 1 = with the renderer thread, the draw records that follow a draw go to a worker thread as a batch,
+    help which sets them up into a command list of its own, while the renderer thread waits; the renderer thread then
+    help puts the list into the recording ring. A step to setting batches up in parallel
+    help (docs/dev/parallel-draw-batches.md): it gains nothing yet
+    help 2 = a long run of draw records is split in two: the renderer thread draws the first half, and the worker thread
+    help the second half into its list at the same time. Their calls into the shared parts of the renderer take a
+    help lock in turn. In one game's busiest scene, 2 ran about 6% faster than 0
+setting Draw timing
+    key draw_timing
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the renderer thread times the steps of each draw with the processor's counter, for the log's lines of
+    help draw phases and a draw record's steps, and counts the batch probe's batches. About 30 reads of the counter
+    help a draw took 3.6% of the renderer thread in one game's busiest scene. 0 = none of it
+setting Constant buffer window epochs
+    key vk_cb_window_epochs
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the constant buffer windows in the staging ring share one base, which moves for all of them at once
+    help when a new copy is past its 64 KiB: a kept copy below the base is copied again. Each bank moved its own window
+    help at its own time, and the draws' dynamic offsets changed about every third draw. 0 = a window for each bank
 setting Dynamic constant buffers
     key vk_dynamic_cbufs
     int 0 1
@@ -2015,6 +2046,19 @@ setting GPU split
     help 1 = the renderer sets up draws on a thread of its own, while the GPU thread reads the game's commands ahead
     help of it (gpu/gpu_queue.c). 0 = the GPU thread does both, one after the other. 2 = each, as it measures faster:
     help the game's work a present on the two threads against on one, with the other tried for a moment now and then
+
+setting Draw prep
+    key draw_prep
+    int 0 2
+    default 0
+    startup
+    words Off|On|Auto
+    help 1 = with the renderer thread, a thread of its own resolves the next draw's shaders, targets,
+    help textures and pipeline (the draw's state an earlier draw kept) while the renderer thread records the binds of
+    help the draw before it (gpu/vk/prep.c). A draw whose resolve needs more, or whose stamps moved, is resolved on the
+    help renderer thread as before. With draw_state_check=1 each result is compared with the renderer's own resolve.
+    help 2 = each, as it measures faster: the renderer thread's time a present with the thread against without it,
+    help with the other tried for a moment now and then (a CPU with few cores may lose time with it)
 setting Compute dispatches
     key compute
     int 0 1
