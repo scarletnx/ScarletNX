@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
@@ -261,6 +262,40 @@ static void surf_changed(u64 gva) {
     if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }
 void vk_surf_changed(u64 gva) { surf_changed(gva); }
+/* The memo of vk_rt_note_read for draw_batches=2, one for each draw thread. A second read of a surface in the same
+   present, at the same memory generation and epochs, does nothing: the first touched it (last_used and its ended row
+   are this present's), and left it not put aside with s->gw at that generation. The other changes that make a read do
+   something come under the share lock, and each moves g_note_epoch: a row ended, a target put aside, a generation set
+   back. A surface made, freed or moved moves g_vk_surf_epoch. So a hit takes no lock */
+static _Atomic u32 g_note_epoch;
+static void note_changed(void) { atomic_fetch_add_explicit(&g_note_epoch, 1, memory_order_release); }
+#define NOTE_MEMO 64
+static _Thread_local struct {
+    const Surf* s;
+    u64 gen;
+    u32 present, epoch, surf_epoch;
+} t_note[NOTE_MEMO];
+static u32 note_at(const Surf* s) { return (u32)(((uintptr_t)s >> 6 ^ (uintptr_t)s >> 12) & (NOTE_MEMO - 1)); }
+static void note_keep(const Surf* s, u64 gen) {
+    if (!vk_share_on() || gpu_spec()) return;
+    t_note[note_at(s)] = (typeof(t_note[0])){.s = s,
+                                             .gen = gen,
+                                             .present = g_vk_present,
+                                             .epoch = atomic_load_explicit(&g_note_epoch, memory_order_acquire),
+                                             .surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire)};
+}
+int vk_rt_note_read_plain(const Surf* s) {
+    const u32 i = note_at(s);
+    if (t_note[i].s != s || t_note[i].present != g_vk_present || gpu_spec() ||
+        t_note[i].gen != gpu_mem_generation() ||
+        t_note[i].epoch != atomic_load_explicit(&g_note_epoch, memory_order_acquire) ||
+        t_note[i].surf_epoch != atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire) ||
+        atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))
+        return 0;
+    vk_shared_note(2);
+    vk_shared_note(1);
+    return 1;
+}
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
    hardware does) */
@@ -1820,6 +1855,7 @@ static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
     if (kept) {
         gpu_mem_written_by(s->gva, size, GPU_WRITE_TARGET, (u32)s->f.vk, s->gva);
         s->gw = gw0;
+        note_changed();
         s->draw_wseen = 0;
         s->mem_wseen = 0;
         return;
@@ -2007,6 +2043,7 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
            the merged guest bytes, even though note_writeback just hashed those same bytes. */
         s->hash ^= 1;
         s->gw = 0;
+        note_changed();
     }
 }
 static int rt_superseded(const Surf* s);
@@ -3043,7 +3080,10 @@ static void rt_aside_check(Surf* s);
 void vk_rt_note_read(Surf* s) {
     vk_shared_note(2);
     vk_surf_touch(s);
-    if (!s->is_rt) return;
+    if (!s->is_rt) {
+        note_keep(s, gpu_mem_generation());
+        return;
+    }
     if (s->aside && gpu_spec()) { /* a resolve ahead of the renderer thread (prep.c) changes no target */
         gpu_spec_fail("a target put aside");
         return;
@@ -3055,9 +3095,13 @@ void vk_rt_note_read(Surf* s) {
     if (vk_gfx_image_pending_besides(s->gva, rt_bytes(s), s)) vk_gfx_image_mem_need(s->gva, rt_bytes(s));
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
-    if (s->gw == gpu_mem_generation()) return;
+    if (s->gw == gpu_mem_generation()) {
+        if (!s->aside) note_keep(s, s->gw);
+        return;
+    }
     if (!gpu_mem_dirty_since(s->gw, s->gva, rt_bytes(s))) {
         s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check asks only about later writes */
+        if (!s->aside) note_keep(s, s->gw);
         return;
     }
     if (gpu_spec()) {
@@ -3613,6 +3657,7 @@ static void rt_aside(Surf* s) {
     s->aside_wseen = tracked ? vk_ww_now() : 0;
     s->aside_hash = tracked ? 0 : mem_hash(at, size);
     s->aside = 1;
+    note_changed();
     g_rt_sys.kept++;
 }
 /* s's first use since it was set aside: memory the guest wrote since then is newer than its pixels, which load from
@@ -3914,6 +3959,7 @@ static int ended_live(u32 r) {
 /* row r at the head of the list of ended textures, ended as `by` says */
 static void ended_link(u32 r, u8 by) {
     g_rows.ended_by[r] = by;
+    note_changed();
     g_rows.ended_at[r] = g_vk_present;
     link_before(g_rows.ended, &g_rows.ended_list, r, g_rows.ended_list.head);
 }

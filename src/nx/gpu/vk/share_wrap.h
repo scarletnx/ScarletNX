@@ -710,6 +710,7 @@ static inline void sh_vk_rt_note_read(Surf* s) {
         vk_rt_note_read(s);
         return;
     }
+    if (vk_rt_note_read_plain(s)) return;
     vk_share_lock_at(93);
     vk_rt_note_read(s);
     vk_share_unlock();

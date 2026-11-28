@@ -1605,6 +1605,8 @@ Surf* vk_rt_save(Surf* rt, u32 set);
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
 void vk_rt_note_read(Surf* s);
+/* 1 when a read of s now would do nothing, as this thread's memo of its last read shows: no share lock (surface.c) */
+int vk_rt_note_read_plain(const Surf* s);
 /* The guest (or a GPU engine's result) writes [gva, gva + size): every pending target over those bytes goes to
    memory first, except one the write covers whole when whole says the caller writes every byte of its range. Such a
    target's image has nothing of its own to give back, so it is dropped instead: memory is the truth (rt_cover.h) */
