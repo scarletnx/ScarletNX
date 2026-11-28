@@ -126,7 +126,10 @@ the game's image read from that image.
   on Windows, or on macOS and iOS a Mach-O dylib with an ad hoc signature, each with a veneer for a branch past
   128 MiB), PowerPC64 (ELF, ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and
   LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT:
-  [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/native_qemu_differential.c` runs the
+  [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). An x86-64 or AArch64 ELF module larger
+  than its code's PC-relative references reach (2 and 4 GiB) has its data in the middle of its code, half the code away
+  at most, and an x86-64 call past 2 GiB goes through a jump at the cut (`link_elf.c`; `ctest -R elf_relocate` links
+  one with a reach of 1.5 MiB). `tests/native_qemu_differential.c` runs the
   host's native back end on words of every row of the generated decoder (`tests/native_steps.c`), against
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, with the groups known to differ in
   `tests/native_qemu_expected.txt` (a new group, or a listed one that no longer differs, fails it; `--sweep` runs more

@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__mips64) || defined(__s390x__)
+#if defined(__mips64) || defined(__s390x__) || defined(__x86_64__) || defined(__aarch64__)
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
@@ -1102,6 +1102,140 @@ static int other_objects(const char* desc, const char* what) {
     return 0;
 }
 
+/* a module's PT_LOAD segments, up to max of them: how many it has */
+static size_t loads(const unsigned char* module, Elf64_Phdr* out, size_t max) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
+    const Elf64_Phdr* ph = (const Elf64_Phdr*)(const void*)(module + eh->e_phoff);
+    size_t n = 0;
+    for (size_t i = 0; i < eh->e_phnum; ++i)
+        if (ph[i].p_type == PT_LOAD) {
+            if (n < max) out[n] = ph[i];
+            ++n;
+        }
+    return n;
+}
+static int inside(const Elf64_Phdr* load, uint64_t address) {
+    return address >= load->p_vaddr && address - load->p_vaddr < load->p_memsz;
+}
+
+/* AOT: a module larger than its code's references reach (snx_link_elf_reach's 1.5 MiB here; a machine's own 2 or 4
+   GiB). need0 and need1, two fillers of 1 MiB, then what those two call and read: laid out as a small module, need0 is
+   2 MiB of code from the slot it reads. The linker cuts the code in half and puts the data in the middle, each kind in
+   a segment of its own, and x86-64's call, still 2 MiB from ext_fn, goes through the hub's jump. The module is the
+   same in memory and in a file, the system's loader takes it and its code reads the data and the read-only data. With
+   a reach half the code is beyond, the link is refused, naming the reference's distance and the reach */
+static int far_data(unsigned machine, const char* name) {
+    static const char* const names[5] = {"need", "filler a", "filler b", "definitions", "held"};
+    const char* exports[] = {"need0", "need1", "ext_fn", "ext_data", "held_table"};
+    const uint64_t mib = (uint64_t)1 << 20, reach = mib + mib / 2;
+    unsigned char *data[5] = {NULL, NULL, NULL, NULL, NULL}, *file = NULL;
+    size_t size[5] = {0, 0, 0, 0, 0}, file_size = 0, i;
+    SnxLinkInput inputs[5];
+    SnxLinkOutput cut = {0}, whole = {0}, filed = {0}, refused = {0};
+    Elf64_Phdr load[5];
+    char error[1024], what[200], *folder = snx_temp_dir(NULL);
+    char* path = folder ? snx_path_join(folder, "far-data.so") : NULL;
+    int rc = 1;
+    if (!path) {
+        snx_error("%s module with its data in the middle: no temporary folder", name);
+        goto done;
+    }
+    if (nobj_need(machine, "ext_fn", "ext_fn", "ext_data", "held_table", &data[0], &size[0], error, sizeof error) ||
+        nobj_filler(machine, 0, (size_t)mib, &data[1], &size[1], error, sizeof error) ||
+        nobj_filler(machine, 0, (size_t)mib, &data[2], &size[2], error, sizeof error) ||
+        nobj_definitions(machine, 0, &data[3], &size[3], error, sizeof error) ||
+        nobj_held(machine, &data[4], &size[4], error, sizeof error)) {
+        snx_error("%s", error);
+        goto done;
+    }
+    for (i = 0; i < 5; ++i) inputs[i] = (SnxLinkInput){data[i], size[i], names[i]};
+    /* as a small module: three segments, the data past all the code */
+    if (snx_link_elf(inputs, 5, exports, 5, "far.so", &whole, error, sizeof error)) {
+        snx_error("%s module of 2 MiB: %s", name, error);
+        goto done;
+    }
+    snprintf(what, sizeof what, "%s module of 2 MiB in the machine's reach: read-only, code, data", name);
+    check(loads(whole.data, load, 5) == 3 && load[0].p_flags == PF_R && load[1].p_flags == (PF_R | PF_X) &&
+              load[2].p_flags == (PF_R | PF_W) &&
+              export_address(whole.data, "ext_data") - export_address(whole.data, "need0") > 2 * mib,
+          what);
+    if (snx_link_elf_reach(inputs, 5, exports, 5, "far.so", reach, NULL, &cut, error, sizeof error)) {
+        snx_error("%s module of 2 MiB whose references reach 1.5: %s", name, error);
+        goto done;
+    }
+    {
+        const uint64_t need0 = export_address(cut.data, "need0"), fn = export_address(cut.data, "ext_fn");
+        const uint64_t datum = export_address(cut.data, "ext_data"), table = export_address(cut.data, "held_table");
+        int apart = loads(cut.data, load, 5) == 5;
+        for (i = 1; apart && i < 5; ++i) /* each in pages of its own, after the one before, where the file has it */
+            apart = (load[i].p_vaddr & ~(load[i].p_align - 1)) >= load[i - 1].p_vaddr + load[i - 1].p_memsz &&
+                    load[i].p_offset == load[i].p_vaddr;
+        snprintf(what, sizeof what, "%s module past its reach: half the code, read-only data, data, the other half",
+                 name);
+        check(apart && load[0].p_flags == PF_R && load[1].p_flags == (PF_R | PF_X) && load[2].p_flags == PF_R &&
+                  load[3].p_flags == (PF_R | PF_W) && load[4].p_flags == (PF_R | PF_X) && inside(&load[1], need0) &&
+                  inside(&load[2], table) && inside(&load[3], datum) && inside(&load[4], fn),
+              what);
+        snprintf(what, sizeof what, "%s module past its reach: each half of the code reaches the data, not the other",
+                 name);
+        check(apart && datum - need0 <= reach && fn - datum <= reach && fn - need0 > reach, what);
+        if (!apart) goto done;
+        if (machine == EM_X86_64) {
+            /* need0's call (E8 at byte 13) lands on a jump of the hub, at the end of the first half, which lands on
+               ext_fn */
+            const uint64_t jump = need0 + 18 + (uint64_t)(int64_t)(int32_t)get32(cut.data + need0 + 14);
+            check(cut.data[need0 + 13] == 0xE8 && inside(&load[1], jump) && cut.data[jump] == 0xE9 &&
+                      jump + 5 + (uint64_t)(int64_t)(int32_t)get32(cut.data + jump + 1) == fn,
+                  "x86-64 module past its reach: a call the other half away goes through the hub's jump");
+        } else
+            check(branch_target(get32(cut.data + need0 + 24), need0 + 24) == fn,
+                  "AArch64 module past its reach: a BL in its own reach goes straight to the other half");
+    }
+    if (snx_link_elf_reach(inputs, 5, exports, 5, "far.so", reach, path, &filed, error, sizeof error)) {
+        snx_error("%s module past its reach into a file: %s", name, error);
+        goto done;
+    }
+    file = snx_read_file(path, &file_size);
+    snprintf(what, sizeof what, "%s module past its reach linked into a file is the module linked in memory", name);
+    check(file && filed.size == cut.size && file_size == cut.size && !memcmp(file, cut.data, cut.size), what);
+#if defined(__x86_64__) || defined(__aarch64__)
+#ifdef __x86_64__
+    if (machine == EM_X86_64) {
+#else
+    if (machine == EM_AARCH64) {
+#endif
+        typedef int64_t (*Unary)(int64_t);
+        void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (!module) {
+            snx_error("%s module past its reach: dlopen: %s", name, dlerror());
+            goto done;
+        }
+        Unary need0 = (Unary)(uintptr_t)dlsym(module, "need0"), need1 = (Unary)(uintptr_t)dlsym(module, "need1");
+        /* need<i>(x) = ext_fn(x + *data<i>) + 1, ext_fn(x) = 3x: ext_data is 41, held_table's first constant 1 */
+        check(need0 && need0(1) == 127, "the host's module past its reach: its code reads its data and calls across");
+        check(need1 && need1(1) == 7, "the host's module past its reach: its code reads its read-only data");
+        dlclose(module);
+    }
+#endif
+    if (!snx_link_elf_reach(inputs, 5, exports, 5, "far.so", mib / 2, NULL, &refused, error, sizeof error))
+        snprintf(error, sizeof error, "linked");
+    snprintf(what, sizeof what, "%s module whose halves are past its reach is refused with the distance: %s", name,
+             error);
+    check(strstr(error, machine == EM_X86_64 ? "need: relocation 2 (R_X86_64_PC32) out of range"
+                                             : "need: relocation 275 (R_AARCH64_ADR_PREL_PG_HI21) out of range") &&
+              strstr(error, " MiB from its target and reaches 0.5 MiB; the module's code is 2.0 MiB"),
+          what);
+    rc = 0;
+done:
+    free(file);
+    free(cut.data), free(whole.data), free(refused.data);
+    for (i = 0; i < 5; ++i) free(data[i]);
+    if (folder) snx_remove_tree(folder);
+    free(path);
+    free(folder);
+    return rc;
+}
+
 #if defined(__mips64) || defined(__s390x__)
 /* ---- a module made, linked and run on a host whose objects only the AOT linker takes (code_loader.h), of the native
    back end's descriptor functions (native_objects.c): MIPS64's and s390x's ---- */
@@ -1332,6 +1466,7 @@ int main(void) {
         other_objects("ppc64le", "PowerPC64 little-endian") || other_objects("mips64el", "MIPS64 little-endian") ||
         other_objects("ppc64", "PowerPC64") || other_objects("mips64", "MIPS64") || other_objects("s390x", "s390x"))
         ++failures;
+    if (far_data(EM_X86_64, "x86-64") || far_data(EM_AARCH64, "AArch64")) ++failures;
 #if defined(__mips64) || defined(__s390x__)
     if (host_module()) ++failures;
 #endif
