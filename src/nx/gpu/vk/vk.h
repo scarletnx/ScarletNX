@@ -1362,6 +1362,8 @@ typedef struct Surf {
     struct Surf* fb_snap;
     u64 fb_draw;
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
+    u8 copy_why;    /* a copy in crop: the VK_RT_COPY_ reason it was made for (a later bind may reuse it), a feedback
+                       draw's save copy VK_RT_COPY_FEEDBACK */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
        recency list and its place in the list of ended textures */
@@ -1783,15 +1785,32 @@ u64 vk_tex_reclaim_superseded(u32 before, u64 want);
 /* t took pixels from a target now: only targets drawn after this cover its memory (vk_tex_reclaim_superseded) */
 void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
+   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
+   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
+   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
+   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
+   and in rendering passes ended, decides whether targets take other formats' views */
+enum {
+    VK_RT_COPY_FORMAT,
+    VK_RT_COPY_CROP,
+    VK_RT_COPY_FORMAT_CROP,
+    VK_RT_COPY_FEEDBACK,
+    VK_RT_COPY_GUEST,
+    VK_RT_COPY_TAKE,
+    VK_RT_COPY_N
+};
 /* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
    (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
-   the copies of them (texture.c rt_copy), which go with them, and those a trim let go so far as no bind asked for them
-   (surface.c rt_copies_reclaim) */
+   the copies of them (texture.c rt_copy), which go with them, also by the reason each was made for, and those let go so
+   far as no bind asked for them (surface.c rt_copies_let_go) */
 typedef struct {
     u32 n[3], parked[3];
     u64 bytes[3];
     u32 copies;
     u64 copy_bytes, copies_gone, copies_gone_bytes;
+    u32 copies_by[VK_RT_COPY_N]; /* the copies by the reason they were made for (Surf.copy_why) */
+    u64 copy_bytes_by[VK_RT_COPY_N];
 } VkRtKinds;
 void vk_rt_kinds(VkRtKinds* k);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
@@ -3698,21 +3717,6 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
-/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
-   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
-   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
-   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
-   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
-   and in rendering passes ended, decides whether targets take other formats' views */
-enum {
-    VK_RT_COPY_FORMAT,
-    VK_RT_COPY_CROP,
-    VK_RT_COPY_FORMAT_CROP,
-    VK_RT_COPY_FEEDBACK,
-    VK_RT_COPY_GUEST,
-    VK_RT_COPY_TAKE,
-    VK_RT_COPY_N
-};
 #define VK_RT_COPY_PAIRS 8
 typedef struct {
     u64 written[VK_RT_COPY_N]; /* copies whose pixels were copied (a copy reused as it is counts nothing) */
@@ -3735,6 +3739,7 @@ typedef struct {
    and not after); bytes its texels'; from and to the formats it went between */
 void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to);
 void vk_rt_copy_counts(VkRtCopyCounts* out); /* since the last stats line */
+const char* vk_rt_copy_why(int why);         /* a VK_RT_COPY_ reason's name for the log */
 void vk_rt_copy_log(void);                   /* a stats line of them, a present, then counted again from 0 */
 /* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
    (renderer.c vkr_method_barrier) */

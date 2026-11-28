@@ -2853,13 +2853,15 @@ static void rt_copy_present(void) {
     if (g_copy_stats.present_ended > n->most_ended) n->most_ended = g_copy_stats.present_ended;
     g_copy_stats.present = g_copy_stats.present_ended = 0;
 }
+static const char* const g_rt_copy_why[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = "another format",
+                                                        [VK_RT_COPY_CROP] = "a corner",
+                                                        [VK_RT_COPY_FORMAT_CROP] = "a corner in another format",
+                                                        [VK_RT_COPY_FEEDBACK] = "a draw sampling its target",
+                                                        [VK_RT_COPY_GUEST] = "the guest's size",
+                                                        [VK_RT_COPY_TAKE] = "a target taking another's pixels"};
+const char* vk_rt_copy_why(int why) { return why >= 0 && why < VK_RT_COPY_N ? g_rt_copy_why[why] : "none"; }
 void vk_rt_copy_log(void) {
-    static const char* const why[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = "another format",
-                                                  [VK_RT_COPY_CROP] = "a corner",
-                                                  [VK_RT_COPY_FORMAT_CROP] = "a corner in another format",
-                                                  [VK_RT_COPY_FEEDBACK] = "a draw sampling its target",
-                                                  [VK_RT_COPY_GUEST] = "the guest's size",
-                                                  [VK_RT_COPY_TAKE] = "a target taking another's pixels"};
+    const char* const* why = g_rt_copy_why;
     const VkRtCopyCounts* n = &g_copy_stats.n;
     const double presents = n->presents ? (double)n->presents : 1;
     u64 all = 0;
@@ -2932,6 +2934,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         c->fkey = rt->fkey;
         c->type = rt->type;
         c->is_rt = 1;       /* sampled like one; not in the table, so never found as one */
+        c->copy_why = (u8)why;
         c->msaa = rt->msaa; /* a multisampled target's copy has its samples, which a copy takes as they are */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (c->msaa &&
@@ -3114,6 +3117,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
         c->type = VK_IMAGE_VIEW_TYPE_2D;
         c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
         c->predraw = (u8)(set + 1);
+        c->copy_why = VK_RT_COPY_FEEDBACK;
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                   VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;

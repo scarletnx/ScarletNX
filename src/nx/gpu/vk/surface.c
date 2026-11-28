@@ -3265,6 +3265,10 @@ void vk_rt_kinds(VkRtKinds* k) {
             for (const Surf* c = s->crop; c; c = c->next) {
                 k->copies++;
                 k->copy_bytes += c->bytes;
+                if (c->copy_why < VK_RT_COPY_N) {
+                    k->copies_by[c->copy_why]++;
+                    k->copy_bytes_by[c->copy_why] += c->bytes;
+                }
             }
         }
 }
