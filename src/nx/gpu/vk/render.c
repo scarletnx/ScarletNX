@@ -308,6 +308,39 @@ static void bp_log(void) {
     memset(g_bp.big, 0, sizeof g_bp.big);
     g_bp.dep_b = g_bp.dep_d = g_bp.miss_b = g_bp.miss_d = 0;
 }
+/* The targets a draw slot's lookups noted a read of in this present (vk_rt_note_read), while the GPU-side writes and
+   the surface table stayed the same: a repeat touches nothing, as read_targets' memo below finds, and each took the
+   share lock with draw_batches=2. Targets alone: a texture that isn't one can go on the ended list during the present
+   (vk_mem_trim), which a note takes it off. One put aside is noted each time (rt_aside_check) */
+#define NOTED_N 16
+static struct {
+    Surf* s[NOTED_N];
+    u64 gen;
+    u32 present, epoch, n;
+} g_noted[RC_SLOTS];
+static void note_read(Surf* t) {
+    if (!t) return;
+    if (!t->is_rt) {
+        vk_rt_note_read(t);
+        return;
+    }
+    typeof(g_noted[0])* const m = &g_noted[t_rc];
+    const u64 mg = gpu_mem_generation(); /* before the check: a write during it makes the next read check again */
+    const u32 epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
+    if (m->present != g_vk_present || m->gen != mg || m->epoch != epoch) {
+        m->present = g_vk_present;
+        m->gen = mg;
+        m->epoch = epoch;
+        m->n = 0;
+    }
+    for (u32 i = 0; i < m->n && i < NOTED_N; i++)
+        if (m->s[i] == t) return;
+    vk_share_lock(); /* the note and its target's aside read together (draw_batches=2) */
+    vk_rt_note_read(t);
+    const int aside = t->aside;
+    vk_share_unlock();
+    if (!aside) m->s[m->n++ % NOTED_N] = t;
+}
 /* The targets read_targets found last, kept while their group's generation (DsState.gen[DS_TARGETS], a new one
    whenever DsTargets' bytes change, from one count for every owner) and the surface table (g_vk_surf_epoch) stay the
    same: most draws draw where the one before did, and each found its targets again through the surface table. Each
@@ -2435,7 +2468,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
-        if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+        if (m->copy) note_read(m->over); /* as tex_from_tic notes a read of the target */
         x->t = m->copy ? m->t : tex_recheck_judged(m);
         if (state_check()) { /* resolved again in full, and that one taken */
             u32 tic[8];
@@ -2466,7 +2499,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
         if (m->rt) {
-            if (vk_surf_layout(m->t) != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(m->t);
+            if (vk_surf_layout(m->t) != VK_IMAGE_LAYOUT_UNDEFINED) note_read(m->t);
             if (vk_surf_layout(m->t) != VK_IMAGE_LAYOUT_UNDEFINED) {
                 x->t = m->t;
                 g_stats.n.tex[VK_TEX_KEPT]++;
@@ -2695,7 +2728,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
             return;
         }
         if (r->kind == TEX_RECENT_TARGET) {
-            if (vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(t);
+            if (vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED) note_read(t);
             if (vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED) {
                 *x = r->x;
                 g_stats.n.tex[VK_TEX_KEPT]++;
@@ -2704,7 +2737,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
         } else if (r->kind == TEX_RECENT_OVER && !tex_over_holds(&r->over)) {
             /* the target was drawn to: the memo's lookup, which takes the texture from it again */
         } else if (r->kind == TEX_RECENT_OVER && r->over.copy) {
-            vk_rt_note_read(r->over.rt); /* as the memo's hit notes a read of the target */
+            note_read(r->over.rt); /* as the memo's hit notes a read of the target */
             *x = r->x;
             g_stats.n.tex[VK_TEX_KEPT]++;
             return;
@@ -3061,9 +3094,9 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
                at its address on each draw */
             const Surf* t = res[i].t;
             if (t && t->is_rt && t->row && !(t->gva >> 63) && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED)
-                vk_rt_note_read(res[i].t);
+                note_read(res[i].t);
             /* a copy of a target: the read is the target's, as the memo's hit notes it */
-            if (t && g_fs_last[t_rc].over[i].rt && g_fs_last[t_rc].over[i].copy) vk_rt_note_read(g_fs_last[t_rc].over[i].rt);
+            if (t && g_fs_last[t_rc].over[i].rt && g_fs_last[t_rc].over[i].copy) note_read(g_fs_last[t_rc].over[i].rt);
         }
         g_stats.n.tex[VK_TEX_KEPT] += (u64)nt;
         *fk = g_fs_last[t_rc].fk;

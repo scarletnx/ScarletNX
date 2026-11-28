@@ -2259,7 +2259,9 @@ typedef struct {
     } spare[REC_SPARE_KINDS];
 } RecPools;
 static RecPools g_rpools[VK_FRAMES];
-static u32 g_frame_sets[VK_FRAMES]; /* stand-ins handed out in each slot since its reset (the GPU thread's count) */
+/* stand-ins handed out in each slot since its reset (the GPU thread's count): atomic, as both of draw_batches=2's
+   threads make sets with no share lock (vk_rec_new_set) */
+static _Atomic u32 g_frame_sets[VK_FRAMES];
 
 static int rec_set_standin(VkDescriptorSet s) { return ((u64)(uintptr_t)s & ~(u64)(REC_SETS - 1)) == REC_STANDIN; }
 static VkDescriptorSet rec_set_real(VkDescriptorSet s) {
@@ -2313,12 +2315,12 @@ static void frame_reset_run(const void* p) {
     memset(f->spare, 0, sizeof f->spare);
 }
 void vk_rec_frame_reset(u32 slot) {
-    g_frame_sets[slot] = 0;
+    atomic_store_explicit(&g_frame_sets[slot], 0, memory_order_relaxed);
     if (g_rec <= 0) return;
     *(u32*)rec_push(frame_reset_run, sizeof slot) = slot;
     rec_commit();
 }
-u32 vk_rec_frame_sets(u32 slot) { return g_frame_sets[slot]; }
+u32 vk_rec_frame_sets(u32 slot) { return atomic_load_explicit(&g_frame_sets[slot], memory_order_relaxed); }
 
 static u64 write_info_size(const VkWriteDescriptorSet* w) {
     switch (w->descriptorType) {
@@ -2407,14 +2409,19 @@ VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWrit
         size += REC_AL(write_info_size(&w[i]));
         chained |= w[i].pNext != NULL;
     }
-    if (g_rec <= 0 || chained) { /* allocated and written here, from the frame's own pools */
+    if (g_rec <= 0 || chained) { /* allocated and written here, from the frame's own pools, which both threads share */
+        vk_share_lock();
         VkDescriptorSet set = vk_desc_alloc(layout);
         VkWriteDescriptorSet c[SNX_VKB_END];
-        if (!set || n > SNX_VKB_END) return VK_NULL_HANDLE;
+        if (!set || n > SNX_VKB_END) {
+            vk_share_unlock();
+            return VK_NULL_HANDLE;
+        }
         memcpy(c, w, n * sizeof *w);
         for (u32 i = 0; i < n; i++) c[i].dstSet = set;
         vk_rec_sync();
         if (n) vkUpdateDescriptorSets(g_vk.dev, n, c, 0, NULL);
+        vk_share_unlock();
         return set;
     }
     NewSetArgs* x = rec_push(new_set_run, size);
@@ -2428,7 +2435,7 @@ VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWrit
         memcpy(info, write_info(&w[i]), s);
         info += REC_AL(s);
     }
-    g_frame_sets[slot]++;
+    atomic_fetch_add_explicit(&g_frame_sets[slot], 1, memory_order_relaxed);
     rec_commit();
     return (VkDescriptorSet)(uintptr_t)(REC_STANDIN | id);
 }

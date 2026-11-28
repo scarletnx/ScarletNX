@@ -651,11 +651,9 @@ static inline void sh_vk_query_pass_end(VkCommandBuffer cb) {
     vk_share_unlock();
 }
 static inline VkDescriptorSet sh_vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWriteDescriptorSet* w) {
-    if (!vk_share_on()) return vk_rec_new_set(layout, n, w);
-    vk_share_lock_at(86);
-    VkDescriptorSet const r = vk_rec_new_set(layout, n, w);
-    vk_share_unlock();
-    return r;
+    /* no share lock: a split run's worker writes the set's packet into its own list, the renderer thread into the
+       ring, the id is atomic, and the path that allocates from the frame's pools takes the lock itself (record.c) */
+    return vk_rec_new_set(layout, n, w);
 }
 static inline Surf* sh_vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume, u32 msaa) {
     if (!vk_share_on()) return vk_rt_array(gva, w, h, fmt, tile, pitch, layers, layer_size, volume, msaa);
@@ -868,11 +866,9 @@ static inline VkDescriptorSet sh_vk_table_set(void) {
     return vk_table_set();
 }
 static inline int sh_vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n, u32* words) {
-    if (!vk_share_on()) return vk_table_words(views, layouts, samplers, n, words);
-    vk_share_lock_at(116);
-    int const r = vk_table_words(views, layouts, samplers, n, words);
-    vk_share_unlock();
-    return r;
+    /* no share lock: table.c holds its own lock (g_table.lock) for the whole call, and the frame id it reads is
+       atomic (cmd.c) */
+    return vk_table_words(views, layouts, samplers, n, words);
 }
 static inline int sh_vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkBuffer in, u64 in_at, u64 in_size, VkBuffer out, u64 out_at, u64 out_size) {
     if (!vk_share_on()) return vk_tc_index(cb, mode, remap, restart, n, in, in_at, in_size, out, out_at, out_size);
