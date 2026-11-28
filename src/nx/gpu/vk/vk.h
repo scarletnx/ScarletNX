@@ -3172,7 +3172,8 @@ typedef struct VkSh {
        one that folds more is to be made; whether those words stopped holding once; the slot + 1 of the one that folds
        more being made from its draws' words (pipeline.c's fold jobs), 0 for none; its draws' words, counted */
     u32 nfold;
-    u8 fold_asked, fold_broke, fold_job;
+    _Atomic u8 fold_asked, fold_job; /* stored atomically: a draw reads them with no lock (share_wrap.h) */
+    u8 fold_broke;
     VkCbStable fold_stable;
     struct VkSh* next;
 } VkSh;

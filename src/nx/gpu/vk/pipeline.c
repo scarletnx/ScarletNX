@@ -215,7 +215,7 @@ static struct {
     int rec_failed;
     const VkCbFold* fold; /* how the translation running folds its constant buffer words (fold_read) */
     _Atomic int fold_off; /* vk_cb_fold_switch: no translation folds (atomic: the workers translate too) */
-    u32 fold_gen;         /* counts the shaders put in shh, for ShA.fold_top */
+    _Atomic u32 fold_gen; /* counts the shaders put in shh, for ShA.fold_top */
     /* the translations that fold a program's draws' words, by slot (VkSh.fold_job - 1): the GPU thread takes and frees
        a slot under pj_lock, where the workers look for one queued (ShFold.state), fold_queued of them */
     ShFold* fold_jobs[SH_FOLD_JOBS];
@@ -233,7 +233,7 @@ static struct {
     PMutex xlate_lock;
     ModInfo modinfo[MODINFO_N];
     PMutex modinfo_lock;
-    VkSh* shh[1024];
+    VkSh* _Atomic shh[1024]; /* stored with release: a walk with no lock reads them */
     ShA sha[VK_SHA_WAYS << VK_SHA_SET_BITS];
     /* for the stats line: pipelines made, the GPU thread's time waiting for new ones, shaders translated and the time
        their translation and modules took (all on the GPU thread) */
@@ -1388,7 +1388,7 @@ static int sh_same_program(const VkSh* q, u64 h, int stage, const u32 mask[SH_KE
 }
 static VkSh* sh_holder(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a) {
     VkSh* best = NULL;
-    for (VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
+    for (VkSh* q = atomic_load_explicit(&g_pipeline.shh[h & 1023], memory_order_relaxed); q; q = q->next)
         if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && (!best || q->nfold > best->nfold) &&
             vk_cb_folds_hold(&q->cbr, sh_cb_read, sh_cb_bytes))
             best = q;
@@ -1396,7 +1396,7 @@ static VkSh* sh_holder(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, 
 }
 static int sh_fold_top(const VkSh* s) {
     /* with no share lock (vk_shader_fold_top): the head with acquire order, then fields set before the shader went in */
-    for (const VkSh* q = __atomic_load_n(&g_pipeline.shh[s->hash & 1023], __ATOMIC_ACQUIRE); q; q = q->next)
+    for (const VkSh* q = atomic_load_explicit(&g_pipeline.shh[s->hash & 1023], memory_order_acquire); q; q = q->next)
         if (q->nfold > s->nfold && sh_same_program(q, s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a))
             return 0;
     return 1;
@@ -1407,7 +1407,7 @@ static int sh_fold_top(const VkSh* s) {
 static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, u64 qh, u32 len_a, u64 qh_a,
                          VkCbFold* fold, const VkCbReads* others[SH_CB_FOLD_VARIANTS]) {
     u32 made = 0;
-    for (const VkSh* q = g_pipeline.shh[h & 1023]; q; q = q->next)
+    for (const VkSh* q = atomic_load_explicit(&g_pipeline.shh[h & 1023], memory_order_relaxed); q; q = q->next)
         if (sh_same_program(q, h, stage, mask, len, qh, len_a, qh_a) && q->nfold && !q->shipped) {
             if (made < SH_CB_FOLD_VARIANTS) others[made] = &q->cbr;
             made++;
@@ -1420,8 +1420,8 @@ static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len
 /* s's draws are asked again whether a translation that folds more of their words is to be made (vk_shader_fold_draw):
    another translation of the program stopped holding, its words changed */
 static void sh_fold_ask(VkSh* s) {
-    if (s->fold_job) return; /* one is being made from them */
-    __atomic_store_n(&s->fold_asked, (u8)(0), __ATOMIC_RELAXED);
+    if (atomic_load_explicit(&s->fold_job, memory_order_relaxed)) return; /* one is being made from them */
+    atomic_store_explicit(&s->fold_asked, (u8)(0), memory_order_relaxed);
     s->fold_stable = (VkCbStable){0};
 }
 
@@ -1434,7 +1434,8 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
 /* a shader put in shh: render.c reads the count with no lock (vk_shader_fold_gen), and a new count makes the new
    shader's place in its chain visible to it. Written under the share lock alone */
 static void fold_gen_bump(void) {
-    __atomic_store_n(&g_pipeline.fold_gen, g_pipeline.fold_gen + 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_pipeline.fold_gen, atomic_load_explicit(&g_pipeline.fold_gen, memory_order_relaxed) + 1,
+                          memory_order_release);
 }
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
@@ -1514,9 +1515,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         if (same) {
             /* the first time a translation's words stop holding, the program's others are asked again */
             int again = 0, held = vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes);
-            if (ca->fold_gen != g_pipeline.fold_gen) {
+            if (ca->fold_gen != atomic_load_explicit(&g_pipeline.fold_gen, memory_order_relaxed)) {
                 ca->fold_top = sh_fold_top(s);
-                ca->fold_gen = g_pipeline.fold_gen;
+                ca->fold_gen = atomic_load_explicit(&g_pipeline.fold_gen, memory_order_relaxed);
             }
             if (!held) {
                 again = !s->fold_broke;
@@ -1582,8 +1583,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     VkSh* s = sh_holder(h, stage, mask, len, qh, len_a, qh_a);
     if (s && s->shipped == 1) pf_ship_found(s);
     if (!s && (s = pf_ship_take(h, stage, mask, len, qh, len_a, qh_a)) != NULL) {
-        s->next = g_pipeline.shh[h & 1023];
-        __atomic_store_n(&g_pipeline.shh[h & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        s->next = atomic_load_explicit(&g_pipeline.shh[h & 1023], memory_order_relaxed);
+        atomic_store_explicit(&g_pipeline.shh[h & 1023], s, memory_order_release); /* next first: a walk with no lock reads it */
         fold_gen_bump();
     }
     if (!s) {
@@ -1608,8 +1609,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
                  vk_lane_note((char[32]){0}, &s->si));
         g_pipeline.sh_new++;
         g_pipeline.sh_ns += plat_ns() - t0;
-        s->next = g_pipeline.shh[h & 1023];
-        __atomic_store_n(&g_pipeline.shh[h & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        s->next = atomic_load_explicit(&g_pipeline.shh[h & 1023], memory_order_relaxed);
+        atomic_store_explicit(&g_pipeline.shh[h & 1023], s, memory_order_release); /* next first: a walk with no lock reads it */
         fold_gen_bump();
     }
     free(code);
@@ -1622,7 +1623,7 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     ca->gw = gw;
     ca->shader_generation = g_vk.shader_generation;
     ca->s = s;
-    ca->fold_gen = g_pipeline.fold_gen;
+    ca->fold_gen = atomic_load_explicit(&g_pipeline.fold_gen, memory_order_relaxed);
     ca->fold_top = sh_fold_top(s);
     return s;
 }
@@ -1639,7 +1640,7 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, 
     return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, w4, 0, 0, 0, 0, 0, 0, NULL, NULL,
                          0, 0, 0, 0);
 }
-u32 vk_shader_fold_gen(void) { return __atomic_load_n(&g_pipeline.fold_gen, __ATOMIC_ACQUIRE); }
+u32 vk_shader_fold_gen(void) { return atomic_load_explicit(&g_pipeline.fold_gen, memory_order_acquire); }
 int vk_shader_fold_top(const VkSh* s) { return sh_fold_top(s); }
 int vk_shader_chosen(const DsState* ds, const VkSh* s) {
     g_pipeline.sh_ds = ds;
@@ -3072,7 +3073,7 @@ static void sh_fold_make(ShFold* f) {
     t_pipeline.fold = NULL;
     f->ns = plat_ns() - t0;
     if (spv && !f->missed && s->nfold) {
-        __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED); /* it folds what the draws' words allow */
+        atomic_store_explicit(&s->fold_asked, (u8)(1), memory_order_relaxed); /* it folds what the draws' words allow */
         f->made = s;
         f->spv = spv;
         f->nw = nw;
@@ -3165,7 +3166,7 @@ static void sh_fold_queue(VkSh* s, u64 gva, const VkCbFold* fold) {
     /* the code at gva is no longer s's program: its draws are as they are */
     if (h != s->hash || len != s->clen || qh != s->qh || s->clen_a) {
         free(f);
-        __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED);
+        atomic_store_explicit(&s->fold_asked, (u8)(1), memory_order_relaxed);
         return;
     }
     VkCbRead* r = fold_rec(f, 0);
@@ -3192,8 +3193,8 @@ static void sh_fold_queue(VkSh* s, u64 gva, const VkCbFold* fold) {
     f->mlen = mlen;
     f->seen_submit = vk_submit_number();
     memcpy(f->mask, s->mask, sizeof f->mask);
-    __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED);
-    __atomic_store_n(&s->fold_job, (u8)((u8)(slot + 1)), __ATOMIC_RELAXED);
+    atomic_store_explicit(&s->fold_asked, (u8)(1), memory_order_relaxed);
+    atomic_store_explicit(&s->fold_job, (u8)((u8)(slot + 1)), memory_order_relaxed);
     pm_lock(&g_pipeline.pj_lock);
     int workers = pipe_workers();
     g_pipeline.fold_jobs[slot] = f;
@@ -3244,21 +3245,21 @@ static void sh_fold_end(ShFold* f, int publish, int again) {
     if (publish) {
         pf_shader_record(s, f->spv, f->nw, fold_code(f), src_bytes(f->mlen), NULL);
         for (u32 i = 0; i < f->ntwins; i++) pf_pipe_record(&f->twins[i]->k);
-        s->next = g_pipeline.shh[s->hash & 1023];
-        __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        s->next = atomic_load_explicit(&g_pipeline.shh[s->hash & 1023], memory_order_relaxed);
+        atomic_store_explicit(&g_pipeline.shh[s->hash & 1023], s, memory_order_release); /* next first: a walk with no lock reads it */
         fold_gen_bump();
     } else {
         if (s) free(s->cbr.r);
         free(s);
         g_pipeline.fold_dropped++;
-        __atomic_store_n(&from->fold_asked, (u8)(!again), __ATOMIC_RELAXED);
+        atomic_store_explicit(&from->fold_asked, (u8)(!again), memory_order_relaxed);
         from->fold_stable = (VkCbStable){0};
     }
     free(f->spv);
     pm_lock(&g_pipeline.pj_lock);
-    g_pipeline.fold_jobs[from->fold_job - 1] = NULL;
+    g_pipeline.fold_jobs[atomic_load_explicit(&from->fold_job, memory_order_relaxed) - 1] = NULL;
     pm_unlock(&g_pipeline.pj_lock);
-    __atomic_store_n(&from->fold_job, (u8)(0), __ATOMIC_RELAXED);
+    atomic_store_explicit(&from->fold_job, (u8)(0), memory_order_relaxed);
     free(f);
 }
 /* a draw of from, with key k, while its fold is made or warmed: the fold's module once made, then its pipeline with
@@ -3266,7 +3267,7 @@ static void sh_fold_end(ShFold* f, int publish, int again) {
    once every one of them is made, a submit after the last was queued, so a draw that takes it waits for none; a twin
    that could not be made keeps it out. One whose words no draw had in SH_CB_FOLD_STABLE submits is dropped */
 static void sh_fold_warm(VkSh* from, const PipeKey* k) {
-    ShFold* f = g_pipeline.fold_jobs[from->fold_job - 1];
+    ShFold* f = g_pipeline.fold_jobs[atomic_load_explicit(&from->fold_job, memory_order_relaxed) - 1];
     f->seen_submit = vk_submit_number();
     if (!f->warm) {
         pm_lock(&g_pipeline.pj_lock);
@@ -3322,10 +3323,10 @@ static void sh_fold_warm(VkSh* from, const PipeKey* k) {
         sh_fold_end(f, 0, 1);
 }
 void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
-    if (!s->fold_job && (s->fold_asked || s->failed || s->stage != ST_FS)) return;
+    if (!atomic_load_explicit(&s->fold_job, memory_order_relaxed) && (atomic_load_explicit(&s->fold_asked, memory_order_relaxed) || s->failed || s->stage != ST_FS)) return;
     g_pipeline.sh_ds = ds;
     g_pipeline.sh_bind = sh_bind_stage(ST_FS);
-    if (s->fold_job) {
+    if (atomic_load_explicit(&s->fold_job, memory_order_relaxed)) {
         sh_fold_warm(s, k);
         return;
     }
@@ -3337,7 +3338,7 @@ void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) 
     const VkCbReads* others[SH_CB_FOLD_VARIANTS];
     sh_fold_plan(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a, &fold, others);
     switch (vk_cb_stable_note(&s->fold_stable, submit, vk_cb_fold_words(&s->cbr, &fold))) {
-        case VK_CB_STABLE_NONE: __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED); break; /* none would fold more: as it is, until its words change */
+        case VK_CB_STABLE_NONE: atomic_store_explicit(&s->fold_asked, (u8)(1), memory_order_relaxed); break; /* none would fold more: as it is, until its words change */
         case VK_CB_STABLE_NOW:
             s->fold_stable = (VkCbStable){0};
             sh_fold_queue(s, gva, &fold);
@@ -3427,14 +3428,14 @@ static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8*
 }
 VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[SH_KEY_WORDS]) {
     pf_merge();
-    for (VkSh* s = g_pipeline.shh[hash & 1023]; s; s = s->next)
+    for (VkSh* s = atomic_load_explicit(&g_pipeline.shh[hash & 1023], memory_order_relaxed); s; s = s->next)
         if (s->hash == hash && s->stage == stage && !memcmp(s->mask, mask, sizeof s->mask)) return s;
     return NULL;
 }
 void vk_shader_generated_record(VkSh* s, const u32* spv, size_t words, const u8* source, u32 bytes) {
     pf_shader_record(s, spv, words, source, bytes, NULL);
-    s->next = g_pipeline.shh[s->hash & 1023];
-    __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+    s->next = atomic_load_explicit(&g_pipeline.shh[s->hash & 1023], memory_order_relaxed);
+    atomic_store_explicit(&g_pipeline.shh[s->hash & 1023], s, memory_order_release); /* next first: a walk with no lock reads it */
     fold_gen_bump();
 }
 /* a draw's pipeline, made: kept for the next run, its modules by their shaders' records (any thread) */
@@ -4351,8 +4352,8 @@ static void pf_merge(void) {
     /* in the file's order, so the last made is found first, as in the run that made them */
     while ((s = g_pipeline.pf.sh) != NULL) {
         g_pipeline.pf.sh = s->next;
-        s->next = g_pipeline.shh[s->hash & 1023];
-        __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        s->next = atomic_load_explicit(&g_pipeline.shh[s->hash & 1023], memory_order_relaxed);
+        atomic_store_explicit(&g_pipeline.shh[s->hash & 1023], s, memory_order_release); /* next first: a walk with no lock reads it */
         fold_gen_bump();
     }
     g_pipeline.pf.sh_tail = NULL;
