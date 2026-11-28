@@ -4034,10 +4034,16 @@ void vk_mem_trim(u64 extra, int force) {
     vk_mem_use(&usage, &budget);
     usage += extra;
     const u64 head = trim_head(budget);
-    if (force) { /* the allocation's size, less what evictions before it are releasing already: not what moves
-                    release, which goes back to a block no request takes while it is emptied */
-        u64 gone = vk_deferred_bytes() - vk_deferred_moved();
-        need = extra > gone ? extra - gone : 0;
+    if (force) {
+        /* An allocation found no memory: the heap is at its budget, or the free space inside its blocks is in pieces
+           no run of the request's fits. The use the caches count leaves those pieces out (vk_mem_use), and in a
+           racing game at a dynamic resolution it stayed 0.4 to 1.1 GB under the steps' marks while the heap was at
+           its budget: each forced trim then freed nothing, 1,101 allocations found none and the draws that needed them
+           went without, the scene flickering. The heap's own use then, and the whole allocation: what evictions
+           before it release goes back to the blocks as more pieces, which need not hold its run */
+        const u64 heap = vk_mem_heap_use() + extra;
+        if (heap > usage) usage = heap;
+        need = extra;
     } else if (usage <= vk_mem_trim_start(budget)) {
         /* The caches count the free space inside the blocks as room, but a request takes only a run of its own kind
            and size, and the driver's heap can be at its budget while that space is in pieces no request takes. Then
