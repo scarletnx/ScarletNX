@@ -28,6 +28,12 @@
   * [Split runs: the changes that made the split gain](#split-runs-the-changes-that-made-the-split-gain)
   * [Split runs: fewer takes of the share lock](#split-runs-fewer-takes-of-the-share-lock)
   * [The search for a scene that the renderer thread limits](#the-search-for-a-scene-that-the-renderer-thread-limits)
+* [Split runs: who owns the state of a draw (design)](#split-runs-who-owns-the-state-of-a-draw-design)
+  * [What a draw shares today](#what-a-draw-shares-today)
+  * [Two faults of order](#two-faults-of-order)
+  * [The design: journals applied at the join](#the-design-journals-applied-at-the-join)
+  * [Split points with no dependency](#split-points-with-no-dependency)
+  * [Build steps](#build-steps)
 
 Status: a design for review. Nothing here is built. The numbers come from one game's open world on Windows (RTX 4090,
 `gpu_split=2`, fps unlocked), from probes in the uncommitted work of `parallel-draw-prep.md` and `draw-fast-path.md`.
@@ -409,3 +415,93 @@ pending after another thread submitted its command buffer. It went into the ring
 was not recording (`VUID-vkCmdPipelineBarrier2-commandBuffer-recording`), and the driver crashed on the recording
 thread. The ring has one batch again. Only a thread that records into a list batches apart, and `list_pause` puts
 that batch into the list before the list goes into the ring.
+
+## Split runs: who owns the state of a draw (design)
+
+Status: a design. One Switch game's measurements (about 2,100 draws a present) showed what remains after the share
+lock's cheap cuts (the write tracking with no lock, the range generations of the constant buffer and vertex entries,
+the kept targets' read checks once a present):
+
+- Each thread still takes the share lock about 7 times a draw, and waits for it about 0.45 to 0.6 ms a present.
+- A draw that stays on the renderer thread costs about 39% more than with the split off (4,446 against 3,205 ns).
+  Pinning the game to one CCD, or to one thread a core, left most of it. `perf c2c` showed only the lock's own word
+  as a line that the two cores fight over.
+
+So the remaining takes are the cost, and they are takes of state that both threads change at each draw.
+
+### What a draw shares today
+
+A map of the per-draw calls under the lock (vk_surf_use, target_written, render_draw_main, vk_query_draw,
+stage_set_, and the lookups vk_tex_recheck, vk_buf_get_storage, vk_buf_get_window, vk_shader_get, vk_table_words,
+vk_tex_view, vk_rec_new_set) found 13 objects that both threads write in one split run:
+
+1. `g_wseq` and `Surf.wseq`; `g_surf_gen` and `Surf.wgen`; `g_take_gen` and `Surf.take_seen` (surface.c's
+   vk_surf_wrote, take_changed).
+2. The drawn list (`g_drawn`, `g_ndrawn`, `in_drawn`, `drawn_from`, `g_drawn_pages`) and a target's `draw_*` fields
+   (vk_rt_drawn).
+3. The linear and block-linear lists (linear_note), `fb_snap`, `fb_draw` and `fb_gen` (texture.c).
+4. `Surf.stage` through vk_surf_read_covered, which takes no lock, and `g_written`'s counts.
+5. The buffer cache's entries, LRU stamps and windows; the texture checks' state; the shader cache ways and the
+   argument globals of `g_pipeline`; `g_table`; `g_frame_sets`.
+6. Counters with no lock: `g_vk_drawn`, `g_stats`'s slot counts, `g_predraw_stats`, `g_draws`.
+
+Of these, only a surface's layout, stage and access are deferred to the splice and checked there (surf_use_splice).
+
+### Two faults of order
+
+On the GPU, the renderer thread's half of a split run comes before the worker's half. The shared counters do not
+follow that order:
+
+- A write sequence number is given at the time of the call. A worker's draw made before a later draw of the renderer
+  thread gets the lower number, though the GPU runs it after. The comparisons of `wseq` (the write-back order,
+  rt_superseded, rt_take_pixels, the discard check in render.c's load_op) can then pick the older pixels.
+- The worker's texture memos (render.c's checks of `wgen` and the take count) see neither the rest of the renderer
+  thread's half nor anything that checks them at the join. A texture that the worker samples can keep a copy made
+  before the renderer thread's half drew its target.
+
+Neither shows in a default run, as `draw_batches` is 0. Both must be fixed before the split goes on by default.
+
+### The design: journals applied at the join
+
+Each thread owns what its half changes, and the renderer thread applies the worker's changes at the join, in the
+order of the GPU:
+
+- **The write records.** The worker does not call vk_surf_wrote, vk_rt_drawn, vk_rt_copy_drawn or linear_note. It
+  puts each target write into its journal (the surface, the draw, the kind of write). At the join, the renderer
+  thread applies the journal after its own half: it gives the sequence numbers and generations then, so the numbers
+  follow the GPU, and it fills the drawn and linear lists. No lock at a draw.
+- **The worker's own view.** A read on the worker of a target that its own half wrote (tex_take_drawn,
+  vk_rt_drawn_fresh_in) asks its journal first, as `t_sv` does for the layouts today.
+- **Counters and stamps.** Each thread adds to its own copy (the `CNT` pattern), folded in at the join: `g_vk_drawn`,
+  the slot counts, `g_draws`, `g_frame_sets`, `g_tex_checks`, the buffer cache's LRU stamps.
+- **vk_surf_read_covered** on the worker goes to its view and to the splice, as vk_surf_use does.
+- **Lookups.** The shader cache's argument globals become arguments. The buffer cache and the table keep a lock for a
+  miss. A hit reads entries that only a miss changes, under a seqlock of the table (a miss on the other thread
+  makes the hit look again), not the share lock.
+
+### Split points with no dependency
+
+The journal is right only when the worker's half reads nothing that the renderer thread's half writes, as the
+worker's half can't see those writes before the join. The split chooses its point so:
+
+- At the split, the renderer thread knows its half's records. Their targets (the DsState target groups) make a small
+  set of address ranges.
+- The worker's half samples, copies or binds as storage none of them. The texture headers of its draws give its
+  reads. A draw of the worker that does read one ends the worker's half before that draw; the renderer thread takes
+  the rest.
+
+The batch probe already counts such dependencies ("sample a target an earlier batch of the present wrote"): in the
+other game's scene they were a few percent of the draws.
+
+### Build steps
+
+Each step keeps the picture of the base run (screenshots at the same frame) and is measured with `draw_timing=1`:
+the share lock's takes a draw, the ns a draw on each thread, and the fps in A/B/B/A runs.
+
+1. Counters on each thread (the list above). Gate: no change of the picture, fewer lines that both cores write.
+2. The split point with no dependency, with a count of the draws it gives back to the renderer thread.
+3. The write journal and the worker's view of it. Gate: `wseq` follows the GPU order (a check that compares, at each
+   join, the numbers of the targets of both halves), and no take of the lock in target_written on either thread.
+4. The lookups' hits under seqlocks.
+5. A judgement in three games, the split on against off. The split goes on by default only where it gains in each.
+
