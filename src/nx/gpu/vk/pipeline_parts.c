@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Graphics pipeline libraries: the choice and the dynamic pre-rasterization state (pipeline_parts.h) */
 #include "nx/gpu/vk/pipeline_parts.h"
+#include "common/gpu/vk/gpl.h"
 #include "nx/runtime/platform/tracy.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -62,17 +63,9 @@ void vk_depth_range_line(const VkGplDevice* d, u32 dyn_pr, char* line, size_t n)
 }
 
 int vk_gpl_choose(const VkGplDevice* d, u32* dyn_pr, char* line, size_t n) {
-    /* a link without fast linking compiles, so it would save nothing; without independent interpolation the
-       pre-rasterization and fragment parts must agree on decorations the translator doesn't promise, and
-       vkd3d-proton leaves the extension off without it too */
-    const char* off = !d->setting                     ? "pipeline_libraries=0"
-                      : !d->has_ext                   ? "the device has no VK_EXT_graphics_pipeline_library"
-                      : !d->library                   ? "the device has VK_EXT_graphics_pipeline_library without "
-                                                        "graphicsPipelineLibrary"
-                      : !d->fast_link                 ? "the device links pipeline libraries without fast linking"
-                      : !d->independent_interpolation ? "the device has no independent interpolation decorations for "
-                                                        "pipeline libraries"
-                                                      : NULL;
+    /* every renderer's conditions (common/gpu/vk/gpl.h); vkd3d-proton leaves the extension off without independent
+       interpolation too */
+    const char* off = snx_vk_gpl_off(d->setting, d->has_ext, d->library, d->fast_link, d->independent_interpolation);
     *dyn_pr = 0;
     if (off) {
         SNX_ZONE_T(z, "vk pipe libraries choice", "off: %s", off);

@@ -21,10 +21,13 @@
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
+#include "common/gpu/vk/jobs.h"
+#include "common/gpu/vk/prepared.h"
 #include "common/gpu/vk/shader_object.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
@@ -49,8 +52,6 @@
    transfer wrote, with no byte cap: about 1.5 GB at scale 16 for 240x400 RGBA8 ones, and 6 MB more for those bytes */
 #define SHOWN             16
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
-#define PIPE_JOBS         64   /* the pipelines or shader objects the workers have in hand at once (async_pipelines) */
-#define WORKERS           32   /* pipeline_threads's most */
 
 enum {
     CULL_MODE = 0x040,
@@ -170,6 +171,7 @@ typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;
     uint64_t serial;
+    VkPipeline pipeline; /* a fast link an optimized one replaced */
 } Dead;
 
 /* what picks a pipeline besides its shaders: plain data, zeroed before it is filled */
@@ -196,13 +198,15 @@ typedef struct {
     uint64_t key; /* its binary's (snx_vk_shader_key) */
     VkShaderStageFlagBits stage;
 } ShaderObject;
-/* a shader: its module for the pipelines, or with shader objects its object */
+/* a shader: its module for the pipelines, or with shader objects its object; prep its record's number in the prepared
+   file plus 1, 0 for none */
 typedef struct {
     uint64_t hash;
     SnxCtrVsConfig config;
     VkShaderModule module;
     ShaderObject so;
     const char* why;
+    uint32_t prep;
 } VsShader;
 typedef struct {
     uint64_t hash;
@@ -210,26 +214,28 @@ typedef struct {
     VkShaderModule module;
     ShaderObject so;
     const char* why;
+    uint32_t prep;
 } FsShader;
 typedef struct {
     uint64_t hash;
     PipeKey key;
     VkPipeline pipeline;
-    uint32_t job; /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
+    uint32_t job;    /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
+    uint32_t better; /* while a worker makes the optimized one of a pipeline linked fast, its job's index plus 1 */
 } Pipe;
-/* a pipeline a worker makes: its key and the shader modules the draw found, then the pipeline. Or a shader object:
-   its stage, its SPIR-V (the job's until it is collected) and its binary's key, then the object */
-enum { JOB_FREE, JOB_QUEUED, JOB_MAKING, JOB_DONE };
+/* a pipeline a worker makes (common/gpu/vk/jobs.h): its key and the shader modules the draw found, then the
+   pipeline. Or a shader object: its stage, its SPIR-V (the job's until it is collected) and its binary's key, then the
+   object */
 typedef struct {
     PipeKey key;
     VkShaderModule vs, fs;
+    VkPipeline linked[SNX_VK_GPL_PARTS]; /* a fast link's parts, for its optimized one: the job links those alone */
     VkPipeline made;
     VkShaderStageFlagBits stage;
     uint32_t* words;
     size_t count;
     uint64_t binary_key;
     VkShaderEXT object;
-    uint8_t state; /* under g.job_lock */
 } PipeJob;
 /* The stand-in fragment shader's push constants (shaders/standin.frag): a fragment config's stages, switches and
    lighting, packed as the shader's comment says, for a draw whose own shader is still being made */
@@ -336,15 +342,10 @@ static struct {
     SnxCtrVertex (*triangles)[3];
     size_t triangle_count, triangle_capacity, triangle_first;
     SnxCtrVkTraffic traffic;
-    /* async_pipelines: the threads that make the new pipelines while the draws that need them are skipped, started
-       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those. jobs_held:
-       a test's hold (snx_ctr_vk_pipelines_hold), under which they take no job */
-    SDL_Thread* workers[WORKERS];
-    unsigned worker_count;
-    bool workers_tried, jobs_stop, jobs_held;
-    SDL_Mutex* job_lock;
-    SDL_Condition *job_queued, *job_done;
-    PipeJob jobs[PIPE_JOBS];
+    /* async_pipelines: the workers that make the new pipelines while the draws that need them are skipped, started at
+       the first one and stopped with the renderer, and what each job makes */
+    SnxVkJobs pool;
+    PipeJob jobs[SNX_VK_JOBS];
     uint64_t skipped; /* the draws skipped while their pipeline or shader objects were made */
     /* with shader objects: the stand-in fragment and vertex shaders (VK_NULL_HANDLE when ctr_stand_in leaves them out
        or the device refuses them), and the draws each drew while their own shaders were made */
@@ -356,7 +357,6 @@ static struct {
     bool program_uploaded;
     uint64_t program_uploaded_hash;
     VkDeviceSize program_at;
-    _Atomic int low_refused; /* a worker's low priority was refused, which the first one refused says (atomic) */
     /* the driver's pipelines kept between runs (snx_ctr_vk_pipeline_cache_open): the cache every pipeline is made
        with, its file, whether a pipeline went into it since it was written and when the last one did (atomic: the
        workers make pipelines too) */
@@ -372,6 +372,25 @@ static struct {
     VkShaderEXT bound[2];
     ObjectState object_state;
     bool object_set;
+    /* prepare_shaders: the file of the shaders and pipelines made (common/gpu/vk/prepared.h, snx_ctr_vk_prepared_open),
+       its records of each kind, by whose numbers a pipeline's record names its shaders, and while it is read each
+       one's shader (UINT32_MAX for one not made from it) and the program a vertex one is made from; the pipelines of
+       earlier runs to make, on the workers (common/gpu/vk/jobs.h's feed); and the counts a run says */
+    SnxPrepFile prep;
+    bool prep_reading;
+    uint32_t prep_vs, prep_fs;
+    uint32_t *prep_vs_of, *prep_fs_of;
+    size_t prep_vs_capacity, prep_fs_capacity;
+    SnxCtrShaderSetup* prep_setup;
+    PipeKey* prep_pipes;
+    size_t prep_pipe_capacity;
+    SnxVkFeed feed; /* prep_pipes's count, the next one a worker takes, the jobs making them */
+    SnxCtrVkPrepared prepared;
+    /* pipeline_libraries: the parts made so far, and the pipelines linked fast and optimized (the workers' too) */
+    SnxVkGplParts parts;
+    _Atomic unsigned gpl_linked, gpl_optimized;
+    unsigned gpl_replaced; /* fast links an optimized pipeline replaced, the draw thread's */
+    _Atomic int gpl_failed;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -845,19 +864,28 @@ static void set_texture(Texture* t, bool valid) {
     for (unsigned f = 0; f < (t->cube ? 6u : 1u); ++f) count(t->pa[f], t->bytes, valid ? 1 : -1, 0);
 }
 static void dead_free(Dead* d) {
+    if (d->pipeline) vkDestroyPipeline(device(), d->pipeline, NULL);
     image_free(&d->image);
     if (d->buffer) vkDestroyBuffer(device(), d->buffer, NULL);
     if (d->memory) vkFreeMemory(device(), d->memory, NULL);
 }
 /* an image or buffer the recordings in flight, the open one included, may still use: destroyed when they are done.
    The image or the buffer may be absent */
+static void keep_dead(Dead d);
 static void bury(Image* image, VkBuffer* buffer, VkDeviceMemory* memory) {
-    Dead d = {image ? *image : (Image){0}, buffer ? *buffer : VK_NULL_HANDLE, memory ? *memory : VK_NULL_HANDLE,
-              snx_ctr_vk_serial()};
+    Dead d = {.image = image ? *image : (Image){0},
+              .buffer = buffer ? *buffer : VK_NULL_HANDLE,
+              .memory = memory ? *memory : VK_NULL_HANDLE,
+              .serial = snx_ctr_vk_serial()};
     if (image) *image = (Image){0};
     if (buffer) *buffer = VK_NULL_HANDLE;
     if (memory) *memory = VK_NULL_HANDLE;
-    if (!d.image.image && !d.buffer && !d.memory) return;
+    keep_dead(d);
+}
+/* a pipeline the recordings in flight may still use, the open one included: destroyed when they are done */
+static void bury_pipeline(VkPipeline p) { keep_dead((Dead){.serial = snx_ctr_vk_serial(), .pipeline = p}); }
+static void keep_dead(Dead d) {
+    if (!d.image.image && !d.buffer && !d.memory && !d.pipeline) return;
     if (g.dead_count == g.dead_capacity) {
         size_t n = g.dead_capacity ? g.dead_capacity * 2 : 32;
         Dead* grown = (Dead*)realloc(g.dead, n * sizeof *grown);
@@ -1660,17 +1688,13 @@ static void compiled_now(void) {
 }
 /* o's words handed to a free job of the workers, which then owns them: whether one was free */
 static bool object_queue(ShaderObject* o) {
-    SDL_LockMutex(g.job_lock);
-    for (unsigned i = 0; i < PIPE_JOBS && !o->job; ++i)
-        if (g.jobs[i].state == JOB_FREE) {
-            g.jobs[i] = (PipeJob){
-                .stage = o->stage, .words = o->words, .count = o->count, .binary_key = o->key, .state = JOB_QUEUED};
-            o->job = i + 1;
-            o->words = NULL;
-            SDL_SignalCondition(g.job_queued);
-        }
-    SDL_UnlockMutex(g.job_lock);
-    return o->job != 0;
+    int i = snx_vk_jobs_free(&g.pool);
+    if (i < 0) return false;
+    g.jobs[i] = (PipeJob){.stage = o->stage, .words = o->words, .count = o->count, .binary_key = o->key};
+    o->job = (uint32_t)i + 1;
+    o->words = NULL;
+    snx_vk_jobs_queue(&g.pool, (unsigned)i);
+    return true;
 }
 /* The shader object of generated words, which it frees or keeps: made now from the binary an earlier run kept, which
    costs no compile; with async_pipelines handed to the workers (o->job), or kept until a job is free (o->words), so
@@ -1699,15 +1723,13 @@ static bool object_pending(ShaderObject* o, const char** why) {
     if (o->words && !object_queue(o)) return true;
     if (!o->job) return false;
     PipeJob* j = &g.jobs[o->job - 1];
-    SDL_LockMutex(g.job_lock);
-    bool done = j->state == JOB_DONE;
+    bool done = snx_vk_jobs_take(&g.pool, o->job - 1);
     if (done) {
         o->object = j->object;
         free(j->words);
         *j = (PipeJob){0};
         o->job = 0;
     }
-    SDL_UnlockMutex(g.job_lock);
     if (done && o->object && g.binaries_open)
         (void)snx_vk_shader_binaries_keep(&g.binaries, device(), o->key, o->object);
     if (done && !o->object) *why = "the device refuses a shader object";
@@ -1715,7 +1737,9 @@ static bool object_pending(ShaderObject* o, const char** why) {
 }
 /* whether a shader object is made or on its way */
 static bool object_usable(const ShaderObject* o) { return o->object || o->job || o->words; }
-static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
+static void prep_add_vs(const SnxCtrShaderSetup* setup, VsShader* s);
+static void prep_add_fs(FsShader* s);
+static bool vs_shader(const SnxCtrShaderSetup* setup, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, c, sizeof *c);
     for (size_t i = 0; i < g.vs_count; ++i)
         if (g.vs[i].hash == h && !memcmp(&g.vs[i].config, c, sizeof *c)) {
@@ -1733,7 +1757,7 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     memcpy(&s->config, c, sizeof *c); /* its padding too: lookups memcmp it */
     uint32_t* words;
     size_t count;
-    if (snx_ctr_vs_spirv(&p->vs, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
+    if (snx_ctr_vs_spirv(setup, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
         if (snx_ctr_vk()->shader_object)
             object_new(&s->so, VK_SHADER_STAGE_VERTEX_BIT, words, count, &s->why);
         else
@@ -1741,6 +1765,7 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     }
     bool usable = s->module || object_usable(&s->so);
     if (!usable) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
+    if (usable && !g.prep_reading) prep_add_vs(setup, s);
     *index = (uint32_t)g.vs_count++;
     *why = s->why;
     return usable;
@@ -1768,6 +1793,7 @@ static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why
         object_new(&s->so, VK_SHADER_STAGE_FRAGMENT_BIT, words, count, &s->why);
     else
         s->module = module(words, count, &s->why);
+    if ((s->module || object_usable(&s->so)) && !g.prep_reading) prep_add_fs(s);
     *index = (uint32_t)g.fs_count++;
     *why = s->why;
     return s->module || object_usable(&s->so);
@@ -1829,7 +1855,10 @@ static const VkLogicOp logic_op[16] = {
 
 /* k's pipeline, of the shader modules vs and fs, which a worker passes as the draw found them: g.vs and g.fs move as
    they grow. It reads only what made() set */
-static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs) {
+/* k's pipeline, of its shaders vs and fs: whole, or linked from its parts (pipeline_libraries), optimized or fast,
+   linked then the parts a fast one took (for its optimized one) */
+static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs, bool optimize,
+                                VkPipeline linked[SNX_VK_GPL_PARTS]) {
     SnxCtrVk* v = snx_ctr_vk();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1932,100 +1961,85 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
                                        .pColorBlendState = &blend,
                                        .pDynamicState = &dynamic,
                                        .layout = g.layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE, parts[SNX_VK_GPL_PARTS];
+    if (v->gpl.on) {
+        VkResult r = snx_vk_gpl_make(&g.parts, v->device, g.cache, &pi, optimize, linked ? linked : parts, &pipeline);
+        if (r != VK_SUCCESS) {
+            if (!atomic_exchange_explicit(&g.gpl_failed, 1, memory_order_relaxed))
+                fprintf(stderr,
+                        "3ds gpu: a pipeline from libraries failed (VkResult %d): made whole (said for the first)\n",
+                        (int)r);
+            pipeline = VK_NULL_HANDLE;
+        } else
+            atomic_fetch_add_explicit(optimize ? &g.gpl_optimized : &g.gpl_linked, 1, memory_order_relaxed);
+    }
+    if (!pipeline && vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
     if (g.cache) {
         atomic_store_explicit(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), memory_order_relaxed);
         atomic_store_explicit(&g.cache_dirty, 1, memory_order_relaxed);
     }
     return pipeline;
 }
-/* A worker: makes the queued pipelines one by one, until the renderer stops them. One past the first two runs at the
-   system's low priority (low, snx_vk_pipeline_low_workers) */
-static int SDLCALL pipe_worker(void* low) {
-    char why[256];
-    if (low && snx_thread_priority_low(why, sizeof why) &&
-        !atomic_exchange_explicit(&g.low_refused, 1, memory_order_relaxed))
-        fprintf(
-            stderr,
-            "3ds gpu: a pipeline worker asked for %s, the system's low priority: %s (said for the first one refused)\n",
-            snx_thread_priority_low_name(), why);
-    SDL_LockMutex(g.job_lock);
-    while (!g.jobs_stop) {
-        PipeJob* j = NULL;
-        for (unsigned i = 0; i < PIPE_JOBS && !j && !g.jobs_held; ++i)
-            if (g.jobs[i].state == JOB_QUEUED) j = &g.jobs[i];
-        if (!j) {
-            SDL_WaitCondition(g.job_queued, g.job_lock);
-            continue;
-        }
-        j->state = JOB_MAKING;
-        SDL_UnlockMutex(g.job_lock);
-        VkPipeline made_pipeline = VK_NULL_HANDLE;
-        VkShaderEXT made_object = VK_NULL_HANDLE;
-        if (j->words) {
-            /* no binary of it was kept: the draw thread makes those, and keeps this one's once it collects it */
-            VkShaderCreateInfoEXT info = object_info(j->stage, j->words, j->count);
-            bool compiled;
-            if (snx_vk_shader_object(device(), NULL, j->binary_key, &info, &made_object, &compiled) == VK_SUCCESS)
-                compiled_now();
-        } else
-            made_pipeline = make_pipeline(&j->key, j->vs, j->fs);
-        SDL_LockMutex(g.job_lock);
-        j->made = made_pipeline;
-        j->object = made_object;
-        j->state = JOB_DONE;
-        SDL_BroadcastCondition(g.job_done);
-    }
-    SDL_UnlockMutex(g.job_lock);
-    return 0;
+/* a job's thing made, on a worker (common/gpu/vk/jobs.h): its shader object, or its pipeline */
+static void job_make(void* owner, unsigned job) {
+    (void)owner;
+    PipeJob* j = &g.jobs[job];
+    if (j->words) {
+        /* no binary of it was kept: the draw thread makes those, and keeps this one's once it collects it */
+        VkShaderCreateInfoEXT info = object_info(j->stage, j->words, j->count);
+        bool compiled;
+        if (snx_vk_shader_object(device(), NULL, j->binary_key, &info, &j->object, &compiled) == VK_SUCCESS)
+            compiled_now();
+    } else if (j->linked[0]) {
+        if (snx_vk_gpl_optimize(device(), g.cache, j->linked, g.layout, &j->made) == VK_SUCCESS)
+            atomic_fetch_add_explicit(&g.gpl_optimized, 1, memory_order_relaxed);
+    } else
+        j->made = make_pipeline(&j->key, j->vs, j->fs, true, NULL); /* a worker's: optimized at once */
 }
-/* the workers, started at the first pipeline async_pipelines hands them: pipeline_threads of them, or the common count
-   (snx_vk_pipeline_workers). How many there are; with none the draws wait for their pipelines, as with
-   async_pipelines=0, which the log says once */
+/* the workers, started at the first pipeline async_pipelines hands them (common/gpu/vk/jobs.h): how many there are */
 static unsigned pipe_workers(void) {
-    if (g.workers_tried) return g.worker_count;
-    g.workers_tried = true;
-    unsigned n = (unsigned)snx_vk_pipeline_workers(g_settings.pipeline_threads, SDL_GetNumLogicalCPUCores());
-    if (n > WORKERS) n = WORKERS;
-    unsigned low = (unsigned)snx_vk_pipeline_low_workers((int)n);
-    if ((g.job_lock = SDL_CreateMutex()) && (g.job_queued = SDL_CreateCondition()) &&
-        (g.job_done = SDL_CreateCondition()))
-        while (g.worker_count < n) {
-            SDL_Thread* t =
-                SDL_CreateThread(pipe_worker, "3DS pipelines", (void*)(uintptr_t)(g.worker_count >= n - low));
-            if (!t) break;
-            g.workers[g.worker_count++] = t;
-        }
-    if (!g.worker_count)
-        fprintf(stderr,
-                "3ds gpu: async_pipelines=1, but no pipeline worker could start (%s): the draws wait for "
-                "their pipelines, as with async_pipelines=0\n",
-                SDL_GetError());
-    return g.worker_count;
+    g.pool.make = job_make;
+    g.pool.who = "3ds gpu";
+    g.pool.thread = "3DS pipelines";
+    return snx_vk_jobs_start(&g.pool, g_settings.pipeline_threads);
 }
 /* The pipeline for k. Without async_pipelines it is made now. With it a worker makes a new one while the draws that
    need it are skipped: *pending, and VK_NULL_HANDLE, until it is done. VK_NULL_HANDLE alone when the device refuses
    it */
+static void prep_add_pipe(const PipeKey* k, VkPipeline made);
+static bool prep_listed(const PipeKey* k);
+static void prep_feed(bool all);
 static VkPipeline pipeline(const PipeKey* k, bool* pending) {
     *pending = false;
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
     for (size_t i = 0; i < g.pipe_count; ++i) {
         Pipe* e = &g.pipes[i];
         if (e->hash != h || memcmp(&e->key, k, sizeof *k)) continue;
-        if (e->job) {
-            PipeJob* j = &g.jobs[e->job - 1];
-            SDL_LockMutex(g.job_lock);
-            if (j->state == JOB_DONE) {
-                e->pipeline = j->made;
-                *j = (PipeJob){0};
-                e->job = 0;
-            }
-            SDL_UnlockMutex(g.job_lock);
-            *pending = e->job != 0;
+        if (e->job && snx_vk_jobs_take(&g.pool, e->job - 1)) {
+            e->pipeline = g.jobs[e->job - 1].made;
+            g.jobs[e->job - 1] = (PipeJob){0};
+            e->job = 0;
+            prep_add_pipe(k, e->pipeline);
         }
+        if (e->better && snx_vk_jobs_take(&g.pool, e->better - 1)) { /* the optimized one, in the fast link's place */
+            if (g.jobs[e->better - 1].made) {
+                bury_pipeline(e->pipeline);
+                e->pipeline = g.jobs[e->better - 1].made;
+                ++g.gpl_replaced;
+            }
+            g.jobs[e->better - 1] = (PipeJob){0};
+            e->better = 0;
+        }
+        *pending = e->job != 0;
         g.skipped += *pending;
         return e->pipeline;
+    }
+    if (g.feed.making && prep_listed(k)) { /* one of the file's: a worker may have made it since the recording began */
+        const size_t before = g.pipe_count;
+        prep_feed(false);
+        for (size_t i = before; i < g.pipe_count; ++i)
+            if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) return g.pipes[i].pipeline;
     }
     if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) return VK_NULL_HANDLE;
     Pipe* e = &g.pipes[g.pipe_count];
@@ -2034,48 +2048,233 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
         /* with every job in hand the draw is skipped all the same, and its pipeline asked for again at the next */
         *pending = true;
         ++g.skipped;
-        SDL_LockMutex(g.job_lock);
-        for (unsigned i = 0; i < PIPE_JOBS && !e->job; ++i)
-            if (g.jobs[i].state == JOB_FREE) {
-                g.jobs[i] =
-                    (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module, .state = JOB_QUEUED};
-                e->job = i + 1;
-                SDL_SignalCondition(g.job_queued);
-            }
-        SDL_UnlockMutex(g.job_lock);
+        int i = snx_vk_jobs_free(&g.pool);
+        if (i >= 0) {
+            g.jobs[i] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
+            e->job = (uint32_t)i + 1;
+            snx_vk_jobs_queue(&g.pool, (unsigned)i);
+        }
         if (e->job) ++g.pipe_count;
         return VK_NULL_HANDLE;
     }
-    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module);
+    VkPipeline linked[SNX_VK_GPL_PARTS] = {0};
+    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module, false, linked);
     if (e->pipeline) ++g.pipe_count;
+    prep_add_pipe(k, e->pipeline);
+    /* a fast link: its optimized one made on a worker where one is free, which replaces it once made */
+    int job = linked[0] && e->pipeline && pipe_workers() ? snx_vk_jobs_free(&g.pool) : -1;
+    if (job >= 0) {
+        g.jobs[job] = (PipeJob){.key = *k};
+        memcpy(g.jobs[job].linked, linked, sizeof linked);
+        e->better = (uint32_t)job + 1;
+        snx_vk_jobs_queue(&g.pool, (unsigned)job);
+    }
     return e->pipeline;
 }
-/* async_pipelines: waits until every pipeline asked for is made. Stopping, the ones not yet begun are dropped first */
-static void pipes_wait(bool stopping) {
-    if (!g.worker_count) return;
-    SDL_LockMutex(g.job_lock);
-    for (unsigned i = 0; i < PIPE_JOBS; ++i) {
-        if (stopping && g.jobs[i].state == JOB_QUEUED) {
-            free(g.jobs[i].words);
-            g.jobs[i] = (PipeJob){0};
-        }
-        while (g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING)
-            SDL_WaitCondition(g.job_done, g.job_lock);
-    }
-    SDL_UnlockMutex(g.job_lock);
+/* a job dropped before a worker began it: the SPIR-V it held */
+static void job_drop(void* owner, unsigned job) {
+    (void)owner;
+    free(g.jobs[job].words);
+    g.jobs[job] = (PipeJob){0};
 }
-/* the workers' hold set or ended; before they start, the flag alone, which they read once started */
-static void pipes_held(bool held) {
-    if (g.job_lock) SDL_LockMutex(g.job_lock);
-    g.jobs_held = held;
-    if (g.job_queued) SDL_BroadcastCondition(g.job_queued);
-    if (g.job_lock) SDL_UnlockMutex(g.job_lock);
-}
-void snx_ctr_vk_pipelines_hold(void) { pipes_held(true); }
+void snx_ctr_vk_pipelines_hold(void) { snx_vk_jobs_hold(&g.pool, true); }
 uint64_t snx_ctr_vk_pipelines_wait(void) {
-    pipes_held(false);
-    pipes_wait(false);
+    snx_vk_jobs_hold(&g.pool, false);
+    snx_vk_jobs_wait(&g.pool, false, job_drop);
     return g.skipped;
+}
+
+/* ---- the prepared shaders kept between runs (prepare_shaders) ---- */
+
+/* the file's records: a vertex shader (PrepVs, then its program's code and swizzle words), a fragment one (its
+   SnxCtrFsConfig) and a pipeline (its PipeKey, naming its shaders by their records' numbers) */
+enum { PREP_VS = 1, PREP_FS, PREP_PIPE };
+#define PREP_MAGIC   "SNXCTRPS"
+#define PREP_VERSION 1
+typedef struct {
+    SnxCtrVsConfig config;
+    uint32_t code, swizzle; /* the words up to the last one not zero, the rest zero */
+} PrepVs;
+static uint32_t words_used(const uint32_t* w, uint32_t n) {
+    while (n && !w[n - 1]) --n;
+    return n;
+}
+static void prep_add_vs(const SnxCtrShaderSetup* setup, VsShader* s) {
+    if (!g.prep.f) return;
+    PrepVs h = {
+        .config = s->config, .code = words_used(setup->code, 4096), .swizzle = words_used(setup->swizzle, 4096)};
+    uint32_t* body = malloc(((size_t)h.code + h.swizzle) * 4 + 4);
+    if (!body) return;
+    memcpy(body, setup->code, (size_t)h.code * 4);
+    memcpy(body + h.code, setup->swizzle, (size_t)h.swizzle * 4);
+    if (!snx_prep_add(&g.prep, PREP_VS, &h, sizeof h, body, ((size_t)h.code + h.swizzle) * 4)) s->prep = ++g.prep_vs;
+    free(body);
+}
+static void prep_add_fs(FsShader* s) {
+    if (g.prep.f && !snx_prep_add(&g.prep, PREP_FS, &s->config, sizeof s->config, NULL, 0)) s->prep = ++g.prep_fs;
+}
+/* whether k is a pipeline of the file's, made or still to make */
+static bool prep_listed(const PipeKey* k) {
+    for (size_t i = 0; i < g.feed.count; ++i)
+        if (!memcmp(&g.prep_pipes[i], k, sizeof *k)) return true;
+    return false;
+}
+/* a pipeline a draw made: into the file, its shaders named by their records, unless the file has it */
+static void prep_add_pipe(const PipeKey* k, VkPipeline made) {
+    if (!made) return;
+    ++g.prepared.drawn;
+    if (!g.prep.f || !g.vs[k->vs].prep || !g.fs[k->fs].prep || prep_listed(k)) return;
+    PipeKey r = *k;
+    r.vs = g.vs[k->vs].prep - 1;
+    r.fs = g.fs[k->fs].prep - 1;
+    (void)snx_prep_add(&g.prep, PREP_PIPE, &r, sizeof r, NULL, 0);
+}
+/* a record's shader: its index (UINT32_MAX for none) at its number in map */
+static bool prep_map(uint32_t** map, size_t* capacity, uint32_t at, uint32_t index) {
+    if (!grow((void**)map, capacity, at, sizeof **map)) return false;
+    (*map)[at] = index;
+    return true;
+}
+/* one record read: its shader made, or its pipeline listed; false for one this build cannot read, which ends the file */
+static bool prep_each(void* ctx, uint32_t type, const uint8_t* payload, uint32_t len) {
+    (void)ctx;
+    uint32_t index = UINT32_MAX;
+    const char* why;
+    if (type == PREP_VS && len >= sizeof(PrepVs)) {
+        PrepVs h;
+        memcpy(&h, payload, sizeof h);
+        if (h.code > 4096 || h.swizzle > 4096 || ((uint64_t)h.code + h.swizzle) * 4 > len - sizeof h) return false;
+        SnxCtrShaderSetup* setup = g.prep_setup;
+        memset(setup, 0, sizeof *setup);
+        memcpy(setup->code, payload + sizeof h, (size_t)h.code * 4);
+        memcpy(setup->swizzle, payload + sizeof h + (size_t)h.code * 4, (size_t)h.swizzle * 4);
+        /* a program whose words no longer give its hash makes no shader: a draw makes its own */
+        bool same = snx_ctr_vs_hash(setup) == h.config.program_hash;
+        if (same) {
+            (void)vs_shader(setup, &h.config, &index, &why);
+            if (index == UINT32_MAX) return false; /* out of memory */
+            if (!g.vs[index].prep) g.vs[index].prep = g.prep_vs + 1;
+        }
+        g.prepared.shaders += same;
+        return prep_map(&g.prep_vs_of, &g.prep_vs_capacity, g.prep_vs++, same ? index : UINT32_MAX);
+    }
+    if (type == PREP_FS && len >= sizeof(SnxCtrFsConfig)) {
+        SnxCtrFsConfig c;
+        memcpy(&c, payload, sizeof c);
+        (void)fs_shader(&c, &index, &why);
+        if (index == UINT32_MAX) return false;
+        if (!g.fs[index].prep) g.fs[index].prep = g.prep_fs + 1;
+        ++g.prepared.shaders;
+        return prep_map(&g.prep_fs_of, &g.prep_fs_capacity, g.prep_fs++, index);
+    }
+    if (type == PREP_PIPE && len >= sizeof(PipeKey)) {
+        PipeKey k;
+        memcpy(&k, payload, sizeof k);
+        if (k.vs >= g.prep_vs || k.fs >= g.prep_fs) return false;
+        k.vs = g.prep_vs_of[k.vs];
+        k.fs = g.prep_fs_of[k.fs];
+        ++g.prepared.pipelines;
+        /* one of a shader not made: none, as a draw of it would have */
+        if (k.vs == UINT32_MAX || k.fs == UINT32_MAX || !g.vs[k.vs].module || !g.fs[k.fs].module) return true;
+        if (!grow((void**)&g.prep_pipes, &g.prep_pipe_capacity, g.feed.count, sizeof *g.prep_pipes)) return false;
+        g.prep_pipes[g.feed.count++] = k;
+        return true;
+    }
+    return false;
+}
+/* a pipeline of the file's, made: into the table, unless a draw made it first */
+static void prep_adopt(const PipeKey* k, VkPipeline made) {
+    if (!made) return;
+    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
+    for (size_t i = 0; i < g.pipe_count; ++i)
+        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) {
+            vkDestroyPipeline(device(), made, NULL);
+            return;
+        }
+    if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) {
+        vkDestroyPipeline(device(), made, NULL);
+        return;
+    }
+    g.pipes[g.pipe_count++] = (Pipe){.hash = h, .key = *k, .pipeline = made};
+    ++g.prepared.made;
+}
+/* a pipeline of the file's to a worker's job, and one a worker made into the table */
+static void prep_fill(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    const PipeKey* k = &g.prep_pipes[item];
+    g.jobs[job] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
+}
+static void prep_made(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    prep_adopt(&g.prep_pipes[item], g.jobs[job].made);
+    g.jobs[job] = (PipeJob){0};
+}
+static void prep_feed(bool all) { snx_vk_jobs_feed(&g.pool, &g.feed, all, prep_fill, prep_made); }
+void snx_ctr_vk_prepared_open(const char* directory) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!v || !g_settings.prepare_shaders || g.prep.who) return;
+    g.prep.who = "3ds gpu";
+    if (v->shader_object) {
+        fprintf(stderr,
+                "3ds gpu: prepare_shaders=%d prepares nothing where the draws bind shader objects: their binaries of "
+                "earlier runs are what is kept\n",
+                g_settings.prepare_shaders);
+        return;
+    }
+    if (!made()) { /* the layout and formats its pipelines are made with */
+        fprintf(stderr, "3ds gpu: prepare_shaders=%d prepares nothing: the renderer could not be made\n",
+                g_settings.prepare_shaders);
+        return;
+    }
+    char path[1200], why[512], key[256];
+    if (snx_vk_cache_file(v->phys, directory, "vk_prepared", path, sizeof path, why, sizeof why)) {
+        fprintf(stderr, "3ds gpu: prepare_shaders=%d keeps no shaders between runs: %s\n", g_settings.prepare_shaders,
+                why);
+        return;
+    }
+    if (!(g.prep_setup = malloc(sizeof *g.prep_setup))) return;
+    /* the records are the game's programs and the renderer's keys as this build lays them out */
+    snprintf(key, sizeof key, "guest=%d sizes=%zu,%zu,%zu; %s", PREP_VERSION, sizeof(SnxCtrVsConfig),
+             sizeof(SnxCtrFsConfig), sizeof(PipeKey), snx_build_commit());
+    g.prep.pack = g_settings.compress_prepared_shaders;
+    const double t0 = snx_seconds();
+    g.prep_reading = true;
+    (void)snx_prep_open(&g.prep, path, PREP_MAGIC, PREP_VERSION, key, prep_each, NULL);
+    g.prep_reading = false;
+    free(g.prep_setup);
+    g.prep_setup = NULL;
+    if (!g.prepared.shaders && !g.prepared.pipelines) return;
+    const bool workers = g.feed.count && pipe_workers();
+    const bool now = g.feed.count && (g_settings.prepare_shaders == 2 || !workers);
+    if (workers)
+        prep_feed(now); /* every one, or the first ones to the workers */
+    else if (now)
+        for (; g.feed.next < g.feed.count; ++g.feed.next) {
+            const PipeKey* k = &g.prep_pipes[g.feed.next];
+            prep_adopt(k, make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module, true, NULL));
+        }
+    if (now || !g.feed.count)
+        fprintf(stderr,
+                "3ds gpu: %s: %u shaders and %u pipelines of earlier runs, %u of the pipelines made before the first "
+                "draw in %.0f ms%s\n",
+                path, g.prepared.shaders, g.prepared.pipelines, g.prepared.made, (snx_seconds() - t0) * 1000,
+                now && g_settings.prepare_shaders == 1 ? " (prepare_shaders=1, but no pipeline worker started)" : "");
+    else
+        fprintf(stderr,
+                "3ds gpu: %s: %u shaders and %u pipelines of earlier runs, the pipelines made on the workers while "
+                "the game runs (prepare_shaders=1)\n",
+                path, g.prepared.shaders, g.prepared.pipelines);
+}
+SnxCtrVkPrepared snx_ctr_vk_prepared(void) { return g.prepared; }
+SnxCtrVkLibraries snx_ctr_vk_libraries(void) {
+    SDL_LockMutex(g.parts.lock);
+    SnxCtrVkLibraries l = {.linked = atomic_load_explicit(&g.gpl_linked, memory_order_relaxed),
+                           .optimized = atomic_load_explicit(&g.gpl_optimized, memory_order_relaxed),
+                           .parts = (unsigned)g.parts.count,
+                           .reused = g.parts.reused,
+                           .replaced = g.gpl_replaced};
+    SDL_UnlockMutex(g.parts.lock);
+    return l;
 }
 
 /* ---- draws ---- */
@@ -2601,7 +2800,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         vs.program_hash = g.program_hash;
     }
     vs.clip_planes = snx_ctr_vk()->clip_distance;
-    if (!vs_shader(p, &vs, &k.vs, &why) || !fs_shader(&fs, &k.fs, &why)) return stop(p, why);
+    if (!vs_shader(&p->vs, &vs, &k.vs, &why) || !fs_shader(&fs, &k.fs, &why)) return stop(p, why);
     /* the fixed state */
     uint32_t om = r[OM_DEPTH_COLOR];
     bool depth = key.depth_format != NO_DEPTH;
@@ -2871,6 +3070,7 @@ SnxCtrPicaResult snx_ctr_vk_vertices_end(SnxCtrPica* p, SnxCtrMemory* memory) {
 }
 
 void snx_ctr_vk_render_begin(unsigned slot) {
+    if (g.feed.next < g.feed.count || g.feed.making) prep_feed(false);
     g.slot = slot;
     g.ring_at = 0;
     g.vs_uploaded = g.fs_uploaded = g.lut_uploaded = false; /* the last uploads were the other slot's */
@@ -2982,14 +3182,7 @@ void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
     if (!at_exit) {
         uint64_t now = (uint64_t)(snx_seconds() * 1000);
         if (now - atomic_load_explicit(&g.cache_used_ms, memory_order_relaxed) < CACHE_QUIET_MS) return;
-        bool busy = false;
-        if (g.job_lock) {
-            SDL_LockMutex(g.job_lock);
-            for (unsigned i = 0; i < PIPE_JOBS && !busy; ++i)
-                busy = g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING;
-            SDL_UnlockMutex(g.job_lock);
-        }
-        if (busy) return;
+        if (snx_vk_jobs_busy(&g.pool)) return;
     }
     size_t saved = 0;
     char why[512];
@@ -3018,15 +3211,10 @@ void snx_ctr_vk_render_free(void) {
     }
     copy_every_page_back();
     VkDevice d = device();
-    if (g.worker_count) {
-        pipes_wait(true);
-        SDL_LockMutex(g.job_lock);
-        g.jobs_stop = true;
-        SDL_BroadcastCondition(g.job_queued);
-        SDL_UnlockMutex(g.job_lock);
-        for (unsigned i = 0; i < g.worker_count; ++i) SDL_WaitThread(g.workers[i], NULL);
-        for (unsigned i = 0; i < PIPE_JOBS; ++i)
-            if (g.jobs[i].state == JOB_DONE) {
+    if (g.pool.count) {
+        snx_vk_jobs_stop(&g.pool, job_drop);
+        for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+            if (snx_vk_jobs_done(&g.pool, i)) {
                 vkDestroyPipeline(d, g.jobs[i].made, NULL);
                 /* a shader no draw collected: its binary kept all the same */
                 if (g.jobs[i].object && g.binaries_open)
@@ -3035,11 +3223,24 @@ void snx_ctr_vk_render_free(void) {
                 free(g.jobs[i].words);
             }
     }
+    if (g.feed.count && g_settings.prepare_shaders == 1)
+        fprintf(stderr,
+                "3ds gpu: prepare_shaders=1 made %u of the %zu pipelines of earlier runs before the game ended\n",
+                g.prepared.made, g.feed.count);
+    snx_prep_close(&g.prep);
+    free(g.prep_vs_of);
+    free(g.prep_fs_of);
+    free(g.prep_pipes);
     snx_ctr_vk_pipeline_cache_save(true); /* every pipeline made, the workers stopped */
+    if (snx_ctr_vk()->gpl.on)
+        fprintf(
+            stderr,
+            "3ds gpu: pipeline_libraries=%d linked %u pipeline%s fast and %u optimized, from %zu parts (%u reused)\n",
+            g_settings.pipeline_libraries, atomic_load_explicit(&g.gpl_linked, memory_order_relaxed),
+            atomic_load_explicit(&g.gpl_linked, memory_order_relaxed) == 1 ? "" : "s",
+            atomic_load_explicit(&g.gpl_optimized, memory_order_relaxed), g.parts.count, g.parts.reused);
     if (g.cache) vkDestroyPipelineCache(d, g.cache, NULL);
-    if (g.job_done) SDL_DestroyCondition(g.job_done);
-    if (g.job_queued) SDL_DestroyCondition(g.job_queued);
-    if (g.job_lock) SDL_DestroyMutex(g.job_lock);
+    snx_vk_jobs_stop(&g.pool, job_drop); /* the lock and conditions of workers that never started */
     if (g.skipped)
         fprintf(stderr, "3ds gpu: async_pipelines=%d skipped %llu draw%s while their %s made\n",
                 g_settings.async_pipelines, (unsigned long long)g.skipped, g.skipped == 1 ? "" : "s",
@@ -3067,6 +3268,7 @@ void snx_ctr_vk_render_free(void) {
         if (g.shown[i].kept_memory) vkFreeMemory(d, g.shown[i].kept_memory, NULL);
     }
     for (size_t i = 0; i < g.pipe_count; ++i) vkDestroyPipeline(d, g.pipes[i].pipeline, NULL);
+    snx_vk_gpl_parts_free(&g.parts, d); /* after the pipelines linked from them */
     for (size_t i = 0; i < g.vs_count; ++i) {
         if (g.vs[i].module) vkDestroyShaderModule(d, g.vs[i].module, NULL);
         if (g.vs[i].so.object) vkDestroyShaderEXT(d, g.vs[i].so.object, NULL);

@@ -20,7 +20,7 @@
 #define VITA_TLS_SIZE      0x1000u /* each thread's: sceKernelGetTLSAddr's slots, then the TLS register's */
 #define VITA_TLS_ERRNO     0xffcu  /* in each thread's: its errno (SceLibc's _sceLibcErrnoLoc) */
 #define VITA_TLS_NET_ERRNO 0xff8u  /* in each thread's: SceNet's errno (sceNetErrnoLoc) */
-#define VITA_USER_BASE     0x82000000u
+#define VITA_USER_BASE     0x82000000u /* or past the image, on the next MB, where it reaches that far */
 #define VITA_USER_END      0xa0000000u
 #define VITA_CDRAM_BASE    0x60000000u
 #define VITA_CDRAM_END     0x70000000u

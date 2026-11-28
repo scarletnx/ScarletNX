@@ -186,8 +186,6 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
 void pf_unseal(PFile* pf);
 /* the appending ended and the view unmapped, for a file nothing reads afterwards */
 void pf_close(PFile* pf);
-/* the process's id, for a temporary file of its own: two runs of a game started together would write the same one */
-unsigned pf_pid(void);
 
 /* The file of every driver from before one file each (legacy), copied to path when path is not there: the driver that
    made it finds its cache there, another starts its file over (pf_open). legacy stays where it is. 1 copied (its bytes
@@ -201,9 +199,6 @@ int pf_build_unnamed(const char* commit);
    compile flags, as flags=<their stamp>, where they aren't a normal build's (flags, cmake/shader_flags.cmake: "" for a
    normal build). "" for a build its commit names whole */
 void pf_build_words(char* out, size_t n, const char* commit, const char* flags, const PFileMap* self);
-/* what differs between a file's key (key, len bytes) and want: "name A in the file, B now" for each, "; " between,
-   in out (cut to n), and the count */
-int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want);
 void pf_seal(PFile* pf);
 const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check, u8** owned);
 

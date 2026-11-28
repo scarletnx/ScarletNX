@@ -35,7 +35,7 @@ int plat_cpus(int* ids, int max) {
 /* the test's file and the temporary one a rewrite makes, for a failing check to leave neither */
 static void cleanup(void) {
     char tmp[64];
-    snprintf(tmp, sizeof tmp, "%s.%u.tmp", PATH, pf_pid());
+    snprintf(tmp, sizeof tmp, "%s.%u.tmp", PATH, snx_prep_pid());
     remove(PATH);
     remove(tmp);
 }
@@ -255,7 +255,7 @@ static void mapped(void) {
     {
         char name[64];
         FILE* tmp;
-        snprintf(name, sizeof name, "%s.%u.tmp", PATH, pf_pid());
+        snprintf(name, sizeof name, "%s.%u.tmp", PATH, snx_prep_pid());
         tmp = fopen(name, "rb");
         CHECK(!tmp); /* removed */
     }
@@ -780,7 +780,7 @@ static int unit_list(const u8* d, size_t n, size_t at, u64* unit, int* tail) {
 }
 /* the record at at given another check, for its payload as it now is */
 static void recheck(u8* d, size_t at) {
-    u64 h = pf_end(pf_mix(pf_start(pf_get32(d + at), pf_get32(d + at + 4)), d + at + PF_REC, pf_get32(d + at + 4)));
+    u64 h = snx_prep_check(pf_get32(d + at), d + at + PF_REC, pf_get32(d + at + 4));
     memcpy(d + at + 8, &h, 8);
 }
 /* a file of UNIT_N shaders, packed: its bytes, its header's size, its units and the shader and pipeline records each
@@ -1183,7 +1183,7 @@ static void zipped(void) {
         CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) && !owned);
         if (way == 0) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw + 8, packed);
         if (way == 1) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw, packed - 8);
-        if (way == 2) snprintf(want, sizeof want, "unpacks to 0 bytes, not %u (", raw);
+        if (way == 2) snprintf(want, sizeof want, "does not unpack to its %u bytes: zstd: ", raw);
         CHECK(way == 3 ? !logged[0] : strstr(logged, want) != NULL);
         CHECK(pf_payload(&pf, at[2], &len, &check, &owned));
         plat_file_unmap(&pf.view);
@@ -1514,11 +1514,11 @@ static void driver_files(void) {
                          "file, bbbb now; driver 100 in the file, 200 now)"));
     close_file(&pf);
     /* a key's build has spaces, and the guest part and the rest both name sizes: each is compared with its own */
-    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a), key_a) == 0 && !why[0]);
-    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a),
-                      "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX two driver=100 sizes=1") == 1 &&
+    CHECK(snx_prep_key_diff(why, sizeof why, key_a, strlen(key_a), key_a) == 0 && !why[0]);
+    CHECK(snx_prep_key_diff(why, sizeof why, key_a, strlen(key_a),
+                            "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX two driver=100 sizes=1") == 1 &&
           !strcmp(why, "build ScarletNX one in the file, ScarletNX two now"));
-    CHECK(pf_key_diff(why, sizeof why, "a=1 b=2", 7, "a=1 c=3") == 2 &&
+    CHECK(snx_prep_key_diff(why, sizeof why, "a=1 b=2", 7, "a=1 c=3") == 2 &&
           !strcmp(why, "b 2 in the file, none now; c none in the file, 3 now"));
     /* the shared file of before, made by the system's driver: copied once to a driver's file, left as it was */
     open_path(&pf, legacy, key_a, loaded);
@@ -1579,12 +1579,46 @@ static void check_build_words(void) {
     }
 }
 
+/* The files as they are written, byte for byte: one appended to as its records come (pack 0), one whose records are
+   held and saved as zstd units (PF_PACK_UNITS) and one whose shaders are packed one by one (PF_PACK_SHADERS), the
+   same records in each, every one the same bytes from one version of the code to the next: the FNV-1a of each file
+   as its format last changed */
+static void bytes_stable(void) {
+    static const struct {
+        int pack;
+        u64 hash;
+    } files[3] = {
+        {0, 0x251D22EC2853C70Aull}, {PF_PACK_UNITS, 0x8474D35368DDC0E1ull}, {PF_PACK_SHADERS, 0x7D58EDAC2C8940ECull}};
+    for (int f = 0; f < 3; ++f) {
+        PFile pf;
+        u32 loaded[2];
+        remove(PATH);
+        unit_open_as(&pf, 0x200000, loaded, files[f].pack);
+        unit_add(&pf, 0, 12, 0);
+        close_file(&pf);
+        long n = file_size();
+        u8* d = n > 0 ? malloc((size_t)n) : NULL;
+        FILE* in = d ? fopen(PATH, "rb") : NULL;
+        CHECK(in && fread(d, 1, (size_t)n, in) == (size_t)n);
+        if (in) fclose(in);
+        u64 h = 0xCBF29CE484222325ull;
+        for (long i = 0; d && i < n; ++i) h = (h ^ d[i]) * 0x100000001B3ull;
+        free(d);
+        if (h != files[f].hash)
+            fprintf(stderr, "pipeline_file: the file of pack %d is %ld bytes of FNV-1a 0x%016llX, not 0x%016llX\n",
+                    files[f].pack, n, (unsigned long long)h, (unsigned long long)files[f].hash);
+        CHECK(h == files[f].hash);
+    }
+    remove(PATH);
+}
+
 int main(void) {
     PFile pf;
     u32 loaded[2];
     long whole, header;
     remove(PATH);
     check_build_words();
+    bytes_stable();
 
     /* a first run: no file, records written as shaders and pipelines are made */
     open_file(&pf, "key one", 0xA0, 0, loaded);

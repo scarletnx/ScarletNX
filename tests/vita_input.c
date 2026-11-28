@@ -68,7 +68,7 @@ static bool show(void) {
             return false;
     }
     for (int tries = 0; tries < 200; ++tries) { /* no image free for it yet: again */
-        if (vita_vk_present(g_frame.buffer, 0, 960, 960, 544)) return true;
+        if (vita_vk_present(g_frame.buffer, 0, 960, VK_NULL_HANDLE, 960, 544)) return true;
         (void)vita_vk_poll();
         SDL_Delay(5);
     }

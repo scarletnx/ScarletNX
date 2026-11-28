@@ -13,8 +13,9 @@
    program's (storage buffers of 32-bit words, laid out as UsseShader.buffers says), bindings 2 to 17 the fragment
    program's textures (combined image samplers, by sampler index). A vertex program's attributes are inputs at the
    locations UsseShader.attribute_location gives; its outputs and a fragment program's inputs meet at fixed locations
-   (color0 1, color1 2, fog 3, texcoord0 to 9 4 to 13); a fragment program writes location 0. Push constants (20 bytes,
-   the vertex stage's): the viewport's state, UssePush */
+   (color0 1, color1 2, fog 3, texcoord0 to 9 4 to 13); a fragment program writes location 0. Push constants: the
+   vertex stage's 20 bytes, the viewport's state (UssePush), then the fragment stage's float at USSE_FRAGMENT_PUSH, the
+   scale the scene is drawn at (the resolution setting's), which the pixel's position a program reads is divided by */
 #define USSE_ATTRIBUTES 16u
 #define USSE_BUFFERS    16u
 #define USSE_TEXTURES   16u
@@ -26,6 +27,7 @@ typedef struct {
     float screen_width, screen_height;
     float z_offset, z_scale; /* the viewport's depth transform, applied in the shader */
 } UssePush;
+#define USSE_FRAGMENT_PUSH 20u
 
 typedef struct {
     /* vertex: the vertex program's attributes (SceGxmVertexAttribute: the resource index each feeds, its format,
