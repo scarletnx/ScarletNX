@@ -371,6 +371,9 @@ typedef struct {
     /* the bytes of the functions' code, and of them those the regions became, the cold paths and the constants: the
        rest is what the back end writes between regions (frames, jumps, pins, checks, dispatch) */
     SnxU64 code, regions, cold, pool;
+    /* the functions' leaders past their first instruction, where a region ends: those after a call, and of the others
+       those one, several or no instruction of their function leads to */
+    SnxU64 leaders, after_call, one_way, more_ways, no_way;
 } SnxSsaCount;
 /* The line that says it, after snx_phases_line's, for guest's instructions: "ssa: 5850000 instructions for 1000000
    guest instructions (5.85 each) in 250000 regions, 3072.0 MiB as the back end holds it, 700.0 MiB stored" */
@@ -382,6 +385,9 @@ void snx_ssa_kinds_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 g
 /* The code's line: "ssa code: 600.0 MiB of functions: regions 400.0, cold paths 20.0, constants 10.0, between regions
    170.0 (28%)" */
 void snx_ssa_code_line(char* out, size_t size, const SnxSsaCount* ssa);
+/* The leaders' line: "ssa leaders: 900000 inside functions: 400000 after a call, 300000 with one way in from their
+   function, 150000 with more, 50000 with none" */
+void snx_ssa_leaders_line(char* out, size_t size, const SnxSsaCount* ssa);
 /* The line a program's recompile ends with, before its "Built": the seconds it took, those before its code (the
    program read, its calls bound), its code's (every module's, snx_phases_line's each) and those after (the runtime's
    copy, the stamp): "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it" */

@@ -87,6 +87,11 @@ int main(void) {
         snx_ssa_code_line(line, sizeof line, &parts);
         assert(!strcmp(line, "ssa code: 600.0 MiB of functions: regions 400.0, cold paths 20.0, constants 12.0, "
                              "between regions 168.0 (28%)"));
+        parts.leaders = 900000, parts.after_call = 400000, parts.one_way = 300000, parts.more_ways = 150000;
+        parts.no_way = 50000;
+        snx_ssa_leaders_line(line, sizeof line, &parts);
+        assert(!strcmp(line, "ssa leaders: 900000 inside functions: 400000 after a call, 300000 with one way in from "
+                             "their function, 150000 with more, 50000 with none"));
     }
     /* 20 ms of the processor's time, spent in a loop: a loaded machine takes longer, ten seconds at most. Windows counts
        it in the clock's ticks (15.6 ms): a process that has spent less than one reads 0, so the loop starts from the

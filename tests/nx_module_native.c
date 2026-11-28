@@ -258,7 +258,8 @@ static void units(const char* folder) {
               (!counted ||
                (split.instructions >= 8 && split.region_count && split.packed >= 3 * split.instructions &&
                 split.packed < split.bytes && split.bytes % split.instructions == 0 && kinds == split.instructions &&
-                split.regions && split.regions + split.cold + split.pool < split.code)),
+                split.regions && split.regions + split.cold + split.pool < split.code &&
+                split.after_call + split.one_way + split.more_ways + split.no_way == split.leaders)),
           "the module's SSA counted the same at each build and with the unit split: %llu, %llu and %llu instructions, "
           "%llu bytes as held, %llu packed",
           (unsigned long long)split.instructions, (unsigned long long)split_again.instructions,

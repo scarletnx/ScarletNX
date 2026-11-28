@@ -631,6 +631,11 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         ssa.bytes += s->bytes;
         ssa.packed += s->packed;
         ssa.region_count += s->region_count;
+        ssa.leaders += s->leaders;
+        ssa.after_call += s->after_call;
+        ssa.one_way += s->one_way;
+        ssa.more_ways += s->more_ways;
+        ssa.no_way += s->no_way;
         for (size_t k = 0; k < sizeof ssa.kinds / sizeof *ssa.kinds; ++k) ssa.kinds[k] += s->kinds[k];
         ssa.code += s->code;
         ssa.regions += s->regions;
@@ -650,6 +655,8 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
             snx_ssa_kinds_line(line, sizeof line, &ssa, guest);
             puts(line);
             snx_ssa_code_line(line, sizeof line, &ssa);
+            puts(line);
+            snx_ssa_leaders_line(line, sizeof line, &ssa);
             puts(line);
             if (uncounted)
                 printf("ssa: %zu of the %zu units came from memory, their SSA not in it\n", uncounted, q.count);

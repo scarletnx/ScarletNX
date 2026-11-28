@@ -2255,6 +2255,31 @@ static void liveness(Unit* u, const SnxFunction* f) {
         u->live[i] = 0;
         u->vlive[i] = 0;
     }
+    if (u->g->x.count) {
+        /* the leaders by how the function's own code reaches them: what a region that went on past one would meet */
+        struct SgXSeen* seen = &u->g->x.seen;
+        unsigned char* ways = (unsigned char*)calloc(n ? n : 1, 1);
+        for (i = 0; ways && i < n; ++i)
+            for (int k = 0; k < 2; ++k)
+                if (succ[2 * i + k] >= 0 && ways[succ[2 * i + k]] < 2) ++ways[succ[2 * i + k]];
+        for (i = 1; ways && i < n; ++i) {
+            SnxU32 w = 0;
+            SnxA64Insn before;
+            if (!f->leaders[i]) continue;
+            (void)snx_codegen_word((SnxCodegen*)u->codegen, snx_function_address(f, i - 1), &w);
+            snx_a64_decode_word(w, u->codegen->features, &before);
+            ++seen->leaders;
+            if (before.flow == SNX_A64_FLOW_BL || before.flow == SNX_A64_FLOW_BLR || before.flow == SNX_A64_FLOW_SVC)
+                ++seen->after_call;
+            else if (ways[i] == 1)
+                ++seen->one_way;
+            else if (ways[i])
+                ++seen->more_ways;
+            else
+                ++seen->no_way;
+        }
+        free(ways);
+    }
     do {
         changed = 0;
         for (i = n; i-- > 0;) {
@@ -3181,6 +3206,11 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         options->ssa->code += seen->code;
         options->ssa->regions += seen->bytes;
         options->ssa->region_count += seen->regions;
+        options->ssa->leaders += seen->leaders;
+        options->ssa->after_call += seen->after_call;
+        options->ssa->one_way += seen->one_way;
+        options->ssa->more_ways += seen->more_ways;
+        options->ssa->no_way += seen->no_way;
         options->ssa->cold += seen->cold;
         options->ssa->pool += seen->pool;
     }
