@@ -10,6 +10,7 @@
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include <assert.h>
 #include <stdarg.h>
@@ -22,6 +23,11 @@ void core_leave(KThread* t) { (void)t; }
 void core_enter(KThread* t) { (void)t; }
 void kthread_block(KThread* t) { (void)t; }
 void kthread_unblock(KThread* t) { (void)t; }
+/* the priority a waiter lends a mutex's holder: the threads here are the host's, which have none to lend */
+Hle g_hle;
+void kthread_lock_wait(KThread* t, u64 key, const _Atomic u32* holder) { (void)t, (void)key, (void)holder; }
+void kthread_lock_unwait(KThread* t) { (void)t; }
+void kthread_lock_held(u64 key, const _Atomic u32* holder) { (void)key, (void)holder; }
 void fatal(const char* format, ...) {
     (void)format;
     abort();

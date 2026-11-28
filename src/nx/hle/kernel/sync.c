@@ -100,19 +100,28 @@ static _Thread_local u64 pi_boosted, pi_booster;
 static _Thread_local int pi_from, pi_to;
 #endif
 /* Eden's KThread::RestorePriority: t runs at the best of its base priority and the priorities of the threads waiting
-   on the mutexes it holds, and a change goes on up to the owner of the mutex t waits on itself */
+   on the mutexes it holds, the host's locks among them (kthread_lock_wait), and a change goes on up to the owner of
+   the mutex or lock t waits on itself */
 static void prio_restore_nl(KThread* t) {
     /* no zone per call: this runs on a hot path, and a change of priority is already a decision of the core switch
        zone, which carries its value after the core lock is let go */
     while (t) {
         int p = t->base_prio;
+        u32 ix = kt_ix(t);
         KThread* w;
 #if defined(SNX_TRACY)
         KThread* booster = NULL;
 #endif
         u32* l;
         for (w = kt_at(g_hle.sync.mwait); w; w = kt_at(w->next_waiter))
-            if (w->lock_owner == kt_ix(t) && w->prio < p) {
+            if (w->lock_owner == ix && w->prio < p) {
+                p = w->prio;
+#if defined(SNX_TRACY)
+                booster = w;
+#endif
+            }
+        for (w = kt_at(g_host.thread.hlwait); w; w = kt_at(g_host.thread.hl_next[kt_ix(w) - 1]))
+            if (g_host.thread.hl_owner[kt_ix(w) - 1] == ix && w->prio < p) {
                 p = w->prio;
 #if defined(SNX_TRACY)
                 booster = w;
@@ -138,12 +147,85 @@ static void prio_restore_nl(KThread* t) {
             list_del(l, t);
             list_add(l, t);
         }
-        t = t->wait_kind == 2 ? kt_at(t->lock_owner) : NULL;
+        t = t->wait_kind == 2 ? kt_at(t->lock_owner) : kt_at(g_host.thread.hl_owner[ix - 1]);
     }
 }
 void prio_set_base_nl(KThread* t, int prio) {
     t->base_prio = prio;
     prio_restore_nl(t);
+}
+
+/* ============================================================ the host's locks' priority inheritance */
+/* The thread an SDK lock word's owner tag names (nn/os_sync.c's me()): its handle's thread, else one the game got no
+   handle for, by its slot. NULL for a free word or a tag that names no thread */
+static KThread* tag_thread_nl(u32 v) {
+    KObj* o;
+    v &= ~HANDLE_WAIT;
+    if (!v) return NULL;
+    o = h_get_nl(v);
+    if (o && o->type == KO_THREAD) return (KThread*)o;
+    return (v & 0xFFFF0000u) == SNX_LOCK_TAG_SLOT ? kt_at(v & 0xFFFFu) : NULL;
+}
+/* the holder of the lock key now: holder's slot, or the owner of the SDK lock word at key */
+static KThread* lock_holder_nl(u64 key, const _Atomic u32* holder) {
+    u64 addr = key & ~SNX_LOCK_WORD;
+    if (holder) return kt_at(atomic_load_explicit(holder, memory_order_seq_cst));
+    if (!(key & SNX_LOCK_WORD) || check_word(addr) || check_mapped(addr, 4)) return NULL;
+    return tag_thread_nl(word_load(uword(addr)));
+}
+/* w, waiting on a host lock, names h as its holder from now on (none for NULL or w itself): w's priority goes to h,
+   and the holder it named before runs at what is left to it */
+static void lock_point_nl(KThread* w, KThread* h) {
+    u32 i = kt_ix(w) - 1;
+    KThread* old = kt_at(g_host.thread.hl_owner[i]);
+    if (h == w) h = NULL;
+    if (old == h) return;
+    if (h) kobj_ref(&h->o);
+    g_host.thread.hl_owner[i] = kt_ix(h);
+    if (old) {
+        prio_restore_nl(old);
+        kobj_unref(&old->o);
+    }
+    if (h && w->prio < h->prio) prio_restore_nl(h);
+}
+/* every thread waiting on the lock key names its holder now */
+static void lock_repoint_nl(u64 key, const _Atomic u32* holder) {
+    KThread* h = lock_holder_nl(key, holder);
+    for (KThread* w = kt_at(g_host.thread.hlwait); w; w = kt_at(g_host.thread.hl_next[kt_ix(w) - 1]))
+        if (g_host.thread.hl_key[kt_ix(w) - 1] == key) lock_point_nl(w, h);
+}
+void kthread_lock_wait(KThread* t, u64 key, const _Atomic u32* holder) {
+    u32 i;
+    if (!t || !key) return;
+    i = kt_ix(t) - 1;
+    pm_lock(&g_host.kernel.klock);
+    if (!g_host.thread.hl_key[i]) {
+        g_host.thread.hl_next[i] = g_host.thread.hlwait;
+        g_host.thread.hlwait = kt_ix(t);
+    }
+    g_host.thread.hl_key[i] = key;
+    lock_point_nl(t, lock_holder_nl(key, holder));
+    klock_unlock();
+}
+void kthread_lock_unwait(KThread* t) {
+    u32 i, *l;
+    if (!t) return;
+    i = kt_ix(t) - 1;
+    pm_lock(&g_host.kernel.klock);
+    if (g_host.thread.hl_key[i]) {
+        for (l = &g_host.thread.hlwait; *l && *l != i + 1; l = &g_host.thread.hl_next[*l - 1]) {}
+        if (*l) *l = g_host.thread.hl_next[i];
+        g_host.thread.hl_next[i] = 0;
+        g_host.thread.hl_key[i] = 0;
+        lock_point_nl(t, NULL);
+    }
+    klock_unlock();
+}
+void kthread_lock_held(u64 key, const _Atomic u32* holder) {
+    if (!key) return;
+    pm_lock(&g_host.kernel.klock);
+    lock_repoint_nl(key, holder);
+    klock_unlock();
 }
 /* How a thread waiting on a mutex came to it (g_host.thread.mwait_how): it found the mutex held (LOCK), held by a thread
    the kernel had handed it to and that had yet to run (LATE), or a condition variable's signal moved it here
@@ -291,6 +373,7 @@ u32 svc_arbitrate_unlock_to(u64 addr, u32 tag, int* handed) {
         *handed = !n && tag;
         word_store(uword(addr), *handed ? tag | HANDLE_WAIT : mutex_tag(n, more));
     }
+    lock_repoint_nl(addr | SNX_LOCK_WORD, NULL); /* the threads waiting on the word on the host: its new owner */
     if (n) wake(n, 0);
     klock_unlock();
     mutex_handoff_flush(why);

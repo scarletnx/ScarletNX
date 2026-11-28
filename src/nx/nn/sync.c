@@ -12,7 +12,10 @@
    aborts on: the C library's waits are hooked as well, and wait on the host where the mutex is one of the family's.
 
    A thread that waits (a lock someone holds, a condition variable, a sleep) leaves its core first, as a waiting SVC
-   does (hook_wait_begin): the core's other threads run meanwhile, the holder among them.
+   does (hook_wait_begin): the core's other threads run meanwhile, the holder among them. A thread waiting for a mutex
+   lends its priority to the mutex's holder (kthread_lock_wait), as the console's kernel does for the nn::os mutex the
+   SDK's std::mutex is: a holder of low priority whose core a thread of better priority keeps would otherwise never
+   run to let go of it, and its waiter waits for good.
 
    steady_clock's now is the game's clock (guest_ns), as the SDK's reads it through clock_gettime's CLOCK_MONOTONIC and
    nn::os's system tick: it stops while the game is paused and takes a save state's time, as every other clock of the
@@ -22,6 +25,7 @@
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
@@ -48,6 +52,9 @@ typedef struct SyncObj {
     PCond c;
     _Atomic u32 owner;
     u32 depth; /* a recursive mutex's holder (plat_tid) and how often it holds it */
+    /* the mutex's holder (kt_ix, 0 for none or a thread of the runtime's own) and the threads waiting in lock(), for
+       the kernel's priority inheritance */
+    _Atomic u32 holder, waiters;
 } SyncObj;
 #define SYNC_BUCKETS 4096
 static struct {
@@ -97,20 +104,54 @@ static SyncObj* find(u64 addr) {
     pm_unlock(&g_sync.lk);
     return o;
 }
-/* o's mutex, waited for off the core when another thread holds it. The wait is never inside a zone: the thread
+/* t holds o's mutex now, or (t NULL) nobody does, as it is about to be let go of. Threads waiting for it name their
+   holder to the kernel: a waiter counts itself before it reads the holder, and a holder stores itself before it reads
+   the count, both sequentially consistent, so at least one of them sees the other */
+static void held(SyncObj* o, const KThread* t) {
+    atomic_store_explicit(&o->holder, kt_ix(t), memory_order_seq_cst);
+    if (atomic_load_explicit(&o->waiters, memory_order_seq_cst)) kthread_lock_held(o->addr, &o->holder);
+}
+/* o's mutex for t, waited for off the core when another thread holds it, t lending its priority to the holder
+   meanwhile; off: the caller has left its core already (hook_wait_begin). The wait is never inside a zone: the thread
    leaves the core, so its duration is wall time the guest did not spend on the CPU. It is measured and plotted after
    the thread runs again, which says how long the contention blocked it */
-static void lock(SyncObj* o) {
-    if (pm_trylock(&o->m)) return;
+static void take(SyncObj* o, KThread* t, int off) {
+    if (pm_trylock(&o->m)) {
+        held(o, t);
+        return;
+    }
 #if defined(SNX_TRACY)
     u64 waited = plat_ns(); /* a duration: the monotonic clock, not the wall clock */
 #endif
-    hook_wait_begin();
+    if (!off) hook_wait_begin();
+    atomic_fetch_add_explicit(&o->waiters, 1, memory_order_seq_cst);
+    kthread_lock_wait(t, o->addr, &o->holder);
     pm_lock(&o->m);
-    hook_wait_end();
+    atomic_fetch_sub_explicit(&o->waiters, 1, memory_order_seq_cst);
+    kthread_lock_unwait(t);
+    held(o, t);
+    if (!off) hook_wait_end();
 #if defined(SNX_TRACY)
     SNX_PLOT("hook mutex contention ms", (double)(plat_ns() - waited) / 1e6);
 #endif
+}
+static void lock(SyncObj* o) { take(o, kthread_cur(), 0); }
+/* The condition variable o's wait, its mutex m held: m let go of until a notify, or for ns (-1 for no limit), then
+   taken again as lock() takes it, so a woken thread that finds m held lends its priority to the holder too, as the
+   console's kernel queues it on the mutex. It waits on o's own host mutex, which a notify takes, so a notify that
+   comes after the caller let go of m finds it waiting. Nonzero when the time ran out */
+static int cond_wait(SyncObj* o, SyncObj* m, i64 ns) {
+    KThread* t = kthread_cur();
+    int out;
+    hook_wait_begin();
+    pm_lock(&o->m);
+    held(m, NULL);
+    pm_unlock(&m->m);
+    out = pc_wait(&o->c, &o->m, ns);
+    pm_unlock(&o->m);
+    take(m, t, 1);
+    hook_wait_end();
+    return out;
 }
 
 /* ---- std::mutex */
@@ -120,14 +161,18 @@ void sync_mutex_lock(CPU* c, u64 m) {
 }
 int sync_mutex_try_lock(CPU* c, u64 m) {
     int got;
+    SyncObj* o = obj(m);
     (void)c;
-    got = pm_trylock(&obj(m)->m) != 0;
+    got = pm_trylock(&o->m) != 0;
     SNX_ZONE_V(z, "hook mutex try", (u64)got); /* frequent decision: 1 acquired, 0 busy */
+    if (got) held(o, kthread_cur());
     return got;
 }
 void sync_mutex_unlock(CPU* c, u64 m) {
+    SyncObj* o = obj(m);
     (void)c;
-    pm_unlock(&obj(m)->m);
+    held(o, NULL);
+    pm_unlock(&o->m);
 }
 void sync_drop(CPU* c, u64 o) {
     (void)c;
@@ -165,6 +210,7 @@ int sync_recursive_try_lock(CPU* c, u64 m) {
     got = pm_trylock(&o->m) != 0;
     SNX_ZONE_V(z, "hook recursive try", (u64)got); /* frequent: 1 acquired, 0 busy */
     if (!got) return 0;
+    held(o, kthread_cur());
     atomic_store_explicit(&o->owner, me, memory_order_relaxed);
     o->depth = 1;
     return 1;
@@ -174,17 +220,24 @@ void sync_recursive_unlock(CPU* c, u64 m) {
     SyncObj* o = obj(m);
     if (--o->depth) return;
     atomic_store_explicit(&o->owner, 0, memory_order_relaxed);
+    held(o, NULL);
     pm_unlock(&o->m);
 }
 
 /* ---- std::condition_variable: a unique_lock<mutex> is the mutex's address, then whether it owns it */
 void sync_cond_notify_one(CPU* c, u64 cv) {
+    SyncObj* o = obj(cv);
     (void)c;
-    pc_signal(&obj(cv)->c);
+    pm_lock(&o->m);
+    pc_signal(&o->c);
+    pm_unlock(&o->m);
 }
 void sync_cond_notify_all(CPU* c, u64 cv) {
+    SyncObj* o = obj(cv);
     (void)c;
-    pc_broadcast(&obj(cv)->c);
+    pm_lock(&o->m);
+    pc_broadcast(&o->c);
+    pm_unlock(&o->m);
 }
 void sync_cond_wait(CPU* c, u64 cv, u64 lk) {
 #if defined(SNX_TRACY)
@@ -195,9 +248,7 @@ void sync_cond_wait(CPU* c, u64 cv, u64 lk) {
 #if defined(SNX_TRACY)
     waited = plat_ns(); /* a duration: the monotonic clock */
 #endif
-    hook_wait_begin();
-    pc_wait(&o->c, &m->m, -1);
-    hook_wait_end();
+    cond_wait(o, m, -1);
 #if defined(SNX_TRACY)
     SNX_PLOT("hook cv wait ms", (double)(plat_ns() - waited) / 1e6);
 #endif
@@ -218,9 +269,7 @@ void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
 #if defined(SNX_TRACY)
     waited = plat_ns();
 #endif
-    hook_wait_begin();
-    pc_wait(&o->c, &m->m, left);
-    hook_wait_end();
+    cond_wait(o, m, left);
 #if defined(SNX_TRACY)
     SNX_PLOT("hook cv timed wait ms", (double)(plat_ns() - waited) / 1e6);
 #endif
@@ -237,9 +286,7 @@ static i32 host_wait(u64 cv, SyncObj* m, i64 left) {
     SyncObj* o = obj(cv);
     int out;
     if (!left) return GUEST_ETIMEDOUT;
-    hook_wait_begin();
-    out = pc_wait(&o->c, &m->m, left);
-    hook_wait_end();
+    out = cond_wait(o, m, left);
     return out ? GUEST_ETIMEDOUT : 0;
 }
 /* the nanoseconds left until the timespec at abstime on the clock (at least 0): CLOCK_MONOTONIC's is steady_clock's,

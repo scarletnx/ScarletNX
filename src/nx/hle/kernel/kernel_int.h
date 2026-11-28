@@ -274,6 +274,12 @@ typedef struct {
        on a mutex came to it (MWAIT_*) */
     _Atomic u8 handed[KTHREAD_MAX];
     u8 mwait_how[KTHREAD_MAX];
+    /* The threads blocked on a lock the runtime keeps on the host (sync.c's kthread_lock_wait), under g_klock: the list
+       through hl_next, each one's lock (hl_key, 0 for none) and its holder (hl_owner, a kt_ix holding a reference,
+       0 while none is known). Never in a save state: those locks' families refuse states */
+    u32 hlwait;
+    u32 hl_next[KTHREAD_MAX], hl_owner[KTHREAD_MAX];
+    u64 hl_key[KTHREAD_MAX];
     /* for the thread dump, each written by its own thread with relaxed stores: when it last left an SVC (plat_ns),
        how often its game code called the poll (a waiter flagged its core), and its host thread */
     _Atomic u64 svc_ns[KTHREAD_MAX];

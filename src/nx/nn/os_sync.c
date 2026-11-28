@@ -22,7 +22,9 @@
    A save state can't hold a thread waiting on the host, so native_os_sync=0 leaves the family to the game's own code,
    and save states are refused while it runs (hook_states_refused), as for the cond_var family. A waiting thread
    leaves its core first (hook_wait_begin), as in a waiting SVC: the core's other threads run meanwhile, the holder
-   among them. The console's kernel raises a lock holder's priority to its waiters'; the host's futex doesn't */
+   among them. The console's kernel raises a lock holder's priority to its waiters', and so does a thread waiting on
+   a word here (kthread_lock_wait): a holder of low priority whose core a thread of better priority keeps would
+   otherwise never run to let go of the lock */
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
 #include "common/platform/thread.h"
@@ -71,7 +73,7 @@ static u32 add(_Atomic u32* p, u32 d) {
 /* the calling thread's tag; one no handle is for a thread the game got none for (it never takes a lock) */
 static u32 me(void) {
     KThread* t = kthread_cur();
-    return t && t->own_handle ? t->own_handle : t ? 0x3FFF0000u | kt_ix(t) : 0x3FFFFFFFu;
+    return t && t->own_handle ? t->own_handle : t ? SNX_LOCK_TAG_SLOT | kt_ix(t) : 0x3FFFFFFFu;
 }
 /* the game's NN_ABORT for a lock used wrong, which its own code would stop on */
 static void misuse(const char* what) { fatal("nn::os: %s (the SDK aborts here)", what); }
@@ -192,8 +194,8 @@ static u32 hand_first(u64 addr) {
 /* ---- InternalCriticalSection: the word at cs */
 static void cs_enter(CPU* c, u64 cs) {
     _Atomic u32* p = word(c, cs);
-    u32 tag = me(), v = 0;
-    int waited = 0, queued = 0;
+    u32 tag = me(), v = 0, named = 0;
+    int waited = 0, queued = 0, took_free = 0;
 #if defined(SNX_TRACY)
     u64 t0 = 0; /* only the contention plot reads the clock */
 #endif
@@ -201,7 +203,10 @@ static void cs_enter(CPU* c, u64 cs) {
     if ((v & ~HANDLE_WAIT) == tag) return; /* the SDK's Enter takes a lock its thread holds as held */
     for (;;) {
         if (!v) { /* free: taken with the waiters bit, as others may still wait */
-            if (cas(p, &v, tag | HANDLE_WAIT)) break;
+            if (cas(p, &v, tag | HANDLE_WAIT)) {
+                took_free = 1;
+                break;
+            }
             continue;
         }
         if ((v & ~HANDLE_WAIT) == tag) break; /* handed to this thread by a Leave (cs_leave) */
@@ -214,10 +219,16 @@ static void cs_enter(CPU* c, u64 cs) {
             t0 = plat_ns();
 #endif
         }
+        if ((v & ~HANDLE_WAIT) != named) { /* the holder gets this thread's priority while it waits */
+            named = v & ~HANDLE_WAIT;
+            kthread_lock_wait(kthread_cur(), cs | SNX_LOCK_WORD, NULL);
+        }
         plat_wait_word(p, snx_le32(v | HANDLE_WAIT), -1);
         v = ld(p);
     }
     if (queued > 0) hand_del(cs, tag);
+    if (named) kthread_lock_unwait(kthread_cur());
+    if (named || took_free) kthread_lock_held(cs | SNX_LOCK_WORD, NULL); /* the others waiting lend it to this one */
     if (waited) {
         hook_wait_end();
         /* the wait left the core, so it is wall time, never a zone: the plot says how long contention blocked the
