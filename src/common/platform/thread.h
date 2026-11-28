@@ -122,6 +122,9 @@ int plat_thread_cpus_widen(int* ids, int max);
    BC7 encodes of nx/gpu/vk/astc.c). Linux's and Android's SCHED_IDLE, macOS's and iOS's background QoS class, Windows'
    idle priority, nothing elsewhere: 0, or -1 with errno (GetLastError on Windows) */
 int plat_thread_idle(void);
+/* the calling thread's timed waits end as near to their time as the system can: Linux's timer slack of 1 ns, where
+   the default lets one end 50 us late. Nothing elsewhere: 0, or -1 with errno */
+int plat_thread_exact_timers(void);
 /* the calling thread's id, as the system numbers threads (Linux's gettid, kept per thread). Safe in a signal handler
    once the thread has called it one time */
 uint32_t plat_tid(void);

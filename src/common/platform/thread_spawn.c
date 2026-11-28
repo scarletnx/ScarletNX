@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #if !defined(_WIN32)
 #include <sched.h>
 #include <signal.h>
@@ -89,6 +92,7 @@ int plat_thread_cpus_widen(int* ids, int max) {
     return 0;
 }
 int plat_thread_idle(void) { return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) ? 0 : -1; }
+int plat_thread_exact_timers(void) { return 0; }
 #else
 /* below this a thread is a small helper that gets no alternate signal stack */
 #define ALT_STACK_MIN_THREAD ((size_t)256 << 10)
@@ -236,6 +240,15 @@ int plat_thread_idle(void) {
     const int r = pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0); /* an error number, not errno */
     if (r) errno = r;
     return r ? -1 : 0;
+#else
+    return 0;
+#endif
+}
+int plat_thread_exact_timers(void) {
+#if defined(__linux__)
+    /* Linux lets a timed wait of a normal thread end up to 50 us late (its timer slack), so that it can wake with
+       other timers: a 20 us sleep took 71 us */
+    return prctl(PR_SET_TIMERSLACK, 1ul, 0ul, 0ul, 0ul) ? -1 : 0;
 #else
     return 0;
 #endif
