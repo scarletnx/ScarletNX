@@ -423,11 +423,12 @@ void gpu_ds_batch_snapshot(const void* const* recs, const u8* defer, u32 n) {
     }
 }
 /* a record before the worker's draws: applied to its copies, not drawn */
-void gpu_ds_batch_apply(const void* arg) {
+const DsState* gpu_ds_batch_apply(const void* arg) {
     DsRecord r;
     memcpy(&r, arg, sizeof r);
     ds_batch_sync(r.slot);
     (void)ds_apply(&g_ds_batch[r.slot], &r, (const u8*)arg + sizeof r);
+    return &g_ds_batch[r.slot];
 }
 /* the owners the worker's draws changed (the capture's counters), back to the renderer's side */
 u32 gpu_ds_record_owner(const void* rec) {

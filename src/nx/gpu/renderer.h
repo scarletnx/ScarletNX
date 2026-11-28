@@ -308,7 +308,7 @@ void gpu_ds_batch_done(u32 draws);
    but not drawn, the owners back to the renderer's side after the batch, and the call at the draw record where the
    worker's draws start (rec) */
 void gpu_ds_batch_snapshot(const void* const* recs, const u8* defer, u32 n);
-void gpu_ds_batch_apply(const void* rec);
+const DsState* gpu_ds_batch_apply(const void* rec); /* the copy it applied to */
 void gpu_ds_batch_end(void);
 u32 gpu_ds_record_owner(const void* rec); /* a draw record's owner (DsState.owner) */
 void gpu_ds_join_at(const void* rec, void (*fn)(void));
