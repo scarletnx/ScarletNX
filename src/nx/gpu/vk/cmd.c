@@ -1272,7 +1272,7 @@ static void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkA
 u64 g_vk_cs_waits, g_vk_astc_waits;
 /* the one name of each reason for a submission, shared with gpuprof.c's log (vk.h) */
 const char* const g_vk_sub_name[VK_SUB_N] = {"other", "present", "finish", "1 ms",
-                                             "readback", "frame end", "split", "background"};
+                                             "readback", "frame end", "split", "background", "GPU idle"};
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
@@ -1624,6 +1624,19 @@ static u64 frame_ring_cap(u64 rings) {
     g_cmd.cap_gen = gen;
     return g_cmd.cap;
 }
+/* Whether the GPU is about to run out of work, at most one submission of it still running, while a quarter of
+   vk_submit_every's work waits to be submitted: the work goes then, not at the count. One game's GPU sat idle about
+   1.4 ms a frame while recorded work waited for the count. A count of 128 made it 70 fps against 66 at 512, with 31
+   submissions a present against 19; this gave 70.2 fps with 27. Waiting until the GPU had done every submission gave
+   68: the work came after the GPU had gone idle. Asked from that quarter on, every 32 of the work, as each ask reads
+   the timeline from the driver (a kernel call on Linux). A GPU that has more work queued gets no more submissions than
+   the count gives it, as on a Steam Deck each costs about 150 us in the kernel */
+static int gpu_starved(void) {
+    const u32 every = (u32)g_settings.submit_every, quarter = every / 4;
+    if (!every || !g_gsem || g_work < quarter || (g_work - quarter) % 32) return 0;
+    u64 done = 0;
+    return gsem_done(&done) && done + 1 >= atomic_load_explicit(&g_gval, memory_order_relaxed);
+}
 static void frame_check(void) {
     const Frame* f = &g_fr[g_cur];
     /* a fresh frame has recorded nothing, and its counts are still its last use's until frame_recycle: ending it
@@ -1653,6 +1666,8 @@ static void frame_check(void) {
     else if (f->recording && ((g_settings.submit_every && g_work >= (u32)g_settings.submit_every) ||
                               rings + g_cmd.stream_since >= g_work_rings + chunk_size()))
         submit(NULL, NULL, 1, VK_SUB_PERIODIC);
+    else if (f->recording && gpu_starved())
+        submit(NULL, NULL, 1, VK_SUB_IDLE);
 }
 void vk_frame_check(void) {
     u64 ended = vk_submit_number(); /* the earlier draws' and dispatches' last, before any submit here */

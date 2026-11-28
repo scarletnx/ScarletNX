@@ -3838,7 +3838,8 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
 /* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
    (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, a long piece of work cut into
-   submissions (vk_submit_split), a background encode's piece (vk_submit_background), or anything else */
+   submissions (vk_submit_split), a background encode's piece (vk_submit_background), the GPU about to run out
+   of work while work waits to be submitted (vk_frame_check), or anything else */
 enum {
     VK_SUB_OTHER,
     VK_SUB_PRESENT,
@@ -3848,6 +3849,7 @@ enum {
     VK_SUB_FRAME,
     VK_SUB_SPLIT,
     VK_SUB_BACKGROUND,
+    VK_SUB_IDLE,
     VK_SUB_N
 };
 /* the one name of each reason for a submission: cmd.c's zone and gpuprof.c's log use it, so a reason reads the same in
