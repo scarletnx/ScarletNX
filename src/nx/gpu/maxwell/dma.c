@@ -15,6 +15,8 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_dma_regs.h"
+#include "nx/gpu/maxwell/gob.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/tracy.h"
 
 #define DMA_MAX_BYTES (256u << 20) /* a launch past this is a bad register value */
@@ -55,9 +57,47 @@ static void dma_remap(const u32* r, DmaOp* o) {
     }
     if (o->ns != o->nd) o->shuffle = 1;
 }
+/* A one-line copy (MULTI_LINE_ENABLE clear) between memory of a pitch PTE kind and memory of a block linear kind
+   (gmmu_kind, at each side's start): the copy engine walks a block linear kind's GOBs row by row, 64 bytes a row, as a
+   GOB keeps them in 16-byte pieces two rows deep (Eden's convert_linear_2_blocklinear_addr). So the block linear side
+   is a surface one GOB wide from the GOB the copy starts in, its rows the copy's 64-byte runs, and the pitch side
+   those runs back to back. A game reads a texture's bytes back that way, and uploads them again. say: the launch
+   itself, which says a copy it can't take that way (the submission's scan decodes it too) */
+static void dma_kind_sides(DmaOp* o, int say) {
+    u32 src_kind = gmmu_kind(o->src.addr), dst_kind = gmmu_kind(o->dst.addr);
+    DmaSide *b, *p;
+    u32 rows;
+    if ((src_kind == GMMU_KIND_PITCH) == (dst_kind == GMMU_KIND_PITCH)) return; /* one layout: the bytes as they lie */
+    b = src_kind != GMMU_KIND_PITCH ? &o->src : &o->dst;
+    p = b == &o->src ? &o->dst : &o->src;
+    if (o->remap || o->line_in != o->line_out || (b->addr & (MAXWELL_GOB_SIZE_X - 1)) ||
+        o->line_in % MAXWELL_GOB_SIZE_X) {
+        if (say)
+            WARN_LIMIT(4,
+                       "gpu: a DMA copy of %u bytes from %llx (PTE kind %#x) to %llx (PTE kind %#x)%s isn't in whole "
+                       "64-byte GOB rows from a row's start: its bytes go as they lie, not by the block linear kind's "
+                       "GOB rows\n",
+                       o->line_in, (unsigned long long)o->src.addr, src_kind, (unsigned long long)o->dst.addr, dst_kind,
+                       o->remap ? ", with its components remapped," : "");
+        return;
+    }
+    rows = o->line_in >> MAXWELL_GOB_SIZE_X_SHIFT;
+    b->bl = 1;
+    b->bh = b->bd = 0;
+    b->wb = MAXWELL_GOB_SIZE_X;
+    b->oy = (u32)((b->addr & (MAXWELL_GOB_SIZE - 1)) >> MAXWELL_GOB_SIZE_X_SHIFT);
+    b->addr &= ~(u64)(MAXWELL_GOB_SIZE - 1);
+    b->h = b->oy + rows;
+    b->z = b->ox = 0;
+    p->pitch = MAXWELL_GOB_SIZE_X;
+    o->width = MAXWELL_GOB_SIZE_X;
+    o->line_in = o->line_out = MAXWELL_GOB_SIZE_X;
+    o->lines = rows;
+}
 /* A LAUNCH_DMA's operation from its word v and the registers: a line of line_length_in elements, line_count of them
-   when multi-line, else one line copied one-dimensionally whatever the layouts (as Eden and Ryujinx do) */
-static void dma_decode_launch(const u32* r, u32 v, DmaOp* o) {
+   when multi-line, else one line copied one-dimensionally, by the PTE kinds of its two sides (dma_kind_sides, which
+   says what it can't take when say is set) */
+static void dma_decode_launch(const u32* r, u32 v, DmaOp* o, int say) {
     u32 elem_in = 1, elem_out = 1;
     int src_bl, dst_bl;
     memset(o, 0, sizeof *o);
@@ -80,6 +120,7 @@ static void dma_decode_launch(const u32* r, u32 v, DmaOp* o) {
                 r[MAXWELL_DMA_PITCH_IN], MAXWELL_DMA_SRC_PARAMS, elem_in);
     dma_operand(&o->dst, r, gpu_packed_va(r[MAXWELL_DMA_OFFSET_OUT_UPPER], r[MAXWELL_DMA_OFFSET_OUT_LOWER]), dst_bl,
                 r[MAXWELL_DMA_PITCH_OUT], MAXWELL_DMA_DST_PARAMS, elem_out);
+    if (!o->multi && o->width) dma_kind_sides(o, say);
 }
 /* the guest address of a pitch linear operand's lowest byte, and the bytes its lines span from there */
 static u64 dma_pitch_low(const DmaSide* s, u32 lines) { return s->addr + (u64)gpu_dma_low(s, lines); }
@@ -133,7 +174,7 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     u64 len, gen, id = 0;
     u8* data = NULL;
     if (channel >= SNAP_CHANNELS) return;
-    dma_decode_launch(r, v, &o);
+    dma_decode_launch(r, v, &o, 0);
     if (!dma_linear_source(&o)) return;
     len = gpu_dma_read_bytes(&o.src, o.lines, o.line_in);
     pm_lock(&g_dma.lk);
@@ -322,7 +363,7 @@ static void dma_launch(GpuChannel* ch, u32 v) {
     const u32* r = ch->rdma;
     u32 launch = ch->dma_launch_index++;
     DmaOp o;
-    dma_decode_launch(r, v, &o);
+    dma_decode_launch(r, v, &o, 1);
     if (o.width && o.lines) dma_launch_copy(ch, &o, launch);
     dma_release_semaphore(r, launch_dma_semaphore_type(v));
 }

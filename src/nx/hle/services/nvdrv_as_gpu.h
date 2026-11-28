@@ -61,6 +61,7 @@ enum { AS_ALLOC_AS_EX_BIG_PAGE_SIZE = 0, AS_ALLOC_AS_EX_VA_START = 16, AS_ALLOC_
 /* IoctlRemapEntry {u16 flags, u16 kind, u32 handle, u32 handle_offset_big_pages, u32 as_offset_big_pages,
    u32 big_pages}, an array filling the argument */
 enum {
+    AS_REMAP_ENTRY_KIND = 2, /* the pages' PTE kind, 16 bits */
     AS_REMAP_ENTRY_HANDLE = 4,
     AS_REMAP_ENTRY_HANDLE_OFFSET = 8, /* in big pages */
     AS_REMAP_ENTRY_AS_OFFSET = 12,    /* in big pages */

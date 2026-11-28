@@ -77,15 +77,17 @@ u64 nvmap_addr_by_id(u32 id) {
 static u32 gmmu_l1_index(u64 page) { return (u32)(page >> GMMU_L2_BITS) & (NV_GMMU_L1 - 1); }
 /* a GPU page's entry within its second-level table */
 static u32 gmmu_l2_index(u64 page) { return (u32)(page & (GMMU_L2_ENTRIES - 1)); }
-/* A page entry: the guest address of the page (bits 12 up, page aligned), a run hint in bits 1 to 11, and bit 0 set
-   when the page is mapped; 0 when it isn't. The hint counts the pages after the entry, in its table, that are mapped
+/* A page entry: the guest address of the page (bits 12 to 55, page aligned), its PTE kind in bits 56 to 63, a run hint
+   in bits 1 to 11, and bit 0 set when the page is mapped; 0 when it isn't. The hint counts the pages after the entry, in its table, that are mapped
    and follow on in guest memory: a lower bound, so gmmu_run steps over a run of them in one load instead of one per
    page. A map writes its pages from the last, each counting those after it already written, and a change first
    shortens the counts before it that reach into it (gmmu_clip). The hint has the bits between the valid bit and the
    page address, so it saturates at 2047 */
 #define GMMU_PTE_VALID      1ull
 #define GMMU_PTE_HINT_SHIFT 1
-#define GMMU_PTE_ADDR_MASK  (~GMMU_PAGE_MASK)
+#define GMMU_PTE_KIND_SHIFT 56
+#define GMMU_PTE_KIND_MASK  (0xFFull << GMMU_PTE_KIND_SHIFT)
+#define GMMU_PTE_ADDR_MASK  (~GMMU_PAGE_MASK & ~GMMU_PTE_KIND_MASK)
 #define GHINT_MAX           ((1u << (GMMU_PAGE_BITS - GMMU_PTE_HINT_SHIFT)) - 1)
 #define GHINT_MASK          ((u64)GHINT_MAX << GMMU_PTE_HINT_SHIFT)
 static u64 gmmu_pte_hint(u64 e) { return (e & GHINT_MASK) >> GMMU_PTE_HINT_SHIFT; }
@@ -237,6 +239,13 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     /* a game's GPU mappings can outlive the guest memory behind them, which has no host memory left: the run stops
        there, as at a page with no entry */
     return mem_mapped_run(*cpu, n < max ? n : max);
+}
+u32 gmmu_kind(u64 gva) {
+    u64 page = gva >> GMMU_PAGE_BITS, e;
+    _Atomic u64* t = atomic_load_explicit(&g_hle.nvdrv.gmmu[gmmu_l1_index(page)], memory_order_acquire);
+    if (!t || !((e = atomic_load_explicit(&t[gmmu_l2_index(page)], memory_order_relaxed)) & GMMU_PTE_VALID))
+        return GMMU_KIND_PITCH;
+    return (u32)(e >> GMMU_PTE_KIND_SHIFT);
 }
 static _Atomic u64* gmmu_l2(u32 i) {
     _Atomic u64* t = atomic_load_explicit(&g_hle.nvdrv.gmmu[i], memory_order_acquire);
@@ -590,7 +599,8 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
     }
     pm_unlock(&g_host.nvdrv.alias_lock);
 }
-void gmmu_map(u64 gva, u64 cpu, u64 size) {
+void gmmu_map(u64 gva, u64 cpu, u64 size) { gmmu_map_kind(gva, cpu, size, GMMU_KIND_PITCH); }
+void gmmu_map_kind(u64 gva, u64 cpu, u64 size, u32 kind) {
     u64 first, last, p;
     if (!size) return;
     gmmu_change_begin(gva, size);
@@ -603,7 +613,8 @@ void gmmu_map(u64 gva, u64 cpu, u64 size) {
         u64 e;
         if (h > room) h = room;
         if (h > GHINT_MAX) h = GHINT_MAX;
-        e = (cpu + ((p - first) << GMMU_PAGE_BITS)) | (h << GMMU_PTE_HINT_SHIFT) | GMMU_PTE_VALID;
+        e = (cpu + ((p - first) << GMMU_PAGE_BITS)) | (u64)(kind & 0xFFu) << GMMU_PTE_KIND_SHIFT |
+            (h << GMMU_PTE_HINT_SHIFT) | GMMU_PTE_VALID;
         atomic_store_explicit(&t[gmmu_l2_index(p)], e, memory_order_relaxed);
         if (p == first) break;
     }
@@ -639,7 +650,7 @@ static void gmmu_unmap(u64 gva, u64 size, int own, u64 cpu) {
             continue;
         }
         e = &t[gmmu_l2_index(p)];
-        if (own && (atomic_load_explicit(e, memory_order_relaxed) & ~GHINT_MASK) !=
+        if (own && (atomic_load_explicit(e, memory_order_relaxed) & ~(GHINT_MASK | GMMU_PTE_KIND_MASK)) !=
                        ((cpu + ((p - first) << GMMU_PAGE_BITS)) | GMMU_PTE_VALID))
             continue;
         atomic_store_explicit(e, 0, memory_order_relaxed);
@@ -1375,6 +1386,26 @@ void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
     gmmu_map(gva, cpu, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK);
     pm_unlock(&g_host.nvdrv.aslock);
 }
+/* the kind of the mapped pages of [gva, gva + size): MAP_BUFFER_EX's remap of a mapping's kind alone */
+static void gmmu_set_kind(u64 gva, u64 size, u32 kind) {
+    u64 first = gva >> GMMU_PAGE_BITS, last = (gva + size - 1) >> GMMU_PAGE_BITS;
+    if (!size) return;
+    gmmu_change_begin(gva, size);
+    for (u64 p = first; p <= last; p++) {
+        _Atomic u64* t = atomic_load_explicit(&g_hle.nvdrv.gmmu[gmmu_l1_index(p)], memory_order_acquire);
+        u64 e;
+        if (!t) {
+            p |= GMMU_L2_ENTRIES - 1;
+            continue;
+        }
+        e = atomic_load_explicit(&t[gmmu_l2_index(p)], memory_order_relaxed);
+        if (e & GMMU_PTE_VALID)
+            atomic_store_explicit(&t[gmmu_l2_index(p)],
+                                  (e & ~GMMU_PTE_KIND_MASK) | (u64)(kind & 0xFFu) << GMMU_PTE_KIND_SHIFT,
+                                  memory_order_relaxed);
+    }
+    gmmu_change_end(gva, size);
+}
 void gmmu_space_unmap(u64 gva, u64 size) {
     if (!size || !gva_ok(gva, size)) return;
     pm_lock(&g_host.nvdrv.aslock);
@@ -1411,12 +1442,25 @@ static u32 as_unmap_buffer(u64 base) {
    mapping, which keeps its base */
 static u32 as_map_buffer(u8* d) {
     u32 flags = snx_ld_le32(d + AS_MAP_BUFFER_FLAGS), h = snx_ld_le32(d + AS_MAP_BUFFER_HANDLE);
+    u32 kind = snx_ld_le32(d + AS_MAP_BUFFER_KIND) & 0xFFu;
     u32 page = snx_ld_le32(d + AS_MAP_BUFFER_PAGE_SIZE), hsize;
     i64 boff = (i64)snx_ld_le64(d + AS_MAP_BUFFER_BUFFER_OFFSET);
     u64 msize = snx_ld_le64(d + AS_MAP_BUFFER_MAPPING_SIZE), gva = snx_ld_le64(d + AS_MAP_BUFFER_OFFSET), haddr, size,
         span, cpu, base, va = 0;
     GMap* g;
-    if ((flags & NVHOST_AS_MAP_REMAP) && !h) return NV_RESULT_SUCCESS; /* only the kind changes, which nothing keeps */
+    if ((flags & NVHOST_AS_MAP_REMAP) && !h) { /* only the kind changes: the pages keep their memory */
+        u64 at = gva + (u64)boff;
+        if (boff < 0 || !gva_ok(at, msize)) {
+            WARN_LIMIT(8,
+                       "nvdrv: MAP_BUFFER_EX asks kind %#x for %llx bytes at %llx%+lld, outside the GPU address "
+                       "space, which ends at %llx: refused with BadParameter\n",
+                       kind, (unsigned long long)msize, (unsigned long long)gva, (long long)boff,
+                       (unsigned long long)VA_END);
+            return NV_RESULT_BAD_PARAMETER;
+        }
+        gmmu_set_kind(at, msize, kind);
+        return NV_RESULT_SUCCESS;
+    }
     if (!nvmap_get(h, &haddr, &hsize)) return NV_RESULT_NOT_IMPLEMENTED;
     if (!haddr) WARN_LIMIT(4, "nvdrv: MAP_BUFFER_EX of nvmap handle %u, which has no address\n", h);
     size = msize ? msize : hsize;
@@ -1447,7 +1491,7 @@ static u32 as_map_buffer(u8* d) {
         base = gva;
         va = span;
     }
-    gmmu_map(gva, cpu, span);
+    gmmu_map_kind(gva, cpu, span, kind);
     g = gmap_new(h);
     g->gva = gva;
     g->size = span;
@@ -1531,7 +1575,7 @@ static u32 as_remap(const u8* d, u32 n) {
             WARN_LIMIT(8, "nvdrv: REMAP of handle %u past guest memory\n", h);
             continue;
         }
-        gmmu_map(gva, cpu, size);
+        gmmu_map_kind(gva, cpu, size, snx_ld_le16(e + AS_REMAP_ENTRY_KIND) & 0xFFu);
         gmap_cut(gva, size);
         {
             GMap* g = gmap_new(h);

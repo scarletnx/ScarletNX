@@ -43,6 +43,12 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu);
 /* Points the pages of [gva, gva + size) at guest memory from cpu on, the renderer told (its mapping bracket): what
    nvhost-as-gpu's MapBufferEx does, and a test without the ioctls */
 void gmmu_map(u64 gva, u64 cpu, u64 size);
+/* The same with the pages' PTE kind (MapBufferEx's and Remap's kind field): GMMU_KIND_PITCH for memory the GPU reads as
+   it lies, any other for a block linear kind, whose GOBs a pitch access sees row by row (gmmu_kind's callers) */
+#define GMMU_KIND_PITCH 0u
+void gmmu_map_kind(u64 gva, u64 cpu, u64 size, u32 kind);
+/* the PTE kind of gva's page, GMMU_KIND_PITCH where it isn't mapped */
+u32 gmmu_kind(u64 gva);
 /* GPU address space for a front end that maps guest memory itself (nvn's memory pools), from the allocator and
    page table nvhost-as-gpu uses: alloc reserves size bytes at the alignment (a power of two, 0 for the allocator's
    64 KiB) and returns their GPU address, 0 when the space is full; map points page-aligned [gva, gva + size) at guest
