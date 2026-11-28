@@ -6,8 +6,8 @@
    SDKs give them (0.12, 1.3, 3.5 and 20.5), which write and read sections of known sizes. Checked: the parameters
    the renderer is opened with for each layout, the handle of two words and of one and what its functions answer,
    the update's header, sections and order for each way an SDK writes it, the answer's sections and the frames'
-   count, each failure's result, audio_renderer.hook's table by SDK version, and a 32-bit game through its table's
-   adapters */
+   count, each failure's result, audio_renderer.hook's table by SDK version, and a 32-bit game of each 32-bit SDK
+   read through its table's adapters */
 #include "nx/hle/services/services_int.h"
 #include <stdarg.h>
 
@@ -368,9 +368,10 @@ static void test_a32(void) {
     test_sdk = SDK_0;
     g_hle.audio.ren_fn_found = 0;
     memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);
-    /* each SDK read a group of its own: 0.12.16's 13 functions, the limit's setter under its two declarations; and
-       4.4.0's those and the execution, SDK 3 on's declarations of the handle's */
-    CHECK(HOOK32_COUNT == 29 && hook32_read_count(1) == 14 && hook32_read_count(2) == 15);
+    /* each SDK read a group of its own: 0.12.16's 13 functions, the limit's setter under its two declarations;
+       4.4.0's those and the execution, SDK 3 on's declarations of the handle's; and 10.6.0's 4.4.0's but the event's
+       query, and its own update */
+    CHECK(HOOK32_COUNT == 44 && hook32_read_count(1) == 14 && hook32_read_count(2) == 15 && hook32_read_count(3) == 15);
     parameter(&P30, 0, 0, 0x31564552);
     CHECK(call32(sdk, work, T_PARAM, 0, 0, 0, 0) ==
           (u32)nnaudio_get_renderer_work_buffer_size(&thread.cpu, &P30, T_PARAM));
@@ -476,6 +477,65 @@ static void test_a32_440(void) {
     /* a 32-bit SDK between the two read: no open, no update */
     CHECK(call32(0x030500, open, T_HANDLE, T_PARAM, 0, 0, 0) == 0xffffffffu);
     CHECK(call32(0x030500, update, 1, 0, T_CONFIG, 0, 0) == 0xffffffffu);
+    g_arm_mod = NULL;
+    g_hle.audio.ren_fn_found = 0;
+    memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);
+}
+
+/* A 32-bit game of SDK 10.6.0, through its table's adapters: SDK 9 on's parameter (its revision at 0x34), the handle
+   two words, the managers at half their 64-bit places, the buffers at 0x2c to 0x38 and, at 0x20, the 4-byte address
+   the render info's 16 bytes go to */
+static void test_a32_1060(void) {
+    static const char open[] =
+        "_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleERKNS0_22AudioRendererParameterEPvj";
+    static const char update[] =
+        "_ZN2nn5audio26RequestUpdateAudioRendererENS0_19AudioRendererHandleEPKNS0_19AudioRendererConfigE";
+    static const char work[] = "_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE";
+    static const HookLayout_nn_audio_AudioRendererParameter P34 = {0x38, {0x34}};
+    const u32 sdk = 0x0a0600;
+    u32 versions[HOOK_KEYS] = {0}, id;
+    int first;
+    unsigned before;
+    thread.arm.mem = g_mem, thread.arm.mem_size = 0x10000;
+    g_arm_mod = &test_arm_module;
+    test_sdk = SDK_3;
+    g_hle.audio.ren_fn_found = 0;
+    memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);
+    versions[HOOK_SDK] = sdk;
+    CHECK(!strcmp(hook32_handler[hook_select(&hook32_table, update, versions, &first)],
+                  "nnaudio_request_update_frames32"));
+    parameter(&P34, 0, 0, 0x38564552);
+    CHECK(call32(sdk, work, T_PARAM, 0, 0, 0, 0) ==
+          (u32)nnaudio_get_renderer_work_buffer_size(&thread.cpu, &P34, T_PARAM));
+    memset(GP(T_HANDLE), 0xCC, 0x18);
+    CHECK(call32(sdk, open, T_HANDLE, T_PARAM, 0x5000, 0x10000, 0) == 0);
+    id = snx_ld_le32(GP(T_HANDLE));
+    CHECK(audren_at(id) && snx_ld_le32(GP(T_HANDLE + 4)) == 0 && GP(T_HANDLE)[8] == 0xCC);
+    CHECK(call32(sdk, "_ZN2nn5audio18StartAudioRendererENS0_19AudioRendererHandleE", id, 0, 0, 0, 0) == 0);
+    memset(GP(T_CONFIG), 0, 0x100);
+    for (u32 place = 0; place < 0x40; place += 8) snx_st_le32(GP(T_CONFIG + place / 2), MANAGER(place));
+    snx_st_le32(GP(T_CONFIG + 0x20), T_FRAMES);
+    snx_st_le32(GP(T_CONFIG + 0x2c), T_IN);
+    snx_st_le32(GP(T_CONFIG + 0x30), 0x400);
+    snx_st_le32(GP(T_CONFIG + 0x34), T_OUT);
+    snx_st_le32(GP(T_CONFIG + 0x38), ANSWER_TOTAL);
+    memset(GP(T_IN), 0xEE, 0x400);
+    memset(GP(T_OUT), 0xEE, 0x400);
+    memset(GP(T_FRAMES), 0xCC, 0x18);
+    test_ncalls = 0;
+    test_cursor = T_IN + 0x40;
+    before = test_updates;
+    CHECK(call32(sdk, update, id, 0, T_CONFIG, 0, 0) == 0 && test_updates == before + 1);
+    CHECK(test_ncalls == 16 && test_calls[3] == M_VOICE_IN && test_calls[5] == M_SPLITTER_IN);
+    CHECK(test_in_size == UPDATE_TOTAL && test_out_size == ANSWER_TOTAL && snx_ld_le32(test_in + 0x3c) == UPDATE_TOTAL);
+    /* the render info's 16 bytes, the frames' count and the 8 after it, as the answer has them, and nothing past */
+    CHECK(snx_ld_le64(GP(T_FRAMES)) == 0x123456789ull && GP(T_FRAMES)[8] == 0xEE && GP(T_FRAMES)[15] == 0xEE &&
+          GP(T_FRAMES)[16] == 0xCC);
+    call32(sdk, "_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", id, 0, 0, 0, 0);
+    CHECK(audren_at(id) == NULL && test_states == 0);
+    /* a 32-bit SDK between 4.4.0 and 10.6.0: no open, no update */
+    CHECK(call32(0x090300, open, T_HANDLE, T_PARAM, 0, 0, 0) == 0xffffffffu);
+    CHECK(call32(0x090300, update, 1, 0, T_CONFIG, 0, 0) == 0xffffffffu);
     g_arm_mod = NULL;
     g_hle.audio.ren_fn_found = 0;
     memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);
@@ -863,6 +923,7 @@ int main(void) {
     }
     test_a32();
     test_a32_440();
+    test_a32_1060();
     printf("nn_audio_renderer: %u checks\n", test_checks);
     free(g_mem);
     return 0;

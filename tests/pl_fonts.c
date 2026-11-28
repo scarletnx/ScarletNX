@@ -267,12 +267,13 @@ static void hooks(void) {
     }
     CHECK(nnpl_get_shared_font(c, 0x10, 0x400, 0, 0) && snx_ld_le32(mem + 0x10) == 6); /* no entry, the count */
     CHECK(g_maps == 1);
-    /* a 32-bit game: the five functions SDK 0.12.16 has, and GetSharedFont too in 4.4.0, each SDK read a group of
-       its own. A font's size and address in r0 alone, r1 as it was */
+    /* a 32-bit game: the five functions SDK 0.12.16 has, and GetSharedFont too in 4.4.0 and 10.6.0, each SDK read a
+       group of its own. A font's size and address in r0 alone, r1 as it was */
     {
         static SnxArmCPU a;
         a.mem = mem, a.mem_size = sizeof mem;
-        CHECK(HOOK32_COUNT == 11 && hook32_read_count(1) == 5 && hook32_read_count(2) == 6);
+        CHECK(HOOK32_COUNT == 17 && hook32_read_count(1) == 5 && hook32_read_count(2) == 6 &&
+              hook32_read_count(3) == 6);
         for (int i = 0; i < HOOK32_COUNT; i++) CHECK(hook32_read_group(i));
         a.r[0] = 3, a.r[1] = 0x1234, a.r[14] = 0x800;
         a32("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE")(&a);
@@ -293,19 +294,21 @@ static void hooks(void) {
         }
         CHECK(mem[0x20 + 12] == 0xee && mem[0x100 + 12] == 0xee &&
               mem[0x200 + 12] == 0xee); /* the fourth is past max */
-        /* 4.4.0's GetSharedFont: max in r2, the language code in r3 and the stack's first word, each SharedFontData
-           12 bytes (the type, the address, the size) */
-        memset(mem, 0xee, sizeof mem);
-        a.r[0] = 0x10, a.r[1] = 0x400, a.r[2] = 2, a.r[3] = 0x73756e65, a.r[13] = 0xf00, a.r[14] = 0x800;
-        hook32_fn[hook32_read_entry("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE",
-                                    2)](&a);
-        CHECK(a.r[0] == 1 && a.r[15] == 0x800 && snx_ld_le32(mem + 0x10) == 6);
-        for (u32 i = 0; i < 2; i++) {
-            const u8* d = mem + 0x400 + 12 * i;
-            CHECK(snx_ld_le32(d) == i && snx_ld_le32(d + 4) == FONTS_BASE + g_hle.pl.font_off[i]);
-            CHECK(snx_ld_le32(d + 8) == g_hle.pl.font_size[i]);
+        /* 4.4.0's and 10.6.0's GetSharedFont: max in r2, the language code in r3 and the stack's first word, each
+           SharedFontData 12 bytes (the type, the address, the size) */
+        for (int g = 2; g <= 3; g++) {
+            memset(mem, 0xee, sizeof mem);
+            a.r[0] = 0x10, a.r[1] = 0x400, a.r[2] = 2, a.r[3] = 0x73756e65, a.r[13] = 0xf00, a.r[14] = 0x800;
+            hook32_fn[hook32_read_entry("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE",
+                                        g)](&a);
+            CHECK(a.r[0] == 1 && a.r[15] == 0x800 && snx_ld_le32(mem + 0x10) == 6);
+            for (u32 i = 0; i < 2; i++) {
+                const u8* d = mem + 0x400 + 12 * i;
+                CHECK(snx_ld_le32(d) == i && snx_ld_le32(d + 4) == FONTS_BASE + g_hle.pl.font_off[i]);
+                CHECK(snx_ld_le32(d + 8) == g_hle.pl.font_size[i]);
+            }
+            CHECK(mem[0x400 + 24] == 0xee); /* the third is past max */
         }
-        CHECK(mem[0x400 + 24] == 0xee); /* the third is past max */
         CHECK(hook32_read_entry("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", 1) ==
               -1);
     }

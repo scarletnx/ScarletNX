@@ -5,9 +5,10 @@
    refuses an event id that is empty, too long or has a character past 0-9, a-z and _, and leaves the report then;
    a save starts the report's buffer again (de 00 00, or nothing in a buffer under 3 bytes); and SDK 20 lets 900 saves
    through in any 90 minutes, a save past them succeeding with the report left as it is. Then a 32-bit game's table:
-   the six hooks for the 32-bit SDK read and none for another, and Save on that SDK's report of 4-byte fields. Then
-   AddSessionId for the SDKs read from 10: the SDK's own PlayReport::Add of 8 zero bytes under the key, below the
-   caller's stack, its Result given back and the stack as it was */
+   the six hooks for the 32-bit SDKs read and none for another, Save on those SDKs' report of 4-byte fields, with
+   10.6.0's limit, and 10.6.0's AddSessionId below r13. Then AddSessionId for the SDKs read from 10: the SDK's own
+   PlayReport::Add of 8 zero bytes under the key, below the caller's stack, its Result given back and the stack as it
+   was */
 #include "nx/nn/prepo.c"
 #include "nn/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
 #include <stdio.h>
@@ -50,12 +51,20 @@ static struct {
     u64 fn, a[4], sp, id;
 } added;
 u64 kernel_find_symbol_exact(const char* name) { return !strcmp(name, PREPO_SYM_ADD_ID) ? ADD_AT : 0; }
+/* a 32-bit game's registers, the module set while the test plays one */
+static SnxArmModule module32;
+const SnxArmModule* g_arm_mod;
+static SnxArmCPU* test_arm;
+SnxArmCPU* arm_cpu(CPU* c) { return (void)c, test_arm; }
 void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     added.calls++;
     added.fn = fn, added.a[0] = a0, added.a[1] = a1, added.a[2] = a2, added.a[3] = a3;
-    added.sp = c->x[31];
+    added.sp = g_arm_mod ? test_arm->r[13] : c->x[31];
     added.id = snx_ld_le64(c->mem + a2);
-    c->x[0] = 0x2a81; /* a Result of the SDK's Add, which AddSessionId hands on */
+    if (g_arm_mod)
+        test_arm->r[0] = 0x2a81, c->x[0] = 0xbad0bad0ull; /* a 32-bit Add's Result is in r0, nothing in x0 */
+    else
+        c->x[0] = 0x2a81; /* a Result of the SDK's Add, which AddSessionId hands on */
 }
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
@@ -167,9 +176,9 @@ int main(void) {
                           &first) >= 0);
     }
 
-    /* a 32-bit game: the six hooks hold for the 32-bit SDKs read (0.12.16 and 4.4.0), and none for a module of
-       another SDK, one between them or an unknown one. Save there: the report's fields are 4 bytes each, at 0x20,
-       0x24 and 0x28 */
+    /* a 32-bit game: the six hooks hold for the 32-bit SDKs read (0.12.16, 4.4.0 and 10.6.0), and none for a module
+       of another SDK, one between them or an unknown one. Save there: the report's fields are 4 bytes each, at 0x20,
+       0x24 and 0x28, and 10.6.0's has the limit */
     {
         static const char* const all[6] = {save[0],
                                            save[1],
@@ -180,7 +189,8 @@ int main(void) {
         static SnxArmCPU a;
         u32 versions[HOOK_KEYS] = {0};
         a.mem = mem, a.mem_size = sizeof mem;
-        CHECK(HOOK32_COUNT == 12);
+        test_arm = &a;
+        CHECK(HOOK32_COUNT == 19);
         for (int i = 0; i < 6; i++) {
             versions[HOOK_SDK] = 0;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
@@ -188,6 +198,10 @@ int main(void) {
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
             versions[HOOK_SDK] = 0x040300;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x090300;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x0a0600;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x040400;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x000c10;
@@ -228,6 +242,50 @@ int main(void) {
             a.r[0] = 0x200, a.r[14] = 0x1234;
             hook32_fn[k](&a);
             CHECK(a.r[0] == 0 && snx_ld_le32(mem + 0x200) == 0 && mem[0x204] == 0xee);
+        }
+        /* 10.6.0's Save: the ring of 900, as SDK 9 on's, before the event id; past it success, the report as it was */
+        versions[HOOK_SDK] = 0x0a0600;
+        for (int user = 0; user < 2; user++) {
+            int k = hook_select(&hook32_table, save[user], versions, &first);
+            CHECK(!strcmp(hook32_handler[k], user ? "nnprepo_save_user_limited32" : "nnprepo_save_limited32"));
+            CHECK(strstr(hook32_layouts[k], "nn::prepo::PlayReport32 of line"));
+            g_hle.prepo = (HlePrepo){0};
+            for (int i = 0; i <= 901; i++) {
+                memset(mem + REPORT, 0xee, 0x40);
+                strcpy((char*)mem + REPORT, i == 901 ? "Upper" : "event_1");
+                snx_st_le32(mem + REPORT + 0x20, BUFFER);
+                snx_st_le32(mem + REPORT + 0x24, 0x100);
+                snx_st_le32(mem + REPORT + 0x28, 10);
+                mem[BUFFER] = 0xee;
+                a.r[0] = REPORT, a.r[1] = 0x200, a.r[14] = 0x1234;
+                hook32_fn[k](&a);
+                CHECK(a.r[0] == 0 && a.r[15] == 0x1234);
+                if (i < 900)
+                    CHECK(mem[BUFFER] == 0xde && snx_ld_le32(mem + REPORT + 0x28) == 3);
+                else /* past the limit, the bad id too: the report left */
+                    CHECK(mem[BUFFER] == 0xee && snx_ld_le32(mem + REPORT + 0x28) == 10);
+                test_ns += 1000000000ull;
+            }
+            test_ns += 5400ull * 1000000000ull;
+        }
+        /* 10.6.0's AddSessionId: the id's 8 zero bytes below r13, 16-aligned, r13 there during the SDK's Add and back
+           after it, the key in r1 and the Result from r0 */
+        {
+            int k = hook_select(&hook32_table, "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc", versions, &first);
+            CHECK(k >= 0 && !strcmp(hook32_handler[k], "nnprepo_add_session_id"));
+            g_arm_mod = &module32;
+            memset(mem + 0x7c0, 0xee, 0x40);
+            added.calls = 0;
+            a.r[0] = REPORT, a.r[1] = 0x200, a.r[13] = 0x804, a.r[14] = 0x1234;
+            hook32_fn[k](&a);
+            CHECK(added.calls == 1 && added.fn == ADD_AT && added.a[0] == REPORT && added.a[1] == 0x200);
+            CHECK(added.a[2] == 0x7f0 && added.sp == 0x7f0 && added.id == 0 && mem[0x7f8] == 0xee &&
+                  mem[0x7ef] == 0xee);
+            CHECK(a.r[0] == 0x2a81 && a.r[13] == 0x804 && a.r[15] == 0x1234);
+            versions[HOOK_SDK] = 0x040400; /* none in 4.4.0, which has no AddSessionId */
+            CHECK(hook_select(&hook32_table, "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc", versions, &first) ==
+                  -2);
+            g_arm_mod = NULL;
         }
     }
 

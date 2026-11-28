@@ -12,10 +12,10 @@
    that reaches the server stops the game in sm, which names it (hle/services/sm.c). Its handles
    have bit 63 set, which no guest address has, so a handle tells which side made it.
 
-   A 32-bit game (g_arm_mod) calls the same handlers through its own declarations (fs.hook's a32). What differs there
-   is in four places: a size_t the game reads back is 4 bytes (put_size), a handle is 4 bytes with bit 0 set, which
-   no pointer to the SDK's accessor has (handle_make, handle_parts), and the SDK's own code runs from the hooked
-   function the thread is in (sdk_own).
+   A 32-bit game (g_arm_mod) calls the same handlers through its own declarations (fs.hook's a32). What differs there:
+   a size_t the game reads back is 4 bytes (put_size), a handle is 4 bytes with bit 0 set, which no pointer to the
+   SDK's accessor has (handle_make, handle_parts; the cache storage list's, list_handle), Commit's names are an array
+   of 4-byte pointers, and the SDK's own code runs from the hooked function the thread is in (sdk_own).
 
    Mount kinds here: the game's RomFS (MountRom) and an add-on content's, read through fs.c's images, and the
    account's save (also read only), the device's save, cache storage, temporary storage and the SD card, on the host
@@ -1779,7 +1779,9 @@ u32 nnfs_commit_names(CPU* c, u64 names, i32 count) {
     if ((u32)count > COMMIT_NAMES_MAX) return done("Commit", R_COMMIT_NAME_COUNT);
     pm_lock(&g_nnfs.lock);
     for (i32 k = 0; k < count; k++) {
-        u64 name = snx_ld_le64(hook_host(c, names + 8 * (u64)k));
+        /* the names' array: a pointer each, 4 bytes in a 32-bit game */
+        u64 name =
+            g_arm_mod ? snx_ld_le32(hook_host(c, names + 4 * (u64)k)) : snx_ld_le64(hook_host(c, names + 8 * (u64)k));
         m[k] = mount_named(name ? gstr(c, name) : NULL);
         if (m[k] < 0) {
             pm_unlock(&g_nnfs.lock);
@@ -1796,6 +1798,10 @@ u32 nnfs_commit_names(CPU* c, u64 names, i32 count) {
    mounted (fs_save_root), and these answer as the runtime's am and fs services do */
 
 #define LIST_HANDLE (TAG_DIR | 0xfffffff0u) /* the native cache storage list: generation 0, which no directory has */
+/* a 32-bit game's, whose CacheStorageListHandle is one pointer of 4 bytes: a directory's handle of the last index at
+   generation 0, which no directory has either */
+#define LIST_HANDLE32 (H32_NATIVE | H32_DIR | 0x3ffu << 2)
+static u64 list_handle(void) { return g_arm_mod ? LIST_HANDLE32 : LIST_HANDLE; }
 
 u32 nnfs_ensure_save_data(CPU* c, u64 uid) {
     (void)c, (void)uid;
@@ -1849,17 +1855,17 @@ u32 nnfs_get_cache_storage_size(CPU* c, u64 size, u64 journal_size, i32 index) {
 /* the list of cache storages, which the file system service's save data reader gives none of */
 u32 nnfs_open_cache_storage_list(CPU* c, u64 handle) {
     if (!handle) return done("OpenCacheStorageList", R_NULL_ARGUMENT);
-    put_u64(c, handle, LIST_HANDLE);
+    put_handle(c, handle, list_handle());
     return 0;
 }
 u32 nnfs_read_cache_storage_list(CPU* c, u64 count, u64 infos, u64 h, i32 max) {
-    if (h != LIST_HANDLE) return (u32)sdk_own(c, SYM_READ_CACHE_LIST);
+    if (h != list_handle()) return (u32)sdk_own(c, SYM_READ_CACHE_LIST);
     u32 r = max < 0 ? R_NEGATIVE_COUNT : !count || !infos ? R_NULL_ARGUMENT : 0;
     if (!r) put_u32(c, count, 0);
     return done("ReadCacheStorageList", r);
 }
 void nnfs_close_cache_storage_list(CPU* c, u64 h) {
-    if (h != LIST_HANDLE) sdk_own(c, SYM_CLOSE_CACHE_LIST);
+    if (h != list_handle()) sdk_own(c, SYM_CLOSE_CACHE_LIST);
 }
 
 /* ---- the access log, the SD card and the host PC's file system */

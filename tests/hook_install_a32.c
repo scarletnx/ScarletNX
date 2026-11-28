@@ -299,7 +299,8 @@ int main(void) {
     hook_unread_text(text, sizeof text);
     assert(!strcmp(
         text, "This 32-bit game's SDK is 3.0.1 (module sdk) and the runtime's declarations for a 32-bit game were "
-              "read in SDKs 0.12.16 and 4.4.0 alone, so 3 of its SDK functions run their own code (marked 2, second "
+              "read in SDKs 0.12.16, 4.4.0 and 10.6.0 alone, so 3 of its SDK functions run their own code (marked 2, "
+              "second "
               "1), which "
               "needs services the runtime answers only natively. A 64-bit update of the game, if it has one, "
               "plays; for this version, an SDK of 3.0.1 has to be read (issue #2242)"));

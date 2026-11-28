@@ -696,11 +696,21 @@ int main(int argc, char** argv) {
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    /* each for the 32-bit SDKs read, a group each: the 44 of 0.12.16, and those and 11 more in 4.4.0, the two with an
-       int64_t of their own under its 32-bit symbol (x) */
-    CHECK(HOOK32_COUNT == 99 && hook32_read_count(1) == 44 && hook32_read_count(2) == 55);
-    for (int i = 0; i < HOOK32_COUNT; i++)
-        CHECK(hook32_read_group(i) && (hook32_read_group(i) == 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
+    /* each for the 32-bit SDKs read, a group each: the 44 of 0.12.16; those and 11 more in 4.4.0, the two with an
+       int64_t of their own under its 32-bit symbol (x); and 4.4.0's and 20 more in 10.6.0, five of them under their
+       32-bit symbol (j and x) and the cache storage list's two with its handle of 4 bytes */
+    int only_1060 = 0;
+    CHECK(HOOK32_COUNT == 174 && hook32_read_count(1) == 44 && hook32_read_count(2) == 55 &&
+          hook32_read_count(3) == 75);
+    for (int i = 0; i < HOOK32_COUNT; i++) {
+        CHECK(hook32_read_group(i) && (hook32_read_group(i) >= 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
+        CHECK(hook32_read_group(i) != 2 || hook32_read_entry(hook32_symbol[i], 3) >= 0); /* every one of 4.4.0's */
+        if (hook32_read_group(i) == 3 && hook32_read_entry(hook32_symbol[i], 2) < 0) only_1060++;
+    }
+    CHECK(only_1060 == 20);
+    CHECK(hook32_read_entry("_ZN2nn2fs8MountRomEPKciPvj", 3) >= 0 &&
+          hook32_read_entry("_ZN2nn2fs18CreateCacheStorageEixx", 3) >= 0 &&
+          hook32_read_entry("_ZN2nn2fs8MountRomEPKciPvm", 3) == -1);
     CHECK(hook32_read_entry("_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidExx", 2) >= 0 &&
           hook32_read_entry("_ZN2nn2fs15GetSaveDataSizeEPxS1_RKNS_7account3UidE", 2) >= 0 &&
           hook32_read_entry("_ZN2nn2fs17MountCacheStorageEPKc", 1) == -1);
@@ -766,6 +776,43 @@ int main(int argc, char** argv) {
     CHECK(mount_named("ng") >= 0 && mount_root(mount_named("ng")) == sd_root);
     call32("_ZN2nn2fs7UnmountEPKc", NAME, 0, 0, 0, 0, 0, 0);
     sd_there = 0;
+    /* 10.6.0's Commit of several names: an array of 4-byte pointers, each native mount committed, and a name the
+       native layer did not mount the function's own code for the whole call */
+    {
+        unsigned runs32 = own_runs32;
+        save_given = 1;
+        text(NAME, "deviceSave");
+        CHECK(call32("_ZN2nn2fs19MountDeviceSaveDataEPKc", NAME, 0, 0, 0, 0, 0, 0) == 0);
+        text(OTHER, "other");
+        snx_st_le32(mem + NAMES, NAME), snx_st_le32(mem + NAMES + 4, OTHER);
+        committed = NULL;
+        CHECK(call32("_ZN2nn2fs6CommitEPKPKci", NAMES, 1, 0, 0, 0, 0, 0) == 0 && committed == save_root);
+        committed = NULL;
+        CHECK(call32("_ZN2nn2fs6CommitEPKPKci", NAMES, 2, 0, 0, 0, 0, 0) == 0x78 && own_runs32 == runs32 + 1 &&
+              committed == NULL);
+        call32("_ZN2nn2fs7UnmountEPKc", NAME, 0, 0, 0, 0, 0, 0);
+        save_given = -1;
+    }
+    /* 10.6.0's cache storage list: its handle one pointer of 4 bytes, bit 0 set as a native handle's and no
+       directory's, the 4 after it left; the list read empty and closed with nothing of the SDK's run, and an even
+       handle, the SDK's, its own code */
+    {
+        unsigned runs32 = own_runs32;
+        u32 list;
+        outs();
+        CHECK(call32("_ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE", RESULT, 0, 0, 0, 0, 0, 0) == 0);
+        list = snx_ld_le32(mem + RESULT);
+        CHECK((list & 1) && mem[RESULT + 4] == 0xee && dir_of(list) < 0 && file_of(list) < 0);
+        snx_st_le32(mem + 0x600, 7);
+        CHECK(call32("_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi", 0x600,
+                     0x680, list, 4, 0, 0, 0) == 0 &&
+              snx_ld_le32(mem + 0x600) == 0);
+        call32("_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE", list, 0, 0, 0, 0, 0, 0);
+        CHECK(own_runs32 == runs32);
+        CHECK(call32("_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi", 0x600,
+                     0x680, 0x5000, 4, 0, 0, 0) == 0x78 &&
+              own_runs32 == runs32 + 1);
+    }
     g_arm_mod = NULL;
 
     /* IsMounted: a native mount's name is mounted, with nothing of the SDK's run, as its own table (which answers 0

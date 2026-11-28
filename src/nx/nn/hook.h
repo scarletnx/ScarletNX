@@ -71,9 +71,9 @@ void hook_unread_text(char* out, size_t n);
 /* The same stop with the settings turning the hooks of family off: "" unless hook_family_off(family), else a sentence
    with the setting that does, its value and its default */
 void hook_off_text(char* out, size_t n, const char* family);
-/* the SDKs the declarations for a 32-bit game were read in, 0.12.16 and 4.4.0, the 32-bit SDKs read: they hold for
-   those alone (a32 @version), the oldest first */
-#define HOOK_A32_READ_SDKS {0u << 16 | 12u << 8 | 16u, 4u << 16 | 4u << 8 | 0u}
+/* the SDKs the declarations for a 32-bit game were read in, 0.12.16, 4.4.0 and 10.6.0, the 32-bit SDKs read: they hold
+   for those alone (a32 @version), the oldest first */
+#define HOOK_A32_READ_SDKS {0u << 16 | 12u << 8 | 16u, 4u << 16 | 4u << 8 | 0u, 10u << 16 | 6u << 8 | 0u}
 /* the most families HostHook.unread counts */
 #define HOOK_FAMILY_SLOTS 64
 
