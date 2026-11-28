@@ -3318,13 +3318,22 @@ static VkSampler tex_bind_sampler(const TexRes* x, const ShTex* st, int num, con
    work (cmd.c's frame_check): one game's race made 55 a present, and an entry kept only for its submission had every
    constant buffer looked up again. A submission's landing changes nothing a kept entry binds without telling it: a
    result lands or is published with a GPU-side write's stamp (gpu_mem_written_*), which gpu_mem_dirty_since sees, and
-   one added since the entry moves g_pend_any.adds */
+   one added since the entry moves g_pend_any.adds.
+
+   A result added anywhere moves that count, and with it every entry of both threads failed its check with no lock
+   (draw_batches=2): one game's vertex lookups were kept so 20% of the time. So an entry also keeps the generation of
+   its own range by GPU address (rgen: addr_gens.h's ADDR_GENS_GPU, which pending_pages.c moves for each GPU page that
+   gains or loses a result of g_pend_any, the in-place writes included, and for each mapping change). The entry is made
+   under the same take of the share lock as its pending checks, and results are added only under that lock, so an
+   unchanged sum tells that no result came over its bytes since. A result taken away also moves it: a miss, never a
+   wrong hit */
 enum { CB_SUBMIT, CB_FRAME, CB_OWN };
 typedef struct {
     u64 a, gw, adds;
     u64 made; /* the submission it was made in: its life with CB_SUBMIT */
     u64 at;   /* CB_FRAME: vk_frame_id() then; CB_OWN: the own buffer's number (vk_buf_own_got) */
     u32 sz, epoch;
+    u32 rgen, rgen_ok; /* the generation of [a, a + sz) by GPU address when it was made, and whether it was read */
     u32 life, own; /* CB_*, and with CB_OWN the buffer cache's entry */
     u64 drops, touched; /* CB_OWN: vk_buf_own_drops() when the token last held, and the present it was touched in */
     VkBuffer buf;
@@ -3349,6 +3358,16 @@ static struct {
 static u64 cb_adds(void) {
     return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) +
            vk_uma_writes(); /* the writes in place, which no other count has */
+}
+/* e's range's generation by GPU address, taken where its pending checks were made (under the share lock with
+   draw_batches=2). A table that overflowed counts pages no GPU page shows: no generation then */
+static void cb_rgen_take(CbEntry* e) {
+    e->rgen_ok = e->a && !g_pend_any.overflow && addr_gens_read(ADDR_GENS_GPU, e->a, e->sz, &e->rgen);
+}
+/* no result came over e's bytes since it was made: its range's generation holds (needs no lock) */
+static int cb_rgen_holds(const CbEntry* e) {
+    u32 g;
+    return e->rgen_ok && addr_gens_read(ADDR_GENS_GPU, e->a, e->sz, &g) && g == e->rgen;
 }
 /* e made now, binding what lives as life says. CB_OWN: what the buffer cache's last lookup bound, its own buffer or
    else something of the submission's */
@@ -3419,7 +3438,7 @@ static void cb_check(const CbEntry* e, u64 a, const u8* in, u32 n) {
 /* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no result added
    since (none can cover it, and only a write of its memory leaves the copy stale) */
 static int cb_kept(CbEntry* e, u64 a, u32 sz, int adds, u32 epoch) {
-    return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds()) &&
+    return a && e->a == a && e->epoch == epoch && e->sz >= sz && (!adds || e->adds == cb_adds() || cb_rgen_holds(e)) &&
            !gpu_mem_dirty_since(e->gw, a, sz) && cb_lives(e);
 }
 /* A draw's vertex and index buffers, kept for each thread (t_rc) by address as constant buffers are (cb_kept): a lookup
@@ -3455,6 +3474,7 @@ static int vin_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     const int got = vk_buf_get_input(gva, len, align, buf, off);
     if (got) {
         *e = (CbEntry){.a = gva, .adds = adds, .gw = gw, .sz = (u32)len, .epoch = epoch, .buf = *buf, .off = *off};
+        cb_rgen_take(e);
         cb_life(e, CB_OWN);
     }
     /* a binding over a pending result of any kind is that result's, for this draw only */
@@ -3552,7 +3572,12 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
            result is added */
         if (e->sz == sz) {
             e->adds = cb_adds();
-            if (x->a == a && x->sz == sz && x->buf == e->buf && x->off == e->off) x->adds = e->adds;
+            cb_rgen_take(e);
+            if (x->a == a && x->sz == sz && x->buf == e->buf && x->off == e->off) {
+                x->adds = e->adds;
+                x->rgen = e->rgen;
+                x->rgen_ok = e->rgen_ok;
+            }
         }
         if (grouped) vk_share_unlock();
         *buf = e->buf;
@@ -3570,6 +3595,8 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        (vk_uma_imports_dear) copies them here too: guest memory has their bytes once no write in place is
        pending over them (pending above), and the cache's checks and hash cost each constant buffer more than its copy */
     u64 cpu = 0, adds = cb_adds(), gw = gpu_mem_generation();
+    CbEntry rg = {.a = a, .sz = sz};
+    cb_rgen_take(&rg); /* with adds, under the take of the pending checks: the entry is made after it ends */
     u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
     if (a && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
         gmmu_run(a, sz, &cpu) == sz) {
@@ -3597,7 +3624,8 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
         e->a = 0;
         return 1;
     }
-    *e = (CbEntry){.a = a, .adds = adds, .gw = gw, .sz = sz, .epoch = epoch, .buf = *buf, .off = *off};
+    *e = (CbEntry){.a = a, .adds = adds, .gw = gw, .sz = sz, .epoch = epoch, .rgen = rg.rgen, .rgen_ok = rg.rgen_ok,
+                   .buf = *buf, .off = *off};
     cb_life(e, a ? life : CB_SUBMIT);
     if (a) {
         cb_check_note(e, a, NULL, 0, ws);
