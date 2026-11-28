@@ -3669,8 +3669,9 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
    field or a key word (vk_shader_get's mask) comes to mean something else, so that the records of an earlier build
    are dropped rather than made into pipelines and shaders of the wrong state. 7: a PipeKey holds the fragment
    module's specialization constants (fs_spec), which a record of 6 has nowhere: it would be made as a pipeline of the
-   default constants, whatever alpha function and origin its program was drawn with */
-#define PF_GUEST_VERSION 7
+   default constants, whatever alpha function and origin its program was drawn with. 8: raised with every other kept
+   cache's version, so that no record an earlier build wrote is read again */
+#define PF_GUEST_VERSION 8
 /* The file's key: whatever changes the SPIR-V translation makes or what a PipeKey means. First its guest part, which
    the PF_SOURCE and PF_PIPE records depend on (pf_open): the device; the features and limits the translator,
    vk_shader_get and pipe_create consult; the sizes of what those records hold whole. Then the rest, which only the

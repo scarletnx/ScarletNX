@@ -24,6 +24,8 @@ function(snx_ship_walk_hash out)
         string(SHA256 hash "${text}")
         string(APPEND all "${hash}")
     endforeach()
+    # raised with every other kept cache's version, so that every game's .vkscan starts over once
+    string(APPEND all "epoch 2")
     string(SHA256 all "${all}")
     string(SUBSTRING "${all}" 0 16 all)
     set(${out} "${all}" PARENT_SCOPE)

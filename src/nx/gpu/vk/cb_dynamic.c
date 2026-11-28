@@ -13,7 +13,7 @@
 
 VkCbDynamic g_cb_dynamic;
 
-#define CB_MOVES_MAGIC "snx-cbmoves 1"
+#define CB_MOVES_MAGIC "snx-cbmoves 2"
 
 typedef struct {
     u32 set, slot;
@@ -49,6 +49,11 @@ static u32 cb_moves_read(CbMove* m, u32 cap) {
             if (set < 2 && slot < VK_CB_DYNAMIC_SLOTS && (moves || dynamic))
                 m[n++] = (CbMove){set, slot, (u64)moves, dynamic != 0};
         }
+    } else if (size) {
+        const size_t line = strcspn(text, "\n");
+        LOG("vulkan: %s begins \"%.*s\", not this build's \"%s\": the last run's moves are not used, and the file is "
+            "written again at the end of this run\n",
+            g_cb_dynamic.path, (int)(line < 40 ? line : 40), text, CB_MOVES_MAGIC);
     }
     free(text);
     return n;
