@@ -270,26 +270,30 @@ void vk_surf_changed(u64 gva) { surf_changed(gva); }
 static _Atomic u32 g_note_epoch;
 static void note_changed(void) { atomic_fetch_add_explicit(&g_note_epoch, 1, memory_order_release); }
 #define NOTE_MEMO 64
-static _Thread_local struct {
+/* by draw thread (vk_render_slot), not thread-local: every thread's thread-local storage comes out of its stack on
+   glibc (tests/runtime_tls.py), and only the draw threads use it. The prep thread keeps none (gpu_spec) */
+typedef struct {
     const Surf* s;
     u64 gen;
     u32 present, epoch, surf_epoch;
-} t_note[NOTE_MEMO];
+} NoteMemo;
+static NoteMemo g_note[VK_RC_SLOTS][NOTE_MEMO];
 static u32 note_at(const Surf* s) { return (u32)(((uintptr_t)s >> 6 ^ (uintptr_t)s >> 12) & (NOTE_MEMO - 1)); }
 static void note_keep(const Surf* s, u64 gen) {
     if (!vk_share_on() || gpu_spec()) return;
-    t_note[note_at(s)] = (typeof(t_note[0])){.s = s,
-                                             .gen = gen,
-                                             .present = g_vk_present,
-                                             .epoch = atomic_load_explicit(&g_note_epoch, memory_order_acquire),
-                                             .surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire)};
+    g_note[vk_render_slot()][note_at(s)] =
+        (NoteMemo){.s = s,
+                   .gen = gen,
+                   .present = g_vk_present,
+                   .epoch = atomic_load_explicit(&g_note_epoch, memory_order_acquire),
+                   .surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire)};
 }
 int vk_rt_note_read_plain(const Surf* s) {
-    const u32 i = note_at(s);
-    if (t_note[i].s != s || t_note[i].present != g_vk_present || gpu_spec() ||
-        t_note[i].gen != gpu_mem_generation() ||
-        t_note[i].epoch != atomic_load_explicit(&g_note_epoch, memory_order_acquire) ||
-        t_note[i].surf_epoch != atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire) ||
+    if (gpu_spec()) return 0;
+    const NoteMemo* m = &g_note[vk_render_slot()][note_at(s)];
+    if (m->s != s || m->present != g_vk_present || m->gen != gpu_mem_generation() ||
+        m->epoch != atomic_load_explicit(&g_note_epoch, memory_order_acquire) ||
+        m->surf_epoch != atomic_load_explicit(&g_vk_surf_epoch, memory_order_acquire) ||
         atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))
         return 0;
     vk_shared_note(2);

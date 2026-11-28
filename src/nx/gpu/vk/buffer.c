@@ -385,6 +385,9 @@ typedef struct GfxOut {
        guest memory without them until each lands (out_rebase) */
     int composed;
     u32 wseen; /* the write tracking clock before its input was read (vk_ww_now): copyable_span skips comparing pages since */
+    /* a merge with its landing kept (gfx_rebase) put guest bytes of then into buf and kept org: org no longer tells
+       the bytes buf holds, so a write since wseen makes it land */
+    int kept_merged;
     /* of a logged result, its writers' logs, each holding a reference: part of log gives the bytes that writer wrote
        of [at, at + len) */
     struct OutLog {
@@ -594,6 +597,11 @@ static VkPipelineStageFlags2 out_stages(void) {
 static VkAccessFlags2 out_access(void) {
     return VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
            (g_vk.has_xfb ? VK_ACCESS_2_TRANSFORM_FEEDBACK_WRITE_BIT_EXT : 0);
+}
+/* what a merge into a result's buffer waits for before it writes there: its writers, and the draws before it that
+   read the buffer in place, also as vertices or indices (out_absorb) */
+static VkPipelineStageFlags2 merge_src_stages(void) {
+    return out_stages() | VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
 }
 /* an output with its page lists and its original bytes after it, in one block */
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
@@ -1441,7 +1449,8 @@ static int out_copyable(const GfxOut* o, u64 lo, u64 hi) {
     if (o->frame_id + 1 < vk_frame_id() || !host) return 0;
     int written = vk_written_since(host, hi - lo, o->wseen);
     if (written == 0) return 1;
-    if (o->initial || !o->org) return 0; /* the baseline is still being produced by the GPU, or there is none */
+    /* the baseline is still being produced by the GPU, or there is none, or buf no longer holds it */
+    if (o->initial || !o->org || o->kept_merged) return 0;
     const u8* untracked = gmem_ptr_untracked(lo, hi - lo);
     if (untracked) g_checks.compares++;
     return org_holds(host, untracked, o->org + (lo - o->addr), hi - lo, o->wseen, written);
@@ -1470,7 +1479,8 @@ static void copyable_span(void* user, u64 at, u64 from, u64 n) {
     }
     int written = vk_written_since(host, n, c->o->wseen);
     if (written == 0) return;
-    if (c->o->initial || !c->o->org) { /* no original bytes to tell the guest's writes by: it lands first */
+    /* no original bytes to tell the guest's writes by, or buf no longer holds them: it lands first */
+    if (c->o->initial || !c->o->org || c->o->kept_merged) {
         c->ok = 0;
         return;
     }
@@ -1787,6 +1797,9 @@ static int baseline_on_gpu(const GfxOut* o) {
    what its landing gives guest memory, which writes only those words, from its copy back: the merge changes the
    other words of its buffer only, so its landing stays as recorded and needs no take */
 static int gfx_rebase_logged(GfxOut* o) {
+    /* a composed one holds earlier pending results' bytes in the words no log marks, which guest memory does not hold
+       until they land: the merge would put guest memory there */
+    if (o->composed) return 0;
     if (o->cpu == ~0ull || o->keep || o->no_input || (o->off & 3) || (o->size & 3) || !o->nlogs ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
         range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
@@ -1800,7 +1813,7 @@ static int gfx_rebase_logged(GfxOut* o) {
     o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
     read_untracked(o->addr, p, o->size);
     vk_render_end();
-    copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    copy_barrier(merge_src_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     for (u32 k = 0; k < o->nlogs; k++) {
         const struct OutLog* w = &o->logs[k];
@@ -1828,6 +1841,9 @@ static int gfx_rebase(GfxOut* o) {
        as before, which costs a submit but never the order */
     if (vk_render_slot()) return 0;
     if (!o->org) return gfx_rebase_logged(o);
+    /* after a merge with its landing kept, buf holds guest bytes of then where org says the draw's: another merge would
+       take them for the draw's, and a byte the CPU wrote back to its original value since would keep the old one */
+    if (o->kept_merged) return 0;
     const int gpu_base = o->initial && baseline_on_gpu(o);
     if (o->cpu == ~0ull || !o->org || (o->initial && !gpu_base) || o->keep || o->no_input || (o->off & 3) ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
@@ -1859,7 +1875,7 @@ static int gfx_rebase(GfxOut* o) {
         VkBufferCopy copy = {o->initial_off, in_off, o->size};
         rec_CmdCopyBuffer(vk_cmd(), o->initial_buf, in, 1, &copy);
     }
-    copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+    copy_barrier(merge_src_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     /* the merge reads its input at the submission, so the guest bytes come after it is recorded: a merge that fails
        leaves o's original bytes as they were, which landing o still needs */
@@ -1871,9 +1887,10 @@ static int gfx_rebase(GfxOut* o) {
        that the CPU writes only (a BAR heap), never one that it reads back. A kept landing keeps org: guest memory
        goes into the input alone */
     o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
-    if (landing_kept)
+    if (landing_kept) {
         read_untracked(o->addr, p + gap, o->size);
-    else {
+        o->kept_merged = 1;
+    } else {
         read_untracked(o->addr, o->org, o->size);
         memcpy(p + gap, o->org, o->size);
         o->initial = NULL; /* org is the new baseline: guest memory as the merge read it */
@@ -2227,6 +2244,9 @@ static void ww_mark_range(u64 o, u64 e) {
 #define WW_CHG_N 32
 static WwRange g_wchg[WW_CHG_N];
 static _Atomic int g_wchg_n; /* atomic: read without the lock to skip it */
+/* nonzero from before ww_take_changed empties the list to after its last mark: a reader with no share lock
+   (vk_ww_take_plain) that sees the list empty meanwhile does not yet see the stamps of what it took */
+static _Atomic u32 g_wchg_busy;
 static PMutex g_wchg_lock = PMUTEX_INIT;
 void vk_mem_changed(u64 cpu, u64 len) {
     if (cpu >= AS_SIZE || !len) return;
@@ -2249,10 +2269,13 @@ static void ww_take_changed(void) {
     pm_lock(&g_wchg_lock);
     int n = atomic_load_explicit(&g_wchg_n, memory_order_relaxed);
     memcpy(c, g_wchg, (size_t)n * sizeof *c);
-    atomic_store_explicit(&g_wchg_n, 0, memory_order_relaxed);
+    /* busy before the list reads empty: a reader that sees it empty (acquire) then sees busy too */
+    atomic_fetch_add_explicit(&g_wchg_busy, 1, memory_order_relaxed);
+    atomic_store_explicit(&g_wchg_n, 0, memory_order_release);
     pm_unlock(&g_wchg_lock);
     if (n) atomic_fetch_add_explicit(&g_wclock, 1, memory_order_relaxed); /* what it marks is newer than every baseline taken before (vk_written_since) */
     for (int i = 0; i < n; i++) ww_mark_range(c[i].a, c[i].e);
+    atomic_fetch_sub_explicit(&g_wchg_busy, 1, memory_order_release); /* after the stamps: a reader that sees 0 sees them */
 }
 
 /* Scans, on the scanner thread as soon as an epoch starts and on the checks' thread for what it hasn't scanned yet.
@@ -2813,7 +2836,8 @@ int vk_written_quick(const u8* host, u64 len, u32 since) {
 int vk_ww_take_plain(const u8* host, u64 len) {
     /* nothing to take: the range's leaves taken in for this epoch already, no change noted, no alias and no import */
     if (ww_state() <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
-        ww_clock() == UINT32_MAX || atomic_load_explicit(&g_wchg_n, memory_order_acquire) || mem_alias_any())
+        ww_clock() == UINT32_MAX || atomic_load_explicit(&g_wchg_n, memory_order_acquire) ||
+        atomic_load_explicit(&g_wchg_busy, memory_order_acquire) || mem_alias_any())
         return 0;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
     if (vk_uma_import_in(o, o + len, &end) < o + len) return 0;

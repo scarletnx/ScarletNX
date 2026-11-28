@@ -63,8 +63,9 @@ static PMutex g_rlock = PMUTEX_INIT;
 static PCond g_rcv;
 static int g_rthread;
 /* the guest pages queued payloads cover, so a read or write that meets none (almost all) skips the queue: added when a
-   payload is queued, removed when it is written, both under vk_lock, and a mapping change drains the queue before any
-   translation changes (vkr_mapping_begin), so a payload loses the pages it gained */
+   payload is queued, removed when it is written, both under vk_lock, and a change of the GMMU performs the releases
+   whose payloads meet its range, with those before them, before their translation changes (vk_release_drain_gpu from
+   vkr_mapping_begin), so a payload loses the pages it gained */
 static PendPages g_rpages = {.also = &g_pend_blk};
 _Atomic u64 g_vk_release_forwards;
 
@@ -523,8 +524,8 @@ void vk_release_incr(u32 id) {
     r.id = id;
     release(&r);
 }
-/* Mapping changes hold vk_lock and drain the queue before changing translations.
-   Thus these translations name the backing that was present at enqueue time. */
+/* A change of the GMMU holds vk_lock and performs the releases whose payloads meet its range before it changes their
+   translation (vk_release_drain_gpu): a queued payload's translation names the backing it had when it was queued */
 /* A range a stream reads or writes, as the guest memory behind it: its runs (gmmu_run), each compared with a payload
    in a step. release_overlaps translated each page of the range again for every release queued, the payload's
    aliases through other GPU addresses: with a few hundred releases queued, a constant buffer read over a page that
