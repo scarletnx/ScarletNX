@@ -2975,7 +2975,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     if (!pixels) return c;
     if (guest && c->crop_gen != rt->wgen) {
         const int open = vk_render_begun();
-        if (!rt_copy_guest(rt, c, sw, sh)) return NULL; /* asked for again at its next use */
+        vk_stamp_runtime_begin(); /* the runtime's own work, as the copy below */
+        const int copied = rt_copy_guest(rt, c, sw, sh);
+        vk_stamp_runtime_end();
+        if (!copied) return NULL; /* asked for again at its next use */
         c->crop_gen = rt->wgen;
         g_vk_rt_copy_writes++;
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
@@ -2984,6 +2987,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     /* a copy is reused while the target's writes since it are the ones of draws that sampled it (vk_rt_copy_drawn) */
     if (c->crop_gen != rt->wgen && !(reuse && c->fb_gen == rt->wgen && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
         const int open = vk_render_begun();
+        /* the console's GPU reads the target's corner, or its bytes as another format, where they are: the copy is
+           the runtime's own work, left out of the reports' spans (stamp.c). 0.34 ms of the 13.7 ms a present a racing
+           game's GPU timer read in its race */
+        vk_stamp_runtime_begin();
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
         vk_surf_use(cb, rt, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -3005,6 +3012,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         r[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         rec_CmdCopyImage(cb, rt->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), c->img,
                          VK_LAYOUT(TRANSFER_DST_OPTIMAL), rt->f.stencil ? 2 : 1, r);
+        vk_stamp_runtime_end();
         c->crop_gen = rt->wgen;
         c->crop_epoch = epoch;
         c->fb_gen = rt->wgen;

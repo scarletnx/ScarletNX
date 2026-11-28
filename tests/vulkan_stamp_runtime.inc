@@ -3,7 +3,8 @@
 /* A game that sizes its frame by its GPU timer reads the span between two timestamp reports, and the reports leave out
    the runtime's own work on the graphics queue (stamp.c): what the console's GPU does not do, as it samples and draws
    guest memory where it is. Each of these, done between two reports, is a stretch left out, and none loses its mark:
-   a texture's upload, a drawn target taken into a texture and a target written back to memory. A racing game whose memory ran short read those as its own GPU time, lowered its render
+   a texture's upload, a drawn target taken into a texture, a target written back to memory, and a target's corner
+   copied for a smaller header. A racing game whose memory ran short read those as its own GPU time, lowered its render
    size, made every target again at the new size each frame, and never got out of it */
 #define STAMP_RT_GVA 0xCD0000000ull
 #define STAMP_RT_CPU (HEAP_BASE + 0x40C00000)
@@ -23,7 +24,8 @@ static void stamp_rt_tic(u32* tic, u64 gva, u32 w, u32 levels) {
 }
 
 static int check_stamp_runtime(void) {
-    const u64 up = STAMP_RT_GVA, take = STAMP_RT_GVA + 0x100000, back = STAMP_RT_GVA + 0x200000;
+    const u64 up = STAMP_RT_GVA, take = STAMP_RT_GVA + 0x100000, back = STAMP_RT_GVA + 0x200000,
+              corner = STAMP_RT_GVA + 0x300000;
     u64 marks, lost, ns, before;
     u32 tic[8];
     if (!g_vk.gfx_timestamp_bits || !g_vk.has_host_query_reset) {
@@ -77,6 +79,15 @@ static int check_stamp_runtime(void) {
     const u64 by_back = stamp_rt_marks() - before;
     vk_unlock();
     CHECK(by_back >= 1);
+    /* a target's corner read through a header 8 texels wide: a copy of it */
+    rt_clear(ch, corner, 16, 16, 0, 0);
+    stamp_rt_tic(tic, corner, 8, 1);
+    vk_lock();
+    before = stamp_rt_marks();
+    Surf* crop = vk_tex_from_tic(tic);
+    const u64 by_corner = stamp_rt_marks() - before;
+    vk_unlock();
+    CHECK(crop && crop->w == 8 && by_corner >= 1);
     /* the second report ends the span; no stretch lost its mark */
     vk_lock();
     const u64 last = vk_stamp_report(0);
@@ -89,6 +100,7 @@ static int check_stamp_runtime(void) {
            (unsigned long long)by_upload);
     printf(", a take %llu", (unsigned long long)by_take);
     printf(", a write-back %llu", (unsigned long long)by_back);
+    printf(", a corner's copy %llu", (unsigned long long)by_corner);
     printf("; %.3f ms of GPU time left out, no mark lost\n", (double)(ns - ns_before) / 1e6);
     free(ch);
     return 0;
