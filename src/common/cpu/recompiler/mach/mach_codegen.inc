@@ -312,9 +312,9 @@ static void glue_out(Unit* u) {
 #define poll_slow(u, resume)          region_glue((u), SGX_FN_POLL_SLOW, (long long)(resume), 0, 0)
 #define jtab_jump(u, k)               (glue_in((u), GLUE_DISPATCH), jtab_jump((u), (k)), glue_out(u))
 #define jtab_emit(u)                  (glue_in((u), GLUE_DISPATCH), jtab_emit(u), glue_out(u))
-#define mg_undef(u, address, word)    (glue_in((u), GLUE_TRAP), mg_undef((u), (address), (word)), glue_out(u))
-#define mg_svc(u, next, n, direct)    (glue_in((u), GLUE_TRAP), mg_svc((u), (next), (n), (direct)), glue_out(u))
-#define mg_brk(u, address, imm)       (glue_in((u), GLUE_TRAP), mg_brk((u), (address), (imm)), glue_out(u))
+#define mg_undef(u, address, word)    region_glue((u), SGX_FN_UNDEF, (long long)(address), 0, (SnxU64)(word))
+#define mg_svc(u, next, n, direct)    region_glue((u), SGX_FN_SVC, (long long)(next), (direct), (SnxU64)(n))
+#define mg_brk(u, address, imm)       region_glue((u), SGX_FN_BRK, (long long)(address), 0, (SnxU64)(imm))
 #define mg_entry(u, index, start)     region_glue((u), SGX_FN_ENTRY, (long long)(start), 0, (SnxU64)(index))
 #define mg_check(u, start, label)     region_glue((u), SGX_FN_CHECK, (long long)(start), (label), 0)
 #define mg_stale(u, index, given, s)  region_glue((u), SGX_FN_STALE, (long long)(s), (given), (SnxU64)(index))
@@ -549,7 +549,10 @@ enum {
     SGX_FN_POLL_SLOW,
     SGX_FN_TAILDYN_PC,
     SGX_FN_JMP,
-    SGX_FN_PINS
+    SGX_FN_PINS,
+    SGX_FN_UNDEF,
+    SGX_FN_SVC,
+    SGX_FN_BRK
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -618,6 +621,11 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 #endif
     case SGX_FN_JMP: (jmp)(u, i->disp); break;      /* to the label disp */
     case SGX_FN_PINS: pins(u, i->disp); break;      /* the selected pins loaded, or (disp) stored */
+    /* the traps: an undefined word (k0) at the address imm, SVC k0 that returns to imm (disp: called directly), and
+       BRK k0 at imm */
+    case SGX_FN_UNDEF: (mg_undef)(u, (SnxU64)i->imm, (SnxU32)i->kv[0]); break;
+    case SGX_FN_SVC: (mg_svc)(u, (SnxU64)i->imm, (unsigned)i->kv[0], i->disp); break;
+    case SGX_FN_BRK: (mg_brk)(u, (SnxU64)i->imm, (unsigned)i->kv[0]); break;
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
