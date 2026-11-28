@@ -1042,8 +1042,8 @@ static inline Surf* sh_vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32
 static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
     /* the shader's early return, asked before the take: fold_job and fold_asked are stored atomically, and failed and
        stage don't change once it is in its chain. A late answer counts one draw less, or warms one later */
-    if (!__atomic_load_n(&s->fold_job, __ATOMIC_RELAXED) &&
-        (__atomic_load_n(&s->fold_asked, __ATOMIC_RELAXED) || s->failed || s->stage != ST_FS))
+    if (!atomic_load_explicit(&s->fold_job, memory_order_relaxed) &&
+        (atomic_load_explicit(&s->fold_asked, memory_order_relaxed) || s->failed || s->stage != ST_FS))
         return;
     if (!vk_share_on()) {
         vk_shader_fold_draw(ds, s, gva, k);

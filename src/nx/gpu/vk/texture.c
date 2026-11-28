@@ -4647,7 +4647,7 @@ int g_vk_anisotropy;
 typedef struct {
     u32 tsc[8];
     int raise, integer;
-    VkSampler s;
+    _Atomic VkSampler s; /* stored last, with release: vk_sampler_kept reads it with no lock */
 } SamplerSlot;
 static SamplerSlot g_sampler_tab[SAMPLER_TAB];
 static u32 sampler_home(const u32* tsc, int raise, int integer) {
@@ -4659,7 +4659,7 @@ static u32 sampler_home(const u32* tsc, int raise, int integer) {
 VkSampler vk_sampler_kept(const u32* tsc, int raise, int integer) {
     u32 j = sampler_home(tsc, raise, integer);
     for (u32 probe = 0; probe < SAMPLER_TAB; probe++, j = (j + 1) & (SAMPLER_TAB - 1)) {
-        const VkSampler s = __atomic_load_n(&g_sampler_tab[j].s, __ATOMIC_ACQUIRE);
+        const VkSampler s = atomic_load_explicit(&g_sampler_tab[j].s, memory_order_acquire);
         if (!s) return VK_NULL_HANDLE;
         if (!memcmp(g_sampler_tab[j].tsc, tsc, 32) && g_sampler_tab[j].raise == raise &&
             g_sampler_tab[j].integer == integer)
@@ -4676,9 +4676,10 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     static u32 n, ncustom;
     static VkSampler first;
     u32 j = sampler_home(tsc, raise, integer);
-    for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
-    if (n >= MAX || tab[j].s) {
+    for (u32 probe = 0; probe < TAB && atomic_load_explicit(&tab[j].s, memory_order_relaxed); probe++, j = (j + 1) & (TAB - 1))
+        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer)
+            return atomic_load_explicit(&tab[j].s, memory_order_relaxed);
+    if (n >= MAX || atomic_load_explicit(&tab[j].s, memory_order_relaxed)) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
     }
@@ -4771,7 +4772,7 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     memcpy(tab[j].tsc, tsc, 32);
     tab[j].raise = raise;
     tab[j].integer = integer;
-    __atomic_store_n(&tab[j].s, s, __ATOMIC_RELEASE); /* last: vk_sampler_kept reads the key after it */
+    atomic_store_explicit(&tab[j].s, s, memory_order_release); /* last: vk_sampler_kept reads the key after it */
     ncustom += custom;
     if (!n++) first = s;
     return s;
