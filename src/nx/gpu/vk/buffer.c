@@ -3043,17 +3043,42 @@ typedef struct {
     u64 cpu, len; /* guest memory [cpu, cpu + len) */
     int kind;
     VkOwnRes* res; /* BACK_OWNER: the owner holding it there (no reference); BACK_NEW: one made for it (one) */
-    u64 res_off;   /* where the part's first byte is in res */
+    u64 res_off;   /* where the part's first byte is in res: BACK_NEW, from the start of its first page */
     VkBuffer buf;  /* BACK_IMPORT: the import holding it, and the part's first byte's offset in it */
     u64 off;
 } BackPart;
 #define BACK_PARTS 16
 static u64 g_back_results, g_back_bytes, g_back_owners;
+/* the end of a BACK_NEW part's owner: the end of the part's last page */
+static u64 back_new_end(const BackPart* q) { return (q->cpu + q->len + 0xFFF) & ~0xFFFull; }
+/* whether [cpu, cpu + len), bytes past a binding's edge in a page that the binding shares, can go into the owner made
+   for the binding's pages (back_parts). gva is their GPU address. Nothing must hold them (an import or an owner),
+   and nothing must have work pending over them, as back_can asks of the binding */
+static int back_edge_free(u64 gva, u64 cpu, u64 len) {
+    OwnRange r[1];
+    u64 c = 0;
+    int held = 0;
+    return gmmu_run(gva, len, &c) == len && c == cpu && vk_uma_import_part(cpu, len, &held) == len && !held &&
+           !(own_any() && own_lookup(cpu, len, r, 1)) &&
+           !(atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(gva, len)) &&
+           !(atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) &&
+           !vk_release_pending(gva, len) && !vk_mirror_pending(gva, len) && !vk_mirror_holds(gva, len);
+}
 /* guest memory [cpu, cpu + len) a part at a time into p (*n of them): an import's where one holds the bytes, an
-   owner's where one does, and where neither does an import made now (make) or else whole pages that an owner made
-   for them can take, as keep_new's (a page shared with the CPU's bytes would trap at each of their writes). 0 when
-   a part can't be any of these, isn't at a multiple of 4 bytes (wlog_merge.comp's words) or there are more parts */
-static int back_parts(u64 cpu, u64 len, int make, BackPart* p, u32* n) {
+   owner's where one does, and where neither does an import made now (make) or else an owner made for the part's
+   whole pages, as keep_new's (a page shared with the CPU's bytes would trap at each of their writes). gva is the GPU
+   address of cpu. The owner takes memory's bytes for the part's pages, and the merge writes only the part's bytes
+   into it.
+
+   A part can begin or end inside a page only at the binding's own edges, and only when nothing holds the rest of
+   that page (back_edge_free). One game binds a 720 by 360 target's 1036800 bytes (253 pages and 512 bytes) for its
+   compute each frame. While a target was published as it was parked, its owner held the range. Without that, each
+   frame's result landed on the CPU from where the shader wrote it: about 0.75 MB a frame, read over the bus at
+   190 MB/s, 4 ms a frame under vk_lock. The frame rate fell from 61 to 45.
+
+   0 when a part can't be any of these, isn't at a multiple of 4 bytes (wlog_merge.comp's words) or there are more
+   parts */
+static int back_parts(u64 gva, u64 cpu, u64 len, int make, BackPart* p, u32* n) {
     u32 k = 0;
     for (u64 c = cpu, e = cpu + len; c < e;) {
         int held;
@@ -3092,8 +3117,13 @@ static int back_parts(u64 cpu, u64 len, int make, BackPart* p, u32* n) {
             p[i].kind = BACK_IMPORT;
             continue;
         }
-        if (((p[i].cpu | p[i].len) & 0xFFF) || !own_traps() || vk_own_cpu_read(p[i].cpu, p[i].len, KEEP_CPU_PRESENTS))
+        const u64 at = p[i].cpu, end = at + p[i].len, lo = at & ~0xFFFull, hi = back_new_end(&p[i]);
+        const u64 at_gva = gva + (at - cpu);
+        if ((lo != at && (at != cpu || !back_edge_free(at_gva - (at - lo), lo, at - lo))) ||
+            (hi != end && (end != cpu + len || !back_edge_free(at_gva + p[i].len, end, hi - end))) || !own_traps() ||
+            vk_own_cpu_read(lo, hi - lo, KEEP_CPU_PRESENTS))
             return 0;
+        p[i].res_off = at - lo;
     }
     *n = k;
     return 1;
@@ -3108,7 +3138,7 @@ static int back_can(u64 gva, u64 len) {
     return vk_uma() && len && !((gva | len) & 3) && gmmu_run(gva, len, &cpu) == len &&
            !(atomic_load_explicit(&g_cs_any, memory_order_relaxed) && vk_compute_pending(gva, len)) &&
            !(atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) && vk_gfx_image_pending(gva, len)) &&
-           !vk_release_pending(gva, len) && !vk_mirror_pending(gva, len) && back_parts(cpu, len, 0, p, &n);
+           !vk_release_pending(gva, len) && !vk_mirror_pending(gva, len) && back_parts(gva, cpu, len, 0, p, &n);
 }
 static void back_unref(BackPart* p, u32 n) {
     for (u32 i = 0; i < n; i++)
@@ -3123,16 +3153,18 @@ static int back_record(GfxOut* o) {
     BackPart p[BACK_PARTS];
     u32 n = 0, i;
     const struct OutLog* w = o->logs;
-    if (o->nlogs != 1 || w->at || w->len != o->size || o->cpu == ~0ull || !back_parts(o->cpu, o->size, 1, p, &n))
+    if (o->nlogs != 1 || w->at || w->len != o->size || o->cpu == ~0ull ||
+        !back_parts(o->addr, o->cpu, o->size, 1, p, &n))
         return 0;
     for (i = 0; i < n; i++)
         if (p[i].kind == BACK_IMPORT && !p[i].buf && !vk_uma_gpu_write(p[i].cpu, p[i].len, &p[i].buf, &p[i].off))
             return 0; /* nothing recorded yet */
     for (i = 0; i < n; i++) {
         if (p[i].kind != BACK_NEW) continue;
-        /* the bytes memory has there, the program's merged over them below */
-        if (!(p[i].res = vk_own_res_new(p[i].len, VK_OWN_BY_DRAW)) ||
-            !vk_guest_read_device(o->addr + (p[i].cpu - o->cpu), p[i].len, p[i].res->buf, 0)) {
+        /* the bytes memory has in the part's pages, the program's merged over the part's below */
+        const u64 lo = p[i].cpu - p[i].res_off, span = back_new_end(&p[i]) - lo;
+        if (!(p[i].res = vk_own_res_new(span, VK_OWN_BY_DRAW)) ||
+            !vk_guest_read_device(o->addr - (o->cpu - lo), span, p[i].res->buf, 0)) {
             back_unref(p, n);
             return 0;
         }
@@ -3160,7 +3192,8 @@ static int back_record(GfxOut* o) {
             vk_own_res_wrote(p[i].res);
             gpu_mem_written_cpu(p[i].cpu, p[i].len); /* what is built from the bytes takes the new ones */
         } else {
-            vk_own_publish(p[i].cpu, p[i].len, p[i].res, 0);
+            const u64 lo = p[i].cpu - p[i].res_off;
+            vk_own_publish(lo, back_new_end(&p[i]) - lo, p[i].res, 0);
             vk_own_res_unref(p[i].res);
             if (copy_stats_on()) g_back_owners++;
         }
