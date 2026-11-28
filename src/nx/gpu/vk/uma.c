@@ -2674,11 +2674,43 @@ static int front_piece(void* ctx, u32 rid, u64 at, u64 n) { /* front_write's, in
     if (rid) rg_front_run(&g_uma.rg[rid], at, n);
     return 0;
 }
+/* A run of the runtime's writes under one hold of vk_lock (vk_uma_front_batch: release.c's reports, about 1,300 a
+   frame in one game): the pages whose reads in place front_write found needing no wait. Nothing records a draw or a
+   dispatch while the lock is held, so no read in place is stamped meanwhile, and the submit done only grows: the answer
+   holds for the rest of the run while no submit is made. Three lookups for each report's write were 0.7 ms a frame of
+   the release thread's hold of the lock, which the renderer thread waited behind */
+#define FW_PAGES 8
+static _Thread_local struct {
+    int on;
+    u32 n;
+    u64 submit;          /* vk_submit_number() when the pages were found */
+    u64 page[FW_PAGES]; /* page + 1 */
+} t_fw;
+void vk_uma_front_batch(int on) {
+    t_fw.on = on;
+    t_fw.n = 0;
+}
+static int fw_known(u64 pg) {
+    if (!t_fw.on || t_fw.submit != vk_submit_number()) return 0;
+    for (u32 i = 0; i < t_fw.n && i < FW_PAGES; i++)
+        if (t_fw.page[i] == pg + 1) return 1;
+    return 0;
+}
+static void fw_note(u64 pg) {
+    if (!t_fw.on) return;
+    if (t_fw.submit != vk_submit_number()) {
+        t_fw.submit = vk_submit_number();
+        t_fw.n = 0;
+    }
+    t_fw.page[t_fw.n++ % FW_PAGES] = pg + 1;
+}
 static void front_write(u64 cpu, u64 n) {
     u64 submitted, done, wait = 0;
     write_pages_stamp(&g_uma.front, cpu, n, 1);
     st_pieces(cpu, n, front_piece, NULL); /* blk in the regions there: the fast path takes it no more */
     if (vk_uma_pending_cpu(cpu, n)) wait_out_why(newest_out(cpu, n), 3); /* the GPU's bytes first, then the runtime's */
+    const u64 pg = cpu >> 12, one = pg == (cpu + n - 1) >> 12; /* a write within one page */
+    if (one && fw_known(pg)) return;
     vk_submit_progress(&submitted, &done);
     if (live_since(cpu, n, g_uma.seg ? g_uma.seg - 1 : 0))
         wait = vk_submit_number(); /* looked up since the draw being set up began */
@@ -2686,7 +2718,14 @@ static void front_write(u64 cpu, u64 n) {
         wait = g_uma.lag_hi;
     else if (live_since(cpu, n, done))
         wait = vk_last_submit();
-    if (!wait) return;
+    if (!wait) {
+        /* the whole page: the next write in it asks about the page's other bytes, which these lookups didn't */
+        if (one && !live_since(pg << 12, 0x1000, g_uma.seg ? g_uma.seg - 1 : 0) &&
+            !(g_uma.lag_hi > done && live_since(pg << 12, 0x1000, g_uma.lag_lo ? g_uma.lag_lo - 1 : 0)) &&
+            !live_since(pg << 12, 0x1000, done))
+            fw_note(pg);
+        return;
+    }
     g_uma.waits++;
     read_done(wait);
 }

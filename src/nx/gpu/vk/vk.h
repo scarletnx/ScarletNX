@@ -615,7 +615,10 @@ void vk_uma_table_max(u32 n);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */
-void vk_uma_before_write(u64 gva, u64 len);   /* the runtime writes GPU range [gva, gva + len) next (vk_lock held) */
+void vk_uma_before_write(u64 gva, u64 len);
+/* a run of the runtime's writes under one hold of vk_lock begins (1) or ends (0): front_write keeps the pages it found
+   needing no wait for the run (release.c) */
+void vk_uma_front_batch(int on);   /* the runtime writes GPU range [gva, gva + len) next (vk_lock held) */
 /* Storage and transform feedback written in place: [gva, gva + len) bound where it is for a draw or dispatch to write,
    the write pending once the draw is recorded (vk_uma_writes_commit) until its submit is done. 0 when it is copied out
    as a pending result instead (buffer.c). vk_lock held */

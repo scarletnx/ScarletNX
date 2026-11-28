@@ -279,6 +279,7 @@ static void release_through(u64 gate, u64 cgate) {
     vk_result_end();
     /* the GPU mirror's pages those submits wrote: GPU-owned before the releases let the game read them */
     vk_mirror_publish();
+    vk_uma_front_batch(1); /* the reports' writes below, under this hold */
     for (;;) {
         Release r;
         pm_lock(&g_rlock);
@@ -308,6 +309,7 @@ static void release_through(u64 gate, u64 cgate) {
         if (r.gva) perform(&r);
         wrote |= r.gva != 0;
     }
+    vk_uma_front_batch(0);
     fix_through();
     vk_unlock();
     /* a replay's event wait may look at what they wrote, which no other wake reaches (a syncpoint kicks): once for
