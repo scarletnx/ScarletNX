@@ -69,10 +69,24 @@ int main(void) {
         snx_recompile_line(line, sizeof line, 2.94, 4.91, 0.26);
         assert(!strcmp(line, "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it"));
         /* the SSA's: its instructions, how many a guest instruction, and both sizes in MiB */
-        const SnxSsaCount ssa = {5850000, (SnxU64)3 << 30, (SnxU64)700 << 20};
+        const SnxSsaCount ssa = {
+            .instructions = 5850000, .bytes = (SnxU64)3 << 30, .packed = (SnxU64)700 << 20, .region_count = 250000};
         snx_ssa_line(line, sizeof line, &ssa, 1000000);
-        assert(!strcmp(line, "ssa: 5850000 instructions for 1000000 guest instructions (5.85 each), 3072.0 MiB as "
-                             "the back end holds it, 700.0 MiB packed"));
+        assert(!strcmp(line, "ssa: 5850000 instructions for 1000000 guest instructions (5.85 each) in 250000 "
+                             "regions, 3072.0 MiB as the back end holds it, 700.0 MiB stored"));
+        /* its kinds, each a guest instruction's share, in the line's own order; and the code's parts in MiB */
+        SnxSsaCount parts = {0};
+        const SnxU64 hundredths[15] = {120, 10, 5, 20, 2, 1, 1, 15, 11, 3, 4, 6, 40, 30, 7};
+        for (size_t k = 0; k < 15; ++k) parts.kinds[k] = hundredths[k] * 10000;
+        snx_ssa_kinds_line(line, sizeof line, &parts, 1000000);
+        assert(!strcmp(line, "ssa kinds a guest instruction: forms 1.20, X loads 0.40, X stores 0.30, other loads "
+                             "0.10, other stores 0.05, flag stores 0.20, flag reads 0.02, vector 0.11, vector state "
+                             "0.07, cold 0.03, machine 0.15, pin reads 0.04, pin writes 0.06, ends 0.02"));
+        parts.code = (SnxU64)600 << 20, parts.regions = (SnxU64)400 << 20, parts.cold = (SnxU64)20 << 20;
+        parts.pool = (SnxU64)12 << 20;
+        snx_ssa_code_line(line, sizeof line, &parts);
+        assert(!strcmp(line, "ssa code: 600.0 MiB of functions: regions 400.0, cold paths 20.0, constants 12.0, "
+                             "between regions 168.0 (28%)"));
     }
     /* 20 ms of the processor's time, spent in a loop: a loaded machine takes longer, ten seconds at most. Windows counts
        it in the clock's ticks (15.6 ms): a process that has spent less than one reads 0, so the loop starts from the

@@ -1668,11 +1668,33 @@ void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p) {
 }
 void snx_ssa_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest) {
     snprintf(out, size,
-             "ssa: %llu instructions for %llu guest instructions (%.2f each), %.1f MiB as the back end holds it, "
-             "%.1f MiB packed",
+             "ssa: %llu instructions for %llu guest instructions (%.2f each) in %llu regions, %.1f MiB as the back "
+             "end holds it, %.1f MiB stored",
              (unsigned long long)ssa->instructions, (unsigned long long)guest,
-             guest ? (double)ssa->instructions / (double)guest : 0.0, (double)ssa->bytes / 1048576.0,
-             (double)ssa->packed / 1048576.0);
+             guest ? (double)ssa->instructions / (double)guest : 0.0, (unsigned long long)ssa->region_count,
+             (double)ssa->bytes / 1048576.0, (double)ssa->packed / 1048576.0);
+}
+void snx_ssa_kinds_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest) {
+    /* mach.h's order: SEL, LOAD, STORE, STORE_FLAG, SETCC, RET, UNDEF, MACHINE, VEC, COLD, PGET, PSET, then a general
+       register's load and store and a vector form on the state */
+    const double g = guest ? (double)guest : 1.0;
+    const SnxU64* k = ssa->kinds;
+    snprintf(out, size,
+             "ssa kinds a guest instruction: forms %.2f, X loads %.2f, X stores %.2f, other loads %.2f, other stores "
+             "%.2f, flag stores %.2f, flag reads %.2f, vector %.2f, vector state %.2f, cold %.2f, machine %.2f, pin "
+             "reads %.2f, pin writes %.2f, ends %.2f",
+             (double)k[0] / g, (double)k[12] / g, (double)k[13] / g, (double)k[1] / g, (double)k[2] / g,
+             (double)k[3] / g, (double)k[4] / g, (double)k[8] / g, (double)k[14] / g, (double)k[9] / g,
+             (double)k[7] / g, (double)k[10] / g, (double)k[11] / g, (double)(k[5] + k[6]) / g);
+}
+void snx_ssa_code_line(char* out, size_t size, const SnxSsaCount* ssa) {
+    const SnxU64 named = ssa->regions + ssa->cold + ssa->pool, between = ssa->code > named ? ssa->code - named : 0;
+    snprintf(out, size,
+             "ssa code: %.1f MiB of functions: regions %.1f, cold paths %.1f, constants %.1f, between regions %.1f "
+             "(%.0f%%)",
+             (double)ssa->code / 1048576.0, (double)ssa->regions / 1048576.0, (double)ssa->cold / 1048576.0,
+             (double)ssa->pool / 1048576.0, (double)between / 1048576.0,
+             ssa->code ? 100.0 * (double)between / (double)ssa->code : 0.0);
 }
 void snx_recompile_line(char* out, size_t size, double before, double code, double after) {
     snprintf(out, size, "recompile: %.1f s in all: %.1f s before the code, %.1f s the code, %.1f s after it",

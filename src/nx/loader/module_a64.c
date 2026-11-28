@@ -626,9 +626,16 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     size_t uncounted = 0; /* the units whose object came from memory: no back end ran to count their SSA */
     for (i = 0; i < q.count; ++i) {
         uncounted += q.units[i].reused != 0;
-        ssa.instructions += q.units[i].ssa.instructions;
-        ssa.bytes += q.units[i].ssa.bytes;
-        ssa.packed += q.units[i].ssa.packed;
+        const SnxSsaCount* s = &q.units[i].ssa;
+        ssa.instructions += s->instructions;
+        ssa.bytes += s->bytes;
+        ssa.packed += s->packed;
+        ssa.region_count += s->region_count;
+        for (size_t k = 0; k < sizeof ssa.kinds / sizeof *ssa.kinds; ++k) ssa.kinds[k] += s->kinds[k];
+        ssa.code += s->code;
+        ssa.regions += s->regions;
+        ssa.cold += s->cold;
+        ssa.pool += s->pool;
     }
     if (build->ssa) *build->ssa = ssa;
     if (!options->quiet) {
@@ -639,6 +646,10 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         puts(line);
         if (ssa.instructions) {
             snx_ssa_line(line, sizeof line, &ssa, guest);
+            puts(line);
+            snx_ssa_kinds_line(line, sizeof line, &ssa, guest);
+            puts(line);
+            snx_ssa_code_line(line, sizeof line, &ssa);
             puts(line);
             if (uncounted)
                 printf("ssa: %zu of the %zu units came from memory, their SSA not in it\n", uncounted, q.count);

@@ -361,13 +361,27 @@ typedef struct {
 void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p);
 /* A module's SSA as its back end holds it before the bytes: the instructions each region of code kept once its
    optimizing pass had run, the bytes those take in the back end's own structure, and the bytes they would take
-   stored packed (a count, nothing is written: tools/sailgen/mach.h's sgx_packed) */
+   in its stored form (tools/sailgen/mach.h's sgx_pack, from which each region is made again before it is assembled),
+   in how many regions */
 typedef struct {
-    SnxU64 instructions, bytes, packed;
+    SnxU64 instructions, bytes, packed, region_count;
+    /* the instructions by kind, as snx_ssa_kinds_line names them (the back end's order: mach.h's SGX_K_* and
+       SGX_SEEN_*) */
+    SnxU64 kinds[16];
+    /* the bytes of the functions' code, and of them those the regions became, the cold paths and the constants: the
+       rest is what the back end writes between regions (frames, jumps, pins, checks, dispatch) */
+    SnxU64 code, regions, cold, pool;
 } SnxSsaCount;
 /* The line that says it, after snx_phases_line's, for guest's instructions: "ssa: 5850000 instructions for 1000000
-   guest instructions (5.85 each), 3072.0 MiB as the back end holds it, 700.0 MiB packed" */
+   guest instructions (5.85 each) in 250000 regions, 3072.0 MiB as the back end holds it, 700.0 MiB stored" */
 void snx_ssa_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest);
+/* The kinds' line, each a guest instruction's share: "ssa kinds a guest instruction: forms 1.20, X loads 0.40, X
+   stores 0.30, other loads 0.10, other stores 0.05, flag stores 0.20, flag reads 0.02, vector 0.10, vector state 0.05,
+   cold 0.01, machine 0.15, pin reads 0.03, pin writes 0.02, ends 0.00" */
+void snx_ssa_kinds_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest);
+/* The code's line: "ssa code: 600.0 MiB of functions: regions 400.0, cold paths 20.0, constants 10.0, between regions
+   170.0 (28%)" */
+void snx_ssa_code_line(char* out, size_t size, const SnxSsaCount* ssa);
 /* The line a program's recompile ends with, before its "Built": the seconds it took, those before its code (the
    program read, its calls bound), its code's (every module's, snx_phases_line's each) and those after (the runtime's
    copy, the stamp): "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it" */
