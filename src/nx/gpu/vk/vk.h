@@ -1707,6 +1707,8 @@ enum {
     VK_IMG_KEEP_N
 };
 void vk_gfx_image_keep_note(int why); /* a dispatch's storage image's bind, counted for vk_gfx_image_report */
+/* the binds counted so far by what each did, and the kept dispatches' images published since when something read them */
+void vk_gfx_image_keep_stats(u64 why[VK_IMG_KEEP_N], u64* compute_published);
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
    (the queue frees it), or over the bytes the write-back after leaves; or kept (keep, its held reference the
    queue's), published at the release */
