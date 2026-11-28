@@ -70,6 +70,11 @@
 #define LOCK_OR_RSP "F0 83 0C 24 00"
 #define MFENCE      "0F AE F0"
 
+/* MOV r64, [rbx + disp8] (REX.W 8B, mod 01, r/m rbx) and MOV [rbx], r64 (REX.W 89, mod 00, r/m rbx): a load of X1
+   to X15 and a store of X0 */
+#define MOV_LOAD_RBX8 "48 8B 43|48 8B 4B|48 8B 53|48 8B 73|48 8B 7B|4C 8B 43|4C 8B 4B"
+#define MOV_STORE_RBX "48 89 03|48 89 0B|48 89 13|48 89 33|48 89 3B|4C 89 03|4C 89 0B"
+
 typedef struct {
     const char* what;
     unsigned needs, without; /* the host's features (and WITH_STALE); those it goes without */
@@ -124,6 +129,12 @@ static const Row k_rows[] = {
     {"dmb ish: the locked OR", 0, 0, 33, -1, "=1 " LOCK_OR_RSP, "D5033BBF"},
     {"dmb ish: no MFENCE", 0, 0, 33, -1, "!" MFENCE, "D5033BBF"},
     {"stlr x0, [x1]: the locked OR after its store", 0, 0, 51, -1, "=1 " LOCK_OR_RSP, "C89FFC20"},
+    /* a register of the state as an operand where it is: read by ADD r64, r/m64 (one load, not two), changed by an
+       XOR, an ADD of a constant or a shift of memory (no load, and no MOV to X0's place, [rbx]) */
+    {"add x0, x1, x2 (an operand in the state)", 0, 0, 39, -1, "=1 " MOV_LOAD_RBX8, "8B020020"},
+    {"eor x0, x0, x1 (X0 changed where it is)", 0, 0, 35, -1, "!" MOV_STORE_RBX, "CA010000"},
+    {"add x0, x0, #1 (X0 changed where it is)", 0, 0, 32, -1, "48 83 03 01", "91000400"},
+    {"lsl x0, x0, #3 (X0 changed where it is)", 0, 0, 32, -1, "48 C1 23 03", "D37DF000"},
     {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
     {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
     {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},

@@ -2288,6 +2288,166 @@ static inline void sgx_fold_loads(SgX* x) {
         for (int k = 0; k < SGX_INS_IN; ++k) l->in[k] = 0;
     }
 }
+/* the candidates of the primitive c is one of, where another of them may take c's place: the sums, the products and
+   the logic of two operands and the zero extensions, whose forms differ in which operand may be memory and which
+   the result is tied to; an addition's where c is the LEA an addition nothing read the flags of became (lea, with
+   with_add). NULL for none */
+static inline const SgXSel* sgx_siblings(const SgXSel* c, unsigned* count, int with_add, int* lea) {
+#define SGX_SIBLING(name, w) {SGX_TABLE(name, w), SGX_TABLE_N(name, w)}
+#define SGX_SIBLINGS(name)   SGX_SIBLING(name, 64), SGX_SIBLING(name, 32)
+    const struct {
+        const SgXSel* table;
+        unsigned count;
+    } sets[] = {SGX_SIBLINGS(add),       SGX_SIBLINGS(sub),     SGX_SIBLINGS(and),    SGX_SIBLINGS(or),
+                SGX_SIBLINGS(xor),       SGX_SIBLINGS(mul),     SGX_SIBLINGS(adds),   SGX_SIBLINGS(subs),
+                SGX_SIBLINGS(ands),      SGX_SIBLINGS(add_i),   SGX_SIBLINGS(and_i),  SGX_SIBLINGS(or_i),
+                SGX_SIBLINGS(xor_i),     SGX_SIBLINGS(adds_i),  SGX_SIBLINGS(subs_i), SGX_SIBLING(zext32, 64),
+                SGX_SIBLING(zext16, 32), SGX_SIBLING(zext8, 32)};
+#undef SGX_SIBLINGS
+#undef SGX_SIBLING
+    *lea = 0;
+    for (size_t t = 0; t < sizeof sets / sizeof *sets; ++t)
+        for (unsigned k = 0; k < sets[t].count; ++k)
+            if (c == &sets[t].table[k]) return *count = sets[t].count, sets[t].table;
+    if (with_add) {
+        *lea = 1;
+        if (c == &sgx_sel_lea_64[0]) return *count = sgx_sel_add_64_n, sgx_sel_add_64;
+        if (c == &sgx_sel_lea_32[0]) return *count = sgx_sel_add_32_n, sgx_sel_add_32;
+        if (c == &sgx_sel_leai_64[0]) return *count = sgx_sel_add_i_64_n, sgx_sel_add_i_64;
+        if (c == &sgx_sel_leai_32[0]) return *count = sgx_sel_add_i_32_n, sgx_sel_add_i_32;
+        *lea = 0;
+    }
+    *count = 0;
+    return NULL;
+}
+/* whether candidate t does what c does to everything but where its operands are: the same result's extension, the
+   same flags (which what reads c's flags counted on), nothing fixed, nothing zeroed. any_flags: c wrote no flags and
+   nothing reads t's (an addition for its LEA) */
+static inline int sgx_sel_alike(const SgXSel* t, const SgXSel* c, int any_flags) {
+    if (t == c) return 1;
+    if (t->imm != c->imm || t->clean_out != c->clean_out || t->clobber || t->zero || t->out < 0 || t->out >= SGX_FIX)
+        return 0;
+    for (int k = 0; k < 4; ++k)
+        if (t->in[k] >= SGX_FIX || (!(c->imm >> k & 1) && (t->in[k] < 0) != (c->in[k] < 0))) return 0;
+    if (any_flags) return 1;
+    return t->flags == c->flags && t->flag_neg == c->flag_neg && t->carry_neg == c->carry_neg &&
+           !memcmp(t->flag_of, c->flag_of, sizeof t->flag_of) && !memcmp(t->cc_of, c->cc_of, sizeof t->cc_of);
+}
+/* whether the state's nw 4-byte words at disp stay as they are from instruction a to instruction b (neither counted):
+   no store of them, no call, no jump or label, no store of guest memory; and with reads, no load of them either */
+static inline int sgx_state_still(const SgX* x, int a, int b, int disp, unsigned nw, int reads) {
+    unsigned q = (unsigned)disp >> 2;
+    for (int j = a + 1; j < b; ++j) {
+        const SgXIns* s = &x->ins[j];
+        unsigned w0, n;
+        if (s->dead) continue;
+        if (s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD || s->kind == SGX_K_UNDEF || s->kind == SGX_K_RET)
+            return 0;
+        if (s->kind == SGX_K_STORE || s->kind == SGX_K_STORE_FLAG || (reads && s->kind == SGX_K_LOAD)) {
+            w0 = (unsigned)s->disp >> 2, n = s->kind != SGX_K_STORE_FLAG && s->w == 64 ? 2 : 1;
+        } else if (s->mstate && (s->kind == SGX_K_VEC ? reads || s->vout == s->mplace : reads || s->side)) {
+            w0 = (unsigned)s->mdisp >> 2, n = s->kind == SGX_K_VEC ? 4 : 2;
+        } else if (s->side && !s->mstate)
+            return 0;
+        else
+            continue;
+        if (w0 < q + nw && q < w0 + n) return 0;
+    }
+    return 1;
+}
+/* A general register of the state as an operand where it is, [base + disp], on a machine whose forms take memory
+   (x86-64's r/m: SgXSel.rm; none elsewhere). Read once, by a form that reads it as r/m, the load is that operand and
+   no register holds it (ADD r64, r/m64). Read once, changed by a form tied to it and stored back at once, the
+   register is changed there (XOR r/m64, r64: no load, no store). An addition that became LEA is ADD again for either
+   where no flags an earlier instruction made are read after it. The candidate that takes memory there is another of
+   the primitive's with the same flags (its operands the other way round); one whose result then overwrites a value
+   still read is left as it was. Backward, so that the flags read after each instruction are known at it */
+static inline void sgx_fold_state(SgX* x) {
+    unsigned char* uses = x->vlive; /* each value's readers, 2 for more than one */
+    int from = x->n;                /* the earliest instruction whose flags one after the current reads */
+    memset(uses, 0, (size_t)x->nv + 1);
+    for (int i = 0; i < x->n; ++i) {
+        const SgXIns* s = &x->ins[i];
+        if (s->dead) continue;
+        for (int k = 0; k < SGX_INS_IN; ++k)
+            if (s->in[k] > 0 && s->in[k] < x->nv && uses[s->in[k]] < 2) ++uses[s->in[k]];
+    }
+    for (int i = x->n - 1; i >= 0; --i) {
+        SgXIns* s = &x->ins[i];
+        if (s->dead) continue;
+        const int busy = from < i;
+        if (s->flags_from >= 0 && s->flags_from < from) from = s->flags_from;
+        if (s->kind != SGX_K_SEL || !s->sel || s->mplace >= 0 || s->side || s->in[4] || (s->w != 32 && s->w != 64))
+            continue;
+        const SgXSel* c = s->sel;
+        unsigned count = 0;
+        int lea = 0; /* the table is an addition's, for c its LEA */
+        const SgXSel* table = sgx_siblings(c, &count, !busy, &lea);
+        if (!table) table = c, count = 1; /* c alone */
+        /* the store of its result, the result's one reader */
+        SgXIns* st = NULL;
+        if (s->def && uses[s->def] == 1 && s->w == 64) {
+            int p = x->v[s->def].last;
+            if (p > i && p < x->n && !x->ins[p].dead && x->ins[p].kind == SGX_K_STORE && x->ins[p].in[0] == s->def &&
+                x->ins[p].w == 64)
+                st = &x->ins[p];
+        }
+        for (int k = 0; k < 4; ++k) {
+            int v = s->in[k], d, other = 0;
+            const SgXSel* pick = NULL;
+            int rmw = 0;
+            if (v <= 0 || v >= x->nv || uses[v] != 1) continue;
+            d = x->v[v].def;
+            if (d < 0 || d >= i) continue;
+            SgXIns* l = &x->ins[d];
+            if (l->dead || l->kind != SGX_K_LOAD || l->def != v || l->w != 64) continue;
+            for (int j = 0; j < 4; ++j)
+                if (j != k && s->in[j]) other = s->in[j];
+            /* changed where it is: tied to it, r/m the result's place too, stored back to where it was loaded from */
+            if (st && st->disp == l->disp && sgx_state_still(x, d, (int)(st - x->ins), l->disp, 2, 0) &&
+                sgx_state_still(x, i, (int)(st - x->ins), l->disp, 2, 1))
+                for (unsigned t = 0; t < count && !pick; ++t) {
+                    const SgXSel* m = &table[t];
+                    if ((m->feature & x->features) != m->feature || m->rm < 0 || m->in[k] != m->rm || m->out != m->rm ||
+                        m->tied != k + 1 || !sgx_sel_alike(m, c, lea) || (m->imm && !sgx_fits(m, (SnxU64)s->imm, s->w)))
+                        continue;
+                    pick = m, rmw = 1;
+                }
+            /* read where it is: r/m, and not what the result is tied to; a candidate that ties the result to the other
+               operand only where that one is read here last (else a copy of it takes the load's place: no gain) and
+               is no pinned register's own value; one that ties it to nothing (a zero extension's) wherever */
+            if (!pick && sgx_state_still(x, d, i, l->disp, 2, 0))
+                for (unsigned t = 0; t < count && !pick; ++t) {
+                    const SgXSel* m = &table[t];
+                    if ((m->feature & x->features) != m->feature || m->rm < 0 || m->in[k] != m->rm || m->out == m->rm ||
+                        m->tied == k + 1 || !sgx_sel_alike(m, c, lea) || (m->imm && !sgx_fits(m, (SnxU64)s->imm, s->w)))
+                        continue;
+                    if (m != c && m->tied) {
+                        const int tv = s->in[m->tied - 1];
+                        if (tv != other || !tv || x->v[tv].last != i || x->v[tv].def < 0 ||
+                            x->ins[x->v[tv].def].kind == SGX_K_PGET)
+                            continue;
+                    }
+                    pick = m;
+                }
+            if (!pick) continue;
+            if (pick != c) s->sel = s->fsel = pick, s->alt = NULL, s->cadd = 0;
+            s->mplace = pick->rm;
+            s->mstate = 1;
+            s->mdisp = l->disp;
+            s->in[k] = 0;
+            l->dead = 1;
+            for (int j = 0; j < SGX_INS_IN; ++j) l->in[j] = 0;
+            if (rmw) {
+                s->def = 0;
+                s->side = 1;
+                st->dead = 1;
+                for (int j = 0; j < SGX_INS_IN; ++j) st->in[j] = 0;
+            }
+            break;
+        }
+    }
+}
 static inline void sgx_optimize(SgX* x) {
     unsigned char *vlive = x->vlive, *flive = x->flive; /* the region's part cleared */
     int i, k;
@@ -2493,6 +2653,7 @@ static inline void sgx_optimize(SgX* x) {
         for (k = 0; k < SGX_INS_IN; ++k)
             if (x->ins[i].in[k]) x->v[x->ins[i].in[k]].last = i;
     }
+    sgx_fold_state(x);
 }
 
 /* the assembler of a function: its bytes, its spill slots ([RSP + 8 * k], the frame the prologue makes and the
@@ -2830,9 +2991,9 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
         if (v && p >= 0 && p < SGX_FIX) r[p] = (unsigned char)x->v[v].reg;
     }
     if (i->mplace >= 0) {
-        /* the memory operand, which the r/m place takes */
-        r[(int)i->mplace] = (unsigned char)SGX_MEMR(x->v[i->in[5]].reg);
-        a->b->index = i->in[6] ? x->v[i->in[6]].reg : -1;
+        /* the memory operand, which the r/m place takes: guest memory's, or the state's (sgx_fold_state) */
+        r[(int)i->mplace] = (unsigned char)SGX_MEMR(i->mstate ? x->base : x->v[i->in[5]].reg);
+        a->b->index = !i->mstate && i->in[6] ? x->v[i->in[6]].reg : -1;
         a->b->disp = i->mdisp;
     }
     /* the fixed registers it writes */
@@ -2874,8 +3035,8 @@ static inline void sgx_assemble_sel(SgXAsm* a, int at) {
     }
     if (i->mplace >= 0) {
         /* the operand registers moved out of the way may have moved the base or the index */
-        r[(int)i->mplace] = (unsigned char)SGX_MEMR(x->v[i->in[5]].reg);
-        a->b->index = i->in[6] ? x->v[i->in[6]].reg : -1;
+        r[(int)i->mplace] = (unsigned char)SGX_MEMR(i->mstate ? x->base : x->v[i->in[5]].reg);
+        a->b->index = !i->mstate && i->in[6] ? x->v[i->in[6]].reg : -1;
         a->b->disp = i->mdisp;
     }
     s->enc(a->b, r, i->imm, i->cc);

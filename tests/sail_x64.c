@@ -1086,11 +1086,14 @@ static int run(int argc, char** argv) {
         } Seq;
         /* blocks no draw is sure to make: a full barrier (x86-64's is a locked OR, which writes the host's flags)
            between a word that sets the flags and one that reads them (SUBS, DMB ISH, CSINC NE; ADDS, DSB SY, ADC;
-           ANDS, ISB, CSEL EQ; CMP, DMB ISH, CCMP GE, CSET LT) */
-        static const u32 k_blocks[][4] = {{0xEB020020u, 0xD5033BBFu, 0x9A851483u, 0},
-                                          {0x2B020020u, 0xD5033F9Fu, 0x9A050083u, 0},
-                                          {0xEA020020u, 0xD5033FDFu, 0x9A850083u, 0},
-                                          {0xEB02003Fu, 0xD5033BBFu, 0xFA45A080u, 0x9A9FA7E3u}};
+           ANDS, ISB, CSEL EQ; CMP, DMB ISH, CCMP GE, CSET LT); and an addition to a register of the state where it is,
+           which x86-64 makes an ADD of memory unless flags made before it are read after it, as a block reads ANDS's
+           (ANDS, ADD X0 #1, CSEL EQ; ANDS, ADD X0 X4, CSINC NE; SUBS, EOR X0 X5, ADC) */
+        static const u32 k_blocks[][4] = {
+            {0xEB020020u, 0xD5033BBFu, 0x9A851483u, 0}, {0x2B020020u, 0xD5033F9Fu, 0x9A050083u, 0},
+            {0xEA020020u, 0xD5033FDFu, 0x9A850083u, 0}, {0xEB02003Fu, 0xD5033BBFu, 0xFA45A080u, 0x9A9FA7E3u},
+            {0xEA020026u, 0x91000400u, 0x9A850083u, 0}, {0xEA020026u, 0x8B040000u, 0x9A851483u, 0},
+            {0xEB020026u, 0xCA050000u, 0x9A050083u, 0}};
         const size_t nblocks = sizeof k_blocks / sizeof *k_blocks;
         Seq* seq = (Seq*)malloc(sizeof(Seq) * (sequences + nblocks));
         size_t q, nseq = 0;
