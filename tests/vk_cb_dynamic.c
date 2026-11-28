@@ -15,6 +15,8 @@ Settings g_settings;
 char g_exename[256] = "game";
 
 static char g_log[4096], g_file[8192];
+static char g_logs[16384]; /* every line since the test emptied it, where g_log holds the last */
+static size_t g_logs_n;
 static size_t g_file_n;                           /* 0: no file */
 static u32 g_uniform_slots = VK_CB_DYNAMIC_SLOTS; /* the slots from here on are storage buffers (cbufs_fit_limits) */
 void logf_(int level, const char* fmt, ...) {
@@ -23,6 +25,9 @@ void logf_(int level, const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(g_log, sizeof g_log, fmt, ap);
     va_end(ap);
+    if (g_logs_n < sizeof g_logs - 1)
+        g_logs_n += (size_t)snprintf(g_logs + g_logs_n, sizeof g_logs - g_logs_n, "%s", g_log);
+    if (g_logs_n > sizeof g_logs - 1) g_logs_n = sizeof g_logs - 1;
 }
 u8* snx_read_file(const char* path, size_t* size) {
     if (strcmp(path, "/cache/game.vkcbmoves") != 0 || !g_file_n) return NULL;
@@ -131,34 +136,41 @@ int main(void) {
     CHECK(same(&third, &fourth));
 
     /* a file of a build that wrote no line for a slot that did not move: six were dynamic, ten others moved */
-    file("snx-cbmoves 1\n0 0 1000 1\n0 1 1000 1\n0 2 1000 1\n1 0 1000 1\n1 1 1000 1\n1 2 1000 1\n0 3 120 0\n0 4 120 0\n"
+    file("snx-cbmoves 2\n0 0 1000 1\n0 1 1000 1\n0 2 1000 1\n1 0 1000 1\n1 1 1000 1\n1 2 1000 1\n0 3 120 0\n0 4 120 0\n"
          "0 5 120 0\n0 6 120 0\n0 7 120 0\n1 3 120 0\n1 4 120 0\n1 5 120 0\n1 6 120 0\n1 7 120 0\n");
     first = chosen(16);
     CHECK(first.mask[0] == 0xff && first.mask[1] == 0xff);
     CHECK(strstr(g_log, "16 of the device's limit 16") &&
           strstr(g_log, "(the last run's 6, and 10 more in the room left)"));
     /* with room for two more, the most moved of the others; the last run's six stay */
-    file("snx-cbmoves 1\n0 0 1000 1\n0 1 1000 1\n0 2 1000 1\n1 0 1000 1\n1 1 1000 1\n1 2 1000 1\n0 3 120 0\n0 4 121 0\n"
+    file("snx-cbmoves 2\n0 0 1000 1\n0 1 1000 1\n0 2 1000 1\n1 0 1000 1\n1 1 1000 1\n1 2 1000 1\n0 3 120 0\n0 4 121 0\n"
          "1 3 122 0\n");
     first = chosen(8);
     CHECK(first.mask[0] == 0x17 && first.mask[1] == 0xf);
     CHECK(strstr(g_log, "(the last run's 6, and 2 more in the room left)"));
 
     /* the last run's slots stay while the best move no more than a quarter more than they do, and go past that */
-    file("snx-cbmoves 1\n0 0 125 0\n0 1 100 1\n");
+    file("snx-cbmoves 2\n0 0 125 0\n0 1 100 1\n");
     first = chosen(1);
     CHECK(first.mask[0] == 2 && strstr(g_log, "(the last run's 1, and 0 more in the room left)"));
-    file("snx-cbmoves 1\n0 0 126 0\n0 1 100 1\n");
+    file("snx-cbmoves 2\n0 0 126 0\n0 1 100 1\n");
     first = chosen(1);
     CHECK(first.mask[0] == 1 && strstr(g_log, "(the best ones, which move over a quarter more than the last run's 1)"));
     /* none dynamic in the last run (a device whose limit was 0, say) */
-    file("snx-cbmoves 1\n0 0 125 0\n0 1 100 0\n");
+    file("snx-cbmoves 2\n0 0 125 0\n0 1 100 0\n");
     first = chosen(1);
     CHECK(first.mask[0] == 1 && strstr(g_log, "(the best ones: the last run had none)"));
+    /* a file an earlier build wrote, of another version: its moves are not used, and the log says both versions */
+    file("snx-cbmoves 1\n0 0 125 0\n0 1 100 1\n");
+    g_logs_n = 0;
+    g_logs[0] = 0;
+    first = chosen(1);
+    CHECK(strstr(g_logs, "/cache/game.vkcbmoves begins \"snx-cbmoves 1\", not this build's \"snx-cbmoves 2\""));
+    CHECK(strstr(g_log, "from the default order"));
 
     /* no slot past the uniform buffers the device takes, whatever the file says of it */
     g_uniform_slots = 2;
-    file("snx-cbmoves 1\n0 0 10 1\n0 1 5 0\n0 2 100 1\n0 3 90 0\n1 17 0 1\n");
+    file("snx-cbmoves 2\n0 0 10 1\n0 1 5 0\n0 2 100 1\n0 3 90 0\n1 17 0 1\n");
     first = chosen(16);
     CHECK(first.mask[0] == 3 && !first.mask[1]);
     g_uniform_slots = VK_CB_DYNAMIC_SLOTS;

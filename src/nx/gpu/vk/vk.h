@@ -2225,7 +2225,7 @@ u32 vk_bc7_build(u32 w, u32 h, u32 d);
 /* bc7_cache.c: the BC7 blocks of ASTC levels encoded before, kept in memory while the game runs: the levels used
    most, up to a bound. VK_BC7_ENCODER_VERSION goes into every key: bump it when what the encoder writes changes, as a
    level's choice of build does */
-#define VK_BC7_ENCODER_VERSION 1
+#define VK_BC7_ENCODER_VERSION 2
 /* content (two words, zero to start) with n bytes at p mixed in: an ASTC level's guest bytes and its layout's words */
 void vk_bc7_content(u64 content[2], const void* p, u64 n);
 /* what else changes a level's blocks: its size, its slices (depth) or layers, the footprint, the sRGB decode mode and

@@ -789,7 +789,7 @@ int shader_hmma_bench_pick(const double* us, int rule);
    pipelineCacheUUID. shader_hmma_bench_format writes it into out (n bytes) and returns its length, or 0 when it does
    not fit; shader_hmma_bench_parse gives the way of a file whose key is key, else SH_HMMA_AUTO with why (n bytes):
    another key, no way, a way it does not know */
-#define SH_HMMA_BENCH_VERSION 1
+#define SH_HMMA_BENCH_VERSION 2
 size_t shader_hmma_bench_format(char* out, size_t n, const char* key, int way, const double* us, const char* note);
 int shader_hmma_bench_parse(const char* text, const char* key, char* why, size_t n);
 /* in clip_enable: a later stage before rasterization (tessellation or geometry) follows, and the last one applies
