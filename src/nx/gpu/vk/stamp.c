@@ -38,7 +38,12 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 
-#define STAMP_N 4096 /* timestamps in the pool: each submission's start and end, and its reports' */
+/* timestamps in the pool: each submission's start and end, its reports', and two for each stretch of the runtime's own
+   work. A racing game's race has about 250 such stretches a present with its uploads, takes, write-backs and target
+   copies marked, 39 reports and 14 submissions: about 570 timestamps a present, which wait for their submissions to be
+   done. 4096 held seven presents of them, and a present that takes longer than that to be done loses marks; 16384
+   holds 28 */
+#define STAMP_N 16384
 #define SUB_N   1024 /* submissions with timestamps not yet done */
 /* values step at least this many ns, more than one GPU tick (625 / 384 ns), so that they strictly increase in ticks,
    as gpu_ticks's do */
@@ -54,6 +59,7 @@ static struct {
     int runtime;        /* the depth of vk_stamp_runtime_begin */
     u64 cb_ready; /* the time its work became ready */
     int cb_runtime; /* it began inside the runtime's own work */
+    int cb_open;    /* a command buffer is being recorded, with timestamps (cb_q0) or without */
     u32 cb_frame; /* the present number when the command buffer began */
     struct {
         u64 value, q0, q1, ready; /* its number on the graphics timeline, its start and end, its ready time */
@@ -68,6 +74,9 @@ static struct {
     int have_prev;
     u32 last_frame;
     u64 ns[STAMP_N]; /* a report's value in guest ns, once its submission is folded */
+    /* the stretches of the runtime's own work so far: those marked, those whose mark found no timestamp free, the GPU
+       time left out of the timeline for them, and what the last line of the statistics said of each */
+    u64 left_marks, left_lost, left_ns, left_said[3];
     u8 kind[STAMP_N]; /* STAMP_* */
 } g_st;
 
@@ -111,6 +120,7 @@ static u64 span_ns(u64 x, u64 y) {
 }
 void vk_stamp_cb_begin(VkCommandBuffer cb) {
     g_st.cb_q0 = 0;
+    g_st.cb_open = 1;
     if (g_st.state <= 0 || g_st.shead - g_st.stail >= SUB_N) return;
     g_st.cb_q0 = write(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 1); /* reserve 1 slot for q1 at cb_end */
     g_st.cb = cb;
@@ -119,6 +129,7 @@ void vk_stamp_cb_begin(VkCommandBuffer cb) {
     g_st.cb_frame = g_vk_present;
 }
 void vk_stamp_cb_end(VkCommandBuffer cb, u64 value) {
+    g_st.cb_open = 0;
     if (!g_st.cb_q0) return;
     const u64 q0 = g_st.cb_q0, q1 = write(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     g_st.cb_q0 = 0;
@@ -134,15 +145,30 @@ void vk_stamp_cb_end(VkCommandBuffer cb, u64 value) {
 /* the runtime's own work on the graphics queue, which the console's GPU doesn't do (a render target's load from
    memory): its time is left out of the reports' timeline. A bracket that its command buffer's end cuts ends there,
    and the next command buffer begins inside it */
-static void runtime_mark(int kind) {
-    if (!g_st.cb_q0) return;
+/* 1 when the mark is written or no command buffer is being recorded (the next one begins inside the stretch, which
+   needs no mark), 0 when no timestamp is free or the command buffer has none at all (begun before the first report, or
+   with the pool full: its reports keep the GPU thread's time, with nothing left out of it) */
+static int runtime_mark(int kind) {
+    if (!g_st.cb_q0) return !g_st.cb_open;
     /* a begin keeps a slot for its end, and both keep one for q1 */
     const u64 n = write(g_st.cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, kind == STAMP_RUNTIME_BEGIN ? 2 : 1);
     if (n) g_st.kind[slot(n)] = (u8)kind;
+    return n != 0;
 }
 void vk_stamp_runtime_begin(void) {
     if (g_st.state <= 0 || g_st.runtime++) return;
-    runtime_mark(STAMP_RUNTIME_BEGIN);
+    if (runtime_mark(STAMP_RUNTIME_BEGIN)) {
+        g_st.left_marks++;
+        return;
+    }
+    /* every timestamp waits for a submission still to be done, or this command buffer has none: the stretch has no
+       mark, so its GPU time is in the spans the game reads, as its own */
+    g_st.left_lost++;
+    LOG_LIMIT(8,
+              "vulkan: a stretch of the runtime's own work has no mark (%s): its GPU time stays in the game's GPU "
+              "timer (%llu stretches so far, %llu left out of it)\n",
+              g_st.cb_q0 ? "none of the report timestamps is free" : "its command buffer has no timestamps",
+              (unsigned long long)g_st.left_lost, (unsigned long long)g_st.left_marks);
 }
 void vk_stamp_runtime_end(void) {
     if (g_st.state <= 0 || !g_st.runtime || --g_st.runtime) return;
@@ -206,6 +232,7 @@ void vk_stamp_fold(u64 done) {
             g_st.ns[slot(n)] = g_st.last = v;
         }
         if (have && in_rt) rt_ns += span_ns(rt_from, t1);
+        g_st.left_ns += rt_ns;
         if (have) {
             g_st.end = at + (dur > rt_ns ? dur - rt_ns : 0);
             if (g_st.end > now) g_st.end = now;
@@ -222,6 +249,20 @@ void vk_stamp_fold(u64 done) {
         g_st.folded = q1;
         g_st.stail++;
     }
+}
+void vk_stamp_runtime_stats(u64* marks, u64* lost, u64* ns) {
+    *marks = g_st.left_marks;
+    *lost = g_st.left_lost;
+    *ns = g_st.left_ns;
+}
+void vk_stamp_log(u32 presents) {
+    const u64 now[3] = {g_st.left_marks, g_st.left_lost, g_st.left_ns};
+    if (g_st.state > 0 && presents && (now[0] != g_st.left_said[0] || now[1] != g_st.left_said[1]))
+        LOG("vulkan: report timestamps over %u presents: %llu stretches of the runtime's own work left out of the "
+            "game's GPU timer, %.3f ms a present; %llu found no timestamp free and stayed in it\n",
+            presents, (unsigned long long)(now[0] - g_st.left_said[0]),
+            (double)(now[2] - g_st.left_said[2]) / 1e6 / presents, (unsigned long long)(now[1] - g_st.left_said[1]));
+    for (int i = 0; i < 3; i++) g_st.left_said[i] = now[i];
 }
 void vk_stamp_reset(void) {
     g_st.end = g_st.last = g_st.clock = 0;

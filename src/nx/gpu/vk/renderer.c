@@ -1141,6 +1141,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(slowest_ns / 1000000));
                 vk_tex_check_log();
                 vk_tex_take_log();
+                vk_stamp_log(600);
                 u64 folds, fold_pipes, fold_dropped;
                 vk_shader_fold_stats(&folds, &fold_pipes, &fold_dropped);
                 if (folds)

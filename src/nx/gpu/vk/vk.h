@@ -3864,6 +3864,11 @@ void vk_stamp_fold(u64 done);
 /* the runtime's own GPU work recorded between these, which the reports' times leave out (stamp.c); they nest */
 void vk_stamp_runtime_begin(void);
 void vk_stamp_runtime_end(void);
+/* those stretches so far: the ones marked, the ones whose mark found every timestamp of the pool waiting for its
+   submission (their GPU time stays in the reports' spans), and the GPU time left out, in ns. vk_stamp_log: a line of
+   the three over the last presents presents, when any stretch was made */
+void vk_stamp_runtime_stats(u64* marks, u64* lost, u64* ns);
+void vk_stamp_log(u32 presents);
 void vk_stamp_reset(void); /* clear timeline epoch on save-state load (vkr_reset) */
 /* a fresh pair of the GPU's clock and the client's, for the track's calibration (0 without the extension) */
 int vk_gpuprof_clock(i64* cpu, i64* gpu);

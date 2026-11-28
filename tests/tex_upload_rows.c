@@ -1059,6 +1059,10 @@ int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32
 }
 void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
 void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
+/* the stretches of the runtime's own work that the reports' spans leave out (stamp.c), counted */
+static u32 g_stretch_begins, g_stretch_ends;
+void vk_stamp_runtime_begin(void) { g_stretch_begins++; }
+void vk_stamp_runtime_end(void) { g_stretch_ends++; }
 void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1ull << 30; }
 int vk_mem_pressed(void) { return 0; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
@@ -1290,6 +1294,7 @@ static void count_copy_image(VkCommandBuffer cb, VkImage src, VkImageLayout sl, 
    settled too: the target's next draw moves the count */
 static void check_take_skip(void) {
     Surf t = tex(64, 64, 1, 1, 4, 2, 0, 1), s = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    const u32 stretches = g_stretch_begins;
     s.is_rt = 1;
     s.sw = s.w;
     s.sh = s.h;
@@ -1318,6 +1323,8 @@ static void check_take_skip(void) {
     tex_take_drawn(&t);
     tex_take_drawn(&t);
     CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
+    /* the one search that copied is one stretch of the runtime's own work; those that copied nothing are none */
+    CHECK(g_stretch_begins == stretches + 1 && g_stretch_ends == g_stretch_begins);
     /* a texture sampled from level 1 on (made at half its resolution): its level 0 gets its memory back for the
        target drawn for it, which is copied into it, and the texture samples from level 0 again */
     Surf half = tex(64, 64, 1, 2, 4, 2, 0, 1);
@@ -2389,7 +2396,10 @@ int main(void) {
     g_vk.alloc_cap = 256ull << 20;
     /* the video's picture: 1920 wide in 4 byte pixels, rows of whole pieces, 16 GOBs a block */
     Surf a = tex(1920, 136, 1, 1, 4, 4, 0, 1);
+    const u32 stretches = g_stretch_begins;
     upload_and_check(&a, GUEST, 1);
+    /* an upload is a stretch of the runtime's own work, begun and ended */
+    CHECK(g_stretch_begins > stretches && g_stretch_ends == g_stretch_begins);
     /* rows that end inside a piece (27 pixels of 4 bytes, 108 bytes), and its mip levels with their shrunk blocks */
     Surf b = tex(27, 50, 1, 3, 4, 3, 0, 1);
     upload_and_check(&b, GUEST, 1);

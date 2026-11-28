@@ -2175,7 +2175,12 @@ static void tex_hosted_publish(Surf* t) {
 static int tex_upload(Surf* t) {
     tex_hosted_publish(t);
     SNX_ZONE_V(z, "texture upload", t->size);
+    /* the console's GPU samples guest memory where it is: the upload is the runtime's own work, which a game that
+       sizes its frame by its GPU timer must not count (stamp.c). In a racing game's race the uploads were 2.3 ms of
+       the 13.7 ms a present its timer read, and 6 ms of 14.8 where memory ran short */
+    vk_stamp_runtime_begin();
     int r = tex_upload_(t);
+    vk_stamp_runtime_end();
     SNX_ZONE_END(z);
     return r;
 }
@@ -2970,7 +2975,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     if (!pixels) return c;
     if (guest && c->crop_gen != rt->wgen) {
         const int open = vk_render_begun();
-        if (!rt_copy_guest(rt, c, sw, sh)) return NULL; /* asked for again at its next use */
+        vk_stamp_runtime_begin(); /* the runtime's own work, as the copy below */
+        const int copied = rt_copy_guest(rt, c, sw, sh);
+        vk_stamp_runtime_end();
+        if (!copied) return NULL; /* asked for again at its next use */
         c->crop_gen = rt->wgen;
         g_vk_rt_copy_writes++;
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
@@ -2979,6 +2987,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     /* a copy is reused while the target's writes since it are the ones of draws that sampled it (vk_rt_copy_drawn) */
     if (c->crop_gen != rt->wgen && !(reuse && c->fb_gen == rt->wgen && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
         const int open = vk_render_begun();
+        /* the console's GPU reads the target's corner, or its bytes as another format, where they are: the copy is
+           the runtime's own work, left out of the reports' spans (stamp.c). 0.34 ms of the 13.7 ms a present a racing
+           game's GPU timer read in its race */
+        vk_stamp_runtime_begin();
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
         vk_surf_use(cb, rt, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -3000,6 +3012,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         r[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         rec_CmdCopyImage(cb, rt->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), c->img,
                          VK_LAYOUT(TRANSFER_DST_OPTIMAL), rt->f.stencil ? 2 : 1, r);
+        vk_stamp_runtime_end();
         c->crop_gen = rt->wgen;
         c->crop_epoch = epoch;
         c->fb_gen = rt->wgen;
@@ -3615,7 +3628,14 @@ static int tex_zero(Surf* t) {
 }
 /* t, a texture with holes in its mapping: its image cleared, then the blocks of its mapped runs loaded; loaded whole
    when they are more than half of it. 1 when the image has them */
+static int tex_load_pieces_(Surf* t);
 static int tex_load_pieces(Surf* t) {
+    vk_stamp_runtime_begin(); /* an upload, as tex_upload's: the runtime's own work */
+    const int loaded = tex_load_pieces_(t);
+    vk_stamp_runtime_end();
+    return loaded;
+}
+static int tex_load_pieces_(Surf* t) {
     TexPieces p;
     TexRuns r = {0, t->gva, 0, 0, 0, 0, &p};
     u64 sum = 0;
@@ -5103,6 +5123,14 @@ static int take_level_back(Surf* t, u32 level) {
 /* the drawn targets a texture did not take for want of memory in their level, so far */
 static u64 g_takes_unbound;
 u64 vk_tex_take_unbound(void) { return g_takes_unbound; }
+/* The copies of a search are the runtime's own work, one stretch a search (stamp.c): the console's GPU samples the
+   target's memory where it is. Opened at the search's first copy, so a search that copies nothing writes no mark: a
+   racing game's race took 139 targets a present, 0.96 ms of the 13.7 ms its GPU timer read */
+static void take_stretch(int* open) {
+    if (*open) return;
+    vk_stamp_runtime_begin();
+    *open = 1;
+}
 static void tex_take_drawn(Surf* t) {
     /* a storage surface its texture hosts: what it takes is its host's to take, into the host's image */
     if (t && t->host) {
@@ -5124,6 +5152,7 @@ static void tex_take_drawn(Surf* t) {
     Surf** d = small;
     u64 stride = t->layer_size;
     u64 hi = t->gva + t->size;
+    int stretch = 0; /* a copy of this search opened the runtime's stretch (take_stretch) */
     int n = vk_rt_drawn_in(t->gva, hi, d, 32);
     if (n > 32) {
         d = malloc((size_t)n * sizeof *d);
@@ -5147,6 +5176,7 @@ static void tex_take_drawn(Surf* t) {
             t->h == s->h << ds_msaa_log2_y(s->msaa) && (s->layers == 1 || s->layer_size == stride) && vk_ms_moves(s) &&
             !copied_into(s, t) && vk_rt_drawn_fresh(s)) {
             u32 count = s->layers < t->layers ? s->layers : t->layers;
+            take_stretch(&stretch);
             vk_render_end();
             VkCommandBuffer cb = vk_cmd();
             for (u32 k = 0; k < count; k++) {
@@ -5206,6 +5236,7 @@ static void tex_take_drawn(Surf* t) {
                     settled = 0;
                     continue;
                 }
+                take_stretch(&stretch);
                 VkCommandBuffer cb = copy_begin(s, t);
                 if (scaled) {
                     VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
@@ -5261,6 +5292,7 @@ static void tex_take_drawn(Surf* t) {
                     (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
                     u64 z = ((off - lo) / slab << lbd) + (off - lo) % slab / step;
                     if (z < ld) {
+                        take_stretch(&stretch);
                         if (copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1))
                             mark_copied(s, t);
                         else
@@ -5292,6 +5324,7 @@ static void tex_take_drawn(Surf* t) {
             settled = 0;
             continue;
         }
+        take_stretch(&stretch);
         if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
             mark_copied(s, t);
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its
@@ -5314,6 +5347,7 @@ static void tex_take_drawn(Surf* t) {
         } else
             settled = 0;
     }
+    if (stretch) vk_stamp_runtime_end();
     if (t->patch_run >= 8 && !t->take_said) take_say(t, d, n, NULL);
     if (d != small) free(d);
     if (settled && vk_rt_take_gen() == gen) {
