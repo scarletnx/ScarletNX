@@ -2092,16 +2092,26 @@ static int gfx_composed_pages(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* o
    from another entry over the same memory. The table has a leaf of 1024 pages per 4 MB that has been written, with
    the newest generation in the leaf beside it so whole leaves are skipped */
 #define WW_LEAF_SHIFT 22
-static u32* g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
-static u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
+/* atomic, as the stamps are written only under vk_lock and read with no lock too (vk_written_since_plain): a leaf's
+   table is published after its first stamps (release), and is never freed */
+static _Atomic u32* _Atomic g_wleaf[AS_TOP >> WW_LEAF_SHIFT];
+static _Atomic u32 g_wleaf_max[AS_TOP >> WW_LEAF_SHIFT];
+static _Atomic u32* ww_table(u64 l) { return atomic_load_explicit(&g_wleaf[l], memory_order_acquire); }
+static u32 ww_max(u64 l) { return atomic_load_explicit(&g_wleaf_max[l], memory_order_relaxed); }
+static u32 ww_stamp(_Atomic u32* t, u64 pg) { return atomic_load_explicit(&t[pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)], memory_order_relaxed); }
 /* The CPU writes a GPU stream may see come before its submission or the end of one of its waits: each of those starts
    a write epoch (vk_ww_new_epoch). A leaf scanned whole in an epoch isn't scanned again in it, and a scan covers whole
    leaves, so the textures and buffers checked in one epoch share a few scans: one game made 5,600 of them a frame.
-   g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
-static u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
+   g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock). The
+   clock, g_ww and g_wleaf_seen change only under vk_lock, and are atomic for vk_ww_take_plain, which a split's draws
+   call with no lock: a leaf's seen is stored after its stamps (release), so a load of it (acquire) sees them */
+static _Atomic u32 g_wleaf_seen[AS_TOP >> WW_LEAF_SHIFT];
 static _Atomic u32 g_ww_epoch; /* atomic */
-static u32 g_wclock = 1;
-static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
+static _Atomic u32 g_wclock = 1;
+static _Atomic int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
+static u32 ww_clock(void) { return atomic_load_explicit(&g_wclock, memory_order_relaxed); }
+static int ww_state(void) { return atomic_load_explicit(&g_ww, memory_order_relaxed); }
+static void ww_state_set(int v) { atomic_store_explicit(&g_ww, v, memory_order_relaxed); }
 /* the pages the stamps above marked since the page cache last took their bytes (vk_ww_dirty_clear): a bit a 4 KiB page
    of guest memory, set with each stamp. NULL until the page cache is on (vk_ww_dirty_init), or when there was no
    memory for it: no bits are set then */
@@ -2142,22 +2152,23 @@ static void ww_mark(u8* p, u64 n) {
     u64 bumped = 0; /* the granules of the generations by address done (addr_gens.h), past the stamps */
     for (u64 pg = o >> 12, e = (o + n - 1) >> 12; pg <= e && pg < (AS_SIZE >> 12); pg++) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12);
-        if (!g_wleaf[l]) {
+        _Atomic u32* t = ww_table(l);
+        if (!t) {
             /* a leaf without a table stands for all its pages at its newest generation (ww_mark_range, or a table
                that couldn't be allocated): a new table starts them there */
-            u32* t = calloc(1u << (WW_LEAF_SHIFT - 12), 4);
-            if (t && g_wleaf_max[l])
-                for (u32 i = 0; i < 1u << (WW_LEAF_SHIFT - 12); i++) t[i] = g_wleaf_max[l];
-            g_wleaf[l] = t;
+            t = calloc(1u << (WW_LEAF_SHIFT - 12), sizeof *t);
+            for (u32 i = 0; t && ww_max(l) && i < 1u << (WW_LEAF_SHIFT - 12); i++)
+                atomic_store_explicit(&t[i], ww_max(l), memory_order_relaxed);
+            if (t) atomic_store_explicit(&g_wleaf[l], t, memory_order_release);
         }
-        if (g_wleaf[l]) {
-            g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] = g_wclock;
+        if (t) {
+            atomic_store_explicit(&t[pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)], ww_clock(), memory_order_relaxed);
             if (g_wdirty) g_wdirty[pg >> 6] |= 1ull << (pg & 63);
         } else /* no table: the stamp below stands for the whole leaf */
             ww_dirty_set(l << (WW_LEAF_SHIFT - 12), (l + 1) << (WW_LEAF_SHIFT - 12));
-        g_wleaf_max[l] = g_wclock;
+        atomic_store_explicit(&g_wleaf_max[l], ww_clock(), memory_order_relaxed);
         /* after the stamp. Without a table the stamp stands for the whole leaf, and so does the bump */
-        const u64 at = g_wleaf[l] ? pg << 12 : l << WW_LEAF_SHIFT, len = g_wleaf[l] ? 0x1000 : 1ull << WW_LEAF_SHIFT;
+        const u64 at = t ? pg << 12 : l << WW_LEAF_SHIFT, len = t ? 0x1000 : 1ull << WW_LEAF_SHIFT;
         if (at + len > bumped) {
             const u64 from = at > bumped ? at : bumped, to = (at + len + (1ull << ADDR_GENS_SHIFT) - 1) &
                                                              ~((1ull << ADDR_GENS_SHIFT) - 1);
@@ -2176,8 +2187,8 @@ static void ww_mark_pages(u64 o, u64 e) {
     const u64 lp = 1ull << (WW_LEAF_SHIFT - 12);
     for (u64 pg = o >> 12, pe = (e + 4095) >> 12; pg < pe;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) * lp, end = pe < lend ? pe : lend;
-        if (!g_wleaf[l] && pg == l * lp && end == lend) {
-            g_wleaf_max[l] = g_wclock;
+        if (!ww_table(l) && pg == l * lp && end == lend) {
+            atomic_store_explicit(&g_wleaf_max[l], ww_clock(), memory_order_relaxed);
             ww_dirty_set(pg, end);
             addr_gens_bump(ADDR_GENS_CPU, pg << 12, (end - pg) << 12); /* after the stamp, as ww_mark bumps */
         } else
@@ -2240,7 +2251,7 @@ static void ww_take_changed(void) {
     memcpy(c, g_wchg, (size_t)n * sizeof *c);
     atomic_store_explicit(&g_wchg_n, 0, memory_order_relaxed);
     pm_unlock(&g_wchg_lock);
-    if (n) g_wclock++; /* what it marks is newer than every baseline taken before (vk_written_since) */
+    if (n) atomic_fetch_add_explicit(&g_wclock, 1, memory_order_relaxed); /* what it marks is newer than every baseline taken before (vk_written_since) */
     for (int i = 0; i < n; i++) ww_mark_range(c[i].a, c[i].e);
 }
 
@@ -2514,7 +2525,7 @@ static void ww_mark_scanned(u64 o, u64 e) {
 static void ww_take_scanned(void) {
     if (!atomic_load_explicit(&g_wres_n, memory_order_acquire)) return;
     pm_lock(&g_wres_lk);
-    if (atomic_load_explicit(&g_wres_n, memory_order_relaxed)) g_wclock++;
+    if (atomic_load_explicit(&g_wres_n, memory_order_relaxed)) atomic_fetch_add_explicit(&g_wclock, 1, memory_order_relaxed);
     pm_lock(&g_wland_lk);
     if (g_wland_n) {
         landed_sort();
@@ -2630,16 +2641,17 @@ static void ww_used_epoch(u32 seen) {
 
 /* the leaves [lo, hi] taken in for the epoch seen - 1: those not taken in yet scanned in it (by the scanner already,
    or here) and what the scans found marked. 0, or -1 when the tracking failed (under vk_lock) */
+static u32 ww_seen(u64 l, memory_order o) { return atomic_load_explicit(&g_wleaf_seen[l], o); }
 static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     u64 l, a;
-    for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
+    for (l = lo; l <= hi && (i32)(ww_seen(l, memory_order_relaxed) - seen) >= 0; l++) {}
     if (l > hi) return 0;
     u64 first = hi + 1, last = 0;
     ww_used_epoch(seen);
     if (atomic_load_explicit(&g_wleaf_top, memory_order_relaxed) <= hi)
         atomic_store_explicit(&g_wleaf_top, hi + 1, memory_order_relaxed);
     for (a = l; a <= hi; a++) {
-        if ((i32)(g_wleaf_seen[a] - seen) >= 0) continue;
+        if ((i32)(ww_seen(a, memory_order_relaxed) - seen) >= 0) continue;
         atomic_store_explicit(&g_wleaf_used[a], seen, memory_order_relaxed);
         if (!(atomic_load_explicit(&g_wleaf_ever[a >> 6], memory_order_relaxed) >> (a & 63) & 1)) {
             atomic_fetch_or_explicit(&g_wleaf_ever[a >> 6], 1ull << (a & 63), memory_order_relaxed);
@@ -2677,7 +2689,8 @@ static int ww_take_leaves(u64 lo, u64 hi, u32 seen) {
     }
     ww_take_scanned();
     for (a = l; a <= hi; a++)
-        if ((i32)(g_wleaf_seen[a] - seen) < 0) g_wleaf_seen[a] = seen;
+        if ((i32)(ww_seen(a, memory_order_relaxed) - seen) < 0)
+            atomic_store_explicit(&g_wleaf_seen[a], seen, memory_order_release);
     return 0;
 }
 /* the other addresses of a range's pages (mem_alias_peers), noted to be taken in after the memory lock goes; past
@@ -2710,25 +2723,25 @@ static void ww_take_peers(void) {
 /* the scans and changes over [host, host + len) taken in, so the stamps of its pages are up to date: 0, or -1 when
    write tracking can't tell (vk_written_since) */
 static int ww_take(const u8* host, u64 len) {
-    if (!g_ww || !host || !len) return -1;
-    if (g_ww < 0) {
-        g_ww = mem_ww_probe(ww_mark) == 0;
+    if (!ww_state() || !host || !len) return -1;
+    if (ww_state() < 0) {
+        ww_state_set(mem_ww_probe(ww_mark) == 0);
         LOG("vulkan: %s\n",
-            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
-        if (!g_ww) return -1;
+            ww_state() ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
+        if (!ww_state()) return -1;
         pc_init(&g_wscan_cv);
         if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20))
             atomic_store_explicit(&g_wscan_on, 1, memory_order_release);
     }
     if (atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) {
-        g_ww = 0;
+        ww_state_set(0);
         LOG("vulkan: write tracking failed, caches check contents\n");
         return -1;
     }
     /* Existing cache baselines cannot be ordered against a wrapped clock. Fall back
        to content checks permanently before consuming any dirty pages at wrap. */
-    if (g_wclock == UINT32_MAX) {
-        g_ww = 0;
+    if (ww_clock() == UINT32_MAX) {
+        ww_state_set(0);
         return -1;
     }
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
@@ -2751,31 +2764,39 @@ static int ww_take(const u8* host, u64 len) {
             r = ww_take_leaves(peers.r[i].a >> WW_LEAF_SHIFT, (peers.r[i].e - 1) >> WW_LEAF_SHIFT, seen);
     ww_take_peers();
     if (r < 0) {
-        g_ww = 0;
+        ww_state_set(0);
         LOG("vulkan: write tracking failed, caches check contents\n");
         return -1;
     }
     if (peers.over) return -1;
     return 0;
 }
-int vk_written_since(const u8* host, u64 len, u32 since) {
-    int r = ww_take(host, len);
-    if (r) return r;
-    u64 o = (u64)(host - g_mem);
+/* 1 if a page of guest memory [o, o + len) was stamped after since, from the stamps as they are now */
+static int ww_written(u64 o, u64 len, u32 since) {
     for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
         u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
-        if (g_wleaf_max[l] > since) {
-            if (!g_wleaf[l]) return 1; /* the whole leaf was marked */
+        if (ww_max(l) > since) {
+            _Atomic u32* t = ww_table(l);
+            if (!t) return 1; /* the whole leaf was marked */
             for (u64 q = pg; q <= e && q < lend; q++)
-                if (g_wleaf[l][q & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) return 1;
+                if (ww_stamp(t, q) > since) return 1;
         }
         pg = lend;
     }
     return 0;
 }
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    int r = ww_take(host, len);
+    return r ? r : ww_written((u64)(host - g_mem), len, since);
+}
+int vk_written_since_plain(const u8* host, u64 len, u32 since, int* written) {
+    if (!vk_ww_take_plain(host, len)) return 0;
+    *written = ww_written((u64)(host - g_mem), len, since);
+    return 1;
+}
 int vk_written_quick(const u8* host, u64 len, u32 since) {
-    if (g_ww <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
-        g_wclock == UINT32_MAX)
+    if (ww_state() <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
+        ww_clock() == UINT32_MAX)
         return -1;
     u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end;
     /* a write through another address of these pages reads as none here (vk_written_since takes their peers). Any
@@ -2785,33 +2806,23 @@ int vk_written_quick(const u8* host, u64 len, u32 since) {
     if (vk_uma_import_in(o, o + len, &end) < o + len) return -1; /* pages no scan watches */
     const u32 seen = vk_ww_epoch() + 1;
     for (u64 l = lo; l <= hi; l++)
-        if ((i32)(g_wleaf_seen[l] - seen) < 0) return -1; /* not taken in for this epoch yet */
+        if ((i32)(ww_seen(l, memory_order_acquire) - seen) < 0) return -1; /* not taken in for this epoch yet */
     ww_take_changed();
-    for (u64 pg = o >> 12, e = (o + len - 1) >> 12; pg <= e;) {
-        u64 l = pg >> (WW_LEAF_SHIFT - 12), lend = (l + 1) << (WW_LEAF_SHIFT - 12);
-        if (g_wleaf_max[l] > since) {
-            if (!g_wleaf[l]) return 1; /* the whole leaf was marked */
-            for (u64 q = pg; q <= e && q < lend; q++)
-                if (g_wleaf[l][q & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since) return 1;
-        }
-        pg = lend;
-    }
-    return 0;
+    return ww_written(o, len, since);
 }
-int vk_ww_take(const u8* host, u64 len) {
+int vk_ww_take_plain(const u8* host, u64 len) {
     /* nothing to take: the range's leaves taken in for this epoch already, no change noted, no alias and no import */
-    if (g_ww > 0 && host && len && !atomic_load_explicit(&g_wscan_failed, memory_order_acquire) &&
-        g_wclock != UINT32_MAX && !atomic_load_explicit(&g_wchg_n, memory_order_acquire) && !mem_alias_any()) {
-        u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
-        if (vk_uma_import_in(o, o + len, &end) >= o + len) {
-            const u32 seen = vk_ww_epoch() + 1;
-            for (l = lo; l <= hi && (i32)(g_wleaf_seen[l] - seen) >= 0; l++) {}
-            if (l > hi) return 0;
-        }
-    }
-    return ww_take(host, len);
+    if (ww_state() <= 0 || !host || !len || atomic_load_explicit(&g_wscan_failed, memory_order_acquire) ||
+        ww_clock() == UINT32_MAX || atomic_load_explicit(&g_wchg_n, memory_order_acquire) || mem_alias_any())
+        return 0;
+    u64 o = (u64)(host - g_mem), lo = o >> WW_LEAF_SHIFT, hi = (o + len - 1) >> WW_LEAF_SHIFT, end, l;
+    if (vk_uma_import_in(o, o + len, &end) < o + len) return 0;
+    const u32 seen = vk_ww_epoch() + 1;
+    for (l = lo; l <= hi && (i32)(ww_seen(l, memory_order_acquire) - seen) >= 0; l++) {}
+    return l > hi;
 }
-u32 vk_ww_now(void) { return g_wclock; }
+int vk_ww_take(const u8* host, u64 len) { return vk_ww_take_plain(host, len) ? 0 : ww_take(host, len); }
+u32 vk_ww_now(void) { return ww_clock(); }
 int vk_ww_gen(const u8* host, u64 len, u32* gen) {
     if (!host || host < g_mem) return 0;
     return addr_gens_read(ADDR_GENS_CPU, (u64)(host - g_mem), len, gen);
@@ -2824,7 +2835,7 @@ void vk_ww_stats(u32 presents) {
         l[i] = atomic_exchange_explicit(&g_wscan_leaves[i], 0, memory_order_relaxed);
         ns[i] = atomic_exchange_explicit(&g_wscan_ns[i], 0, memory_order_relaxed);
     }
-    if (g_ww > 0 && presents)
+    if (ww_state() > 0 && presents)
         LOG("vulkan: write scans over %u presents: %.1f epochs a present; the scanner %.1f leaves of 4 MiB a present "
             "(%.2f ms), the checks %.1f (%.2f ms, and %.1f the scanner had)\n",
             presents, (double)(e - epoch0) / presents, (double)l[0] / presents, (double)ns[0] / 1e6 / presents,
@@ -2845,7 +2856,7 @@ static int ww_cool_range(u64 a, u64 e) {
     return 1;
 }
 void vk_ww_cool(const u8* host, u64 len) {
-    if (g_ww <= 0 || !host || !len) return;
+    if (ww_state() <= 0 || !host || !len) return;
     u64 o = (u64)(host - g_mem);
     if (o >= AS_SIZE) return;
     if (len > AS_SIZE - o) len = AS_SIZE - o;
@@ -2865,7 +2876,7 @@ void vk_ww_cool(const u8* host, u64 len) {
    trap */
 void vk_ww_watching(u64 lo, u64 hi) {
     const u64 first = lo >> WW_LEAF_SHIFT, last = (hi - 1) >> WW_LEAF_SHIFT;
-    if (g_ww <= 0 || atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) return; /* no baseline to miss it */
+    if (ww_state() <= 0 || atomic_load_explicit(&g_wscan_failed, memory_order_acquire)) return; /* no baseline to miss it */
     ww_claim_all(first, last);
     t_buffer.wstage = &g_wstage_check;
     if (ww_scan_free(lo, hi) < 0) atomic_store_explicit(&g_wscan_failed, 1, memory_order_release);
@@ -2922,7 +2933,9 @@ void vk_ww_open(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ct
    a range vk_written_since(host, len, since) has just found written, so its pages are marked */
 static int page_written(u64 pg, u32 since) {
     u64 l = pg >> (WW_LEAF_SHIFT - 12);
-    return g_wleaf_max[l] > since && (!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since);
+    if (ww_max(l) <= since) return 0;
+    _Atomic u32* t = ww_table(l);
+    return !t || ww_stamp(t, pg) > since;
 }
 int vk_ww_page_after(u64 cpu, u32 since) { return page_written(cpu >> 12, since); }
 void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
@@ -4868,7 +4881,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
            copy engine's source past a sixty-fourth of the memory budget: a texture's upload reads its source once,
            and an 8192x8192 RGBA8 texture's levels took 760 MiB of them that nothing read again, where a phone had
            1 GB available. Such a source takes one once it stays the same, as every other range does */
-        int at_once = len >= PATCH_MIN && g_ww > 0 && (strict != 2 || len <= copy_src_at_once());
+        int at_once = len >= PATCH_MIN && ww_state() > 0 && (strict != 2 || len <= copy_src_at_once());
         /* frequent, so a small code: 0 stays in the staging ring, 1 counts pending, 2 paged, 3 stable range, 4 big
            range with tracked writes */
         SNX_ZONE(z_choice, "vk mem buffer own choice");

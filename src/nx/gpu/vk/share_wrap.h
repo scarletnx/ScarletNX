@@ -1004,6 +1004,8 @@ static inline void sh_vk_vrs_keep(VkCommandBuffer cb) {
 }
 static inline int sh_vk_written_since(const u8* host, u64 len, u32 since) {
     if (!vk_share_on()) return vk_written_since(host, len, since);
+    int w;
+    if (vk_written_since_plain(host, len, since, &w)) return w;
     vk_share_lock_at(136);
     int const r = vk_written_since(host, len, since);
     vk_share_unlock();
@@ -1045,6 +1047,7 @@ static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, c
    and the write clock: a worker's check and the renderer thread's at once lose each other's written pages */
 static inline int sh_vk_ww_take(const u8* host, u64 len) {
     if (!vk_share_on()) return vk_ww_take(host, len);
+    if (vk_ww_take_plain(host, len)) return 0;
     vk_share_lock_at(141);
     int const r = vk_ww_take(host, len);
     vk_share_unlock();
