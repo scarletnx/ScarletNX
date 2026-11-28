@@ -59,6 +59,12 @@ layout(binding = 2, std430) restrict buffer Work {
 };
 #endif
 
+/* the encoder's choice a block (bc7_encode.glsl's EncodeChoice): the one an earlier encode of the same level made, or
+   0 for the whole search, and the one this encode makes, written over it (vk/bc7_choices.c keeps them between runs) */
+layout(binding = 3, std430) restrict buffer Choices {
+    uint choices[];
+};
+
 /* The block being decoded: astc_decode.glsl's 39 words (its F_ fields), which astc.comp keeps for a tile of 64 blocks
    in the workgroup's shared memory. Here they are the invocation's own. Shared memory is what a GPU has least of: 10
    KB a workgroup held a GeForce GT 1030 to a fifth fewer blocks in flight through the encoder, which is nearly all of

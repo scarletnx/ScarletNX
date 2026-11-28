@@ -1212,6 +1212,13 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)(vk_bc7_cache_max() >> 20), (unsigned long long)cache.stored,
                         (unsigned long long)cache.evicted, (unsigned long long)cache.refused,
                         (unsigned long long)(cache.released >> 20));
+                u64 choice_levels, choice_bytes, choice_given, choice_known;
+                vk_bc7_choices_stats(&choice_levels, &choice_bytes, &choice_given, &choice_known);
+                if (choice_levels || choice_given)
+                    LOG("vulkan: the BC7 encoder's choices: %llu of the %llu blocks of kept levels encoded since the start took a kept "
+                        "one in place of the search; %llu levels' kept (%llu KB), written at the exit\n",
+                        (unsigned long long)choice_known, (unsigned long long)choice_given,
+                        (unsigned long long)choice_levels, (unsigned long long)(choice_bytes >> 10));
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)
@@ -1958,6 +1965,7 @@ static void vkr_reset(void) {
 static void vk_save(int at_exit) {
     if (at_exit) vk_pipeline_file_save();
     if (at_exit) vk_cb_dynamic_save(); /* the constant buffers' moves, which the next start chooses from */
+    if (at_exit) vk_bc7_choices_save(); /* the BC7 encoder's choices, which the next start skips the search with */
     vk_pipeline_save(at_exit);
 }
 const Renderer vk_renderer = {

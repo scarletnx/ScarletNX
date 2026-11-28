@@ -1040,6 +1040,14 @@ void vk_pipeline_init(void) {
     /* the BC7 blocks of earlier ASTC encodes, where ASTC textures are held as BC7 (astc.c) */
     g_pipeline.bc7_cache = 1;
     if (vk_astc_bc7()) vk_pipeline_bc7_cache();
+    /* the BC7 encoder's choices of earlier runs (bc7_choices.c), which the levels they saw take in place of the
+       search; written back at the exit */
+    if (vk_astc_bc7()) {
+        char choices[1400];
+        snprintf(choices, sizeof choices, "%s/%s.bc7choice", g_pipeline.cache_dir, g_exename);
+        snx_path_native(choices);
+        vk_bc7_choices_load(choices);
+    }
     { /* the files earlier versions kept that cache in: said once a run, and left where they are */
         char old[1400];
         snprintf(old, sizeof old, "%s/%s.vkbc7", g_pipeline.cache_dir, g_exename);

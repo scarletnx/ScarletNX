@@ -24,6 +24,7 @@ struct Encoder : Invocation {
         const uint bx = gl_GlobalInvocationID.x, by = gl_GlobalInvocationID.y, z = gl_WorkGroupID.z;
         if (bx >= blocks_x || by >= blocks_y) return;
         hint_on = false;
+        choice_on = false;
         as_hint = 0u; // a picture says nothing of its blocks
         for (uint k = 0u; k < 16u; k++) {
             const uint x = min(bx * 4u + (k & 3u), width - 1u), y = min(by * 4u + (k >> 2u), height - 1u);

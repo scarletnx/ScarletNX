@@ -89,6 +89,22 @@ typedef struct {
     u32* words;
     u32 n;
 } KindRead;
+/* where a strip's encoder choices go in its level's (bc7_choices.c): the level's key and blocks, and the strip's first
+   block among them. key NULL: a strip whose choices are not kept */
+typedef struct {
+    const u64* key;
+    u64 n, first;
+} ChoiceAt;
+/* a strip's choices in the readback ring until the submission that copies them is done (vk_astc_frame_done), then put
+   in its level's; sub 0: a free slot */
+typedef struct {
+    u64 key[2];
+    u64 n, first, count;
+    u8* back;
+    DevMem mem;
+    u64 off;
+    u64 sub;
+} ChoiceRead;
 /* Kept for the device lifetime, like the other internal pipelines. All uses are on g_vk.gfx, under vk_lock(), even
    when uploads originate in compute */
 typedef struct {
@@ -109,6 +125,10 @@ typedef struct {
     VkDescriptorSetLayout bc7_ds;
     VkBuffer bc7_work;
     DevMem bc7_work_mem;
+    /* the encoder's choices, a word a block of a strip (bc7_encode.glsl's EncodeChoice): the ones kept for the level
+       copied in before its encode (0 where none is), the encode's own read back after it (bc7_choices.c) */
+    VkBuffer bc7_choice;
+    DevMem bc7_choice_mem;
     /* its builds (vk_bc7_build): the full one, the fast one, mode 6 alone, and the quick one of a very large level
        (mode 6 from one line), each made on its first use */
     VkShaderModule bc7_modules[4][2];
@@ -134,6 +154,8 @@ typedef struct {
     VkPipeline kind_pipe;
     KindRead* kinds;
     u32 nkinds;
+    ChoiceRead* choice_reads;
+    u32 nchoice_reads;
     /* the textures whose blocks astc_textures's BC7 read as they were made, by outcome (VK_ASTC_KIND_*), and the CPU's time for it;
        those read again as they loaded again, and of them those that took another format (vk_astc_kind_seen) */
     u64 kind_made[VK_ASTC_KIND_N], kind_made_ns, kind_again, kind_again_ns, kind_changed;
@@ -188,8 +210,8 @@ static struct {
     u32 next;
     VkCommandBuffer cb;
     u64 val, texels, queued, paced;
-    VkBuffer scratch, bc7_scratch, bc7_work, bl;
-    DevMem mem, bc7_mem, work_mem, bl_mem;
+    VkBuffer scratch, bc7_scratch, bc7_work, bl, bc7_choice;
+    DevMem mem, bc7_mem, work_mem, bl_mem, choice_mem;
     int state;
 } g_stream;
 /* astc_upload records for the stream: the stream's buffers in place of the graphics queue's */
@@ -197,6 +219,7 @@ static int g_on_stream;
 static VkBuffer scratch_buf(void) { return g_on_stream ? g_stream.scratch : g_astc.scratch; }
 static VkBuffer bc7_scratch_buf(void) { return g_on_stream ? g_stream.bc7_scratch : g_astc.bc7_scratch; }
 static VkBuffer bc7_work_buf(void) { return g_on_stream ? g_stream.bc7_work : g_astc.bc7_work; }
+static VkBuffer bc7_choice_buf(void) { return g_on_stream ? g_stream.bc7_choice : g_astc.bc7_choice; }
 /* The encoder is slow: a small GPU takes about a second over 256 thousand blocks, so a load of many textures queued up
    tens of seconds of it ahead of the GPU, and the device was lost in most runs, with no error in the validation layer
    and no fault in the kernel's log. Past this many blocks an upload waits for the GPU to do them. A wait costs little,
@@ -276,7 +299,7 @@ typedef struct {
 #define BC7_WORK_HEAD 16u /* the work list's four words before the blocks' numbers */
 static void bc7_init(void) {
     if (g_astc.bc7_layout) return;
-    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, sizeof(AstcBc7Params), &g_astc.bc7_ds, &g_astc.bc7_layout)))
+    if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 4, 0, sizeof(AstcBc7Params), &g_astc.bc7_ds, &g_astc.bc7_layout)))
         fatal("vulkan: cannot create the BC7 encoder's descriptor and pipeline layouts");
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = g_astc.cap,
@@ -293,6 +316,11 @@ static void bc7_init(void) {
     if (!VK_OK(vk_buffer_create(&bi, &ai, &g_astc.bc7_work, &g_astc.bc7_work_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's work list");
     vk_mem_track(g_astc.bc7_work_mem, VK_OWN_ENCODER);
+    bi.size = g_astc.cap / 4;
+    bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_astc.bc7_choice, &g_astc.bc7_choice_mem, NULL)))
+        fatal("vulkan: cannot allocate the BC7 encoder's choices");
+    vk_mem_track(g_astc.bc7_choice_mem, VK_OWN_ENCODER);
 }
 
 u32 vk_bc7_build(u32 w, u32 h, u32 d) {
@@ -573,6 +601,14 @@ void vk_astc_frame_done(u64 sub) {
         vk_bc7_cache_put(c->key, c->back, c->size);
         g_astc.captured -= c->size;
         c->sub = 0;
+    }
+    /* the encoder's choices in it, into their levels' (bc7_choices.c) */
+    for (u32 i = 0; i < g_astc.nchoice_reads; i++) {
+        ChoiceRead* r = &g_astc.choice_reads[i];
+        if (!r->sub || r->sub > sub) continue;
+        vk_devmem_invalidate(r->mem, r->off, r->count * 4);
+        vk_bc7_choices_put(r->key, r->n, r->first, r->back, r->count);
+        r->sub = 0;
     }
     /* the kind reads in it: their words out of the ring, which the frame's next use of it overwrites */
     for (u32 i = 0; i < g_astc.nkinds; i++) {
@@ -938,9 +974,11 @@ static VkDescriptorSet two_buffers(VkBuffer in, u64 in_off, u64 in_size, VkBuffe
 static VkDescriptorSet bc7_buffers(VkBuffer in, u64 in_off, u64 in_size, u64 out_size) {
     VkDescriptorSet set = vk_desc_alloc(g_astc.bc7_ds);
     if (!set) return VK_NULL_HANDLE;
-    VkDescriptorBufferInfo buffers[3] = {
-        {in, in_off, in_size}, {bc7_scratch_buf(), 0, out_size}, {bc7_work_buf(), 0, BC7_WORK_HEAD + out_size / 4}};
-    snx_vk_storage_buffers(g_vk.dev, set, buffers, 3);
+    VkDescriptorBufferInfo buffers[4] = {{in, in_off, in_size},
+                                         {bc7_scratch_buf(), 0, out_size},
+                                         {bc7_work_buf(), 0, BC7_WORK_HEAD + out_size / 4},
+                                         {bc7_choice_buf(), 0, out_size / 4}};
+    snx_vk_storage_buffers(g_vk.dev, set, buffers, 4);
     return set;
 }
 
@@ -976,6 +1014,99 @@ static void work_barrier(VkCommandBuffer cb, int to) {
     rec_CmdPipelineBarrier2(cb, &d);
 }
 
+/* orders a use of the encoder's choices after the one before: 0 the copy or fill into it after the encode and the copy
+   out of the strip before; 1 the encode after that copy in; 2 the copy out after the encode */
+static void choice_barrier(VkCommandBuffer cb, int to) {
+    static const VkPipelineStageFlags2 src_stage[3] = {
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT};
+    static const VkAccessFlags2 src_access[3] = {
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+    static const VkPipelineStageFlags2 dst_stage[3] = {VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT};
+    static const VkAccessFlags2 dst_access[3] = {
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = src_stage[to],
+                                .srcAccessMask = src_access[to],
+                                .dstStageMask = dst_stage[to],
+                                .dstAccessMask = dst_access[to],
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .buffer = bc7_choice_buf(),
+                                .size = VK_WHOLE_SIZE};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+}
+/* the choices a strip of count blocks is encoded with: its level's kept ones from at's first block (0 where none is
+   known), or all 0, the whole search, where none are kept (at NULL, or no key, or no room to stage them) */
+static void choices_in(VkCommandBuffer cb, const ChoiceAt* at, u64 count) {
+    const u16* kept = at && at->key ? vk_bc7_choices_find(at->key, at->n) : NULL;
+    VkBuffer up = VK_NULL_HANDLE;
+    u64 off = 0;
+    u8* p = kept && at->first <= at->n && count <= at->n - at->first ? vk_stage_upload(count * 4, 4, &up, &off) : NULL;
+    choice_barrier(cb, 0);
+    if (p) {
+        u64 known = 0;
+        for (u64 i = 0; i < count; i++) {
+            const u32 w = kept[at->first + i];
+            memcpy(p + i * 4, &w, 4);
+            known += w != 0;
+        }
+        vk_bc7_choices_given(count, known);
+        const VkBufferCopy r = {off, 0, count * 4};
+        rec_CmdCopyBuffer(cb, up, bc7_choice_buf(), 1, &r);
+    } else
+        rec_CmdFillBuffer(cb, bc7_choice_buf(), 0, count * 4, 0);
+    choice_barrier(cb, 1);
+}
+/* the choices the encode of a strip of count blocks made, into the readback ring for its level's (vk_astc_frame_done
+   puts them there once the submission is done). None where they are not kept, or the ring has no room for them: the
+   next encode of those blocks searches again */
+static void choices_out(VkCommandBuffer cb, const ChoiceAt* at, u64 count) {
+    if (!at || !at->key) return;
+    u32 slot = 0;
+    while (slot < g_astc.nchoice_reads && g_astc.choice_reads[slot].sub) slot++;
+    if (slot == g_astc.nchoice_reads) {
+        const u32 n = g_astc.nchoice_reads ? g_astc.nchoice_reads * 2 : 64;
+        ChoiceRead* grown = realloc(g_astc.choice_reads, (size_t)n * sizeof *grown);
+        if (!grown) return;
+        for (u32 i = g_astc.nchoice_reads; i < n; i++) grown[i] = (ChoiceRead){0};
+        g_astc.choice_reads = grown;
+        g_astc.nchoice_reads = n;
+    }
+    ChoiceRead* r = &g_astc.choice_reads[slot];
+    VkBuffer back;
+    r->back = vk_stage_back(count * 4, &back, &r->off, &r->mem);
+    if (!r->back) return;
+    choice_barrier(cb, 2);
+    const VkBufferCopy c = {0, r->off, count * 4};
+    rec_CmdCopyBuffer(cb, bc7_choice_buf(), back, 1, &c);
+    VkBufferMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .buffer = back,
+                                .offset = r->off,
+                                .size = count * 4};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+    r->key[0] = at->key[0];
+    r->key[1] = at->key[1];
+    r->n = at->n;
+    r->first = at->first;
+    r->count = count;
+    r->sub = vk_submit_number();
+}
+
 /* A strip's ASTC blocks straight into BC7 blocks by astc_bc7.comp in the encoder's build `build`, an invocation a
    BC7 block: nx x n ASTC blocks a slice of nz slices, w x height texels a slice (16384 a side at most: the shader's
    division by the footprint), footprint bw x bh, from block in_base of set's input (bc7_buffers) into the encoder's
@@ -987,7 +1118,7 @@ static void work_barrier(VkCommandBuffer cb, int to) {
    so one hard block in a group held up the mode 6 ones beside it: on a GeForce GT 1030 a 2040x2040 level of one
    game's 8x8 blocks, 18% of them hard, took 392 ms in one pass */
 static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u32 w, u32 height, u32 nx, u32 n, u32 nz,
-                          u32 bw, u32 bh, u32 srgb, u32 in_base, int tag) {
+                          u32 bw, u32 bh, u32 srgb, u32 in_base, int tag, const ChoiceAt* at) {
     const u32 cx = (w + 3) / 4, cy = (height + 3) / 4;
     /* one strip's encode, named by the ASTC footprint and its slices, valued in bytes of BC7 (16 a 4x4 block): the
        CPU's cost of recording it */
@@ -1013,6 +1144,7 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
         rec_CmdFillBuffer(cb, bc7_work_buf(), 12, BC7_WORK_HEAD - 12, 0);
         work_barrier(cb, 1);
     }
+    choices_in(cb, at, (u64)cx * cy * nz);
     scratch_barrier(cb, bc7_scratch_buf(), USE_COPY, 0, USE_WRITE);
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, bc7_pipe(build, 0));
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_astc.bc7_layout, 0, 1, &set, 0, NULL);
@@ -1028,6 +1160,7 @@ static void bc7_transcode(VkCommandBuffer cb, VkDescriptorSet set, u32 build, u3
         rec_CmdDispatchIndirect(cb, bc7_work_buf(), 0);
     }
     bc7_time_end(cb, pair, (u64)cx * cy * nz * 16);
+    choices_out(cb, at, (u64)cx * cy * nz);
     g_astc.bc7_dispatches++;
     scratch_barrier(cb, bc7_scratch_buf(), USE_WRITE, 0, USE_COPY);
 }
@@ -1424,7 +1557,7 @@ static void bg_gpu_piece(void) {
                            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
     VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &md);
-    bc7_transcode(cb, set, 1, j->w, height, j->nx, n, q.nz, j->bw, j->bh, j->srgb, 0, VK_PROF_BC7_BACKGROUND);
+    bc7_transcode(cb, set, 1, j->w, height, j->nx, n, q.nz, j->bw, j->bh, j->srgb, 0, VK_PROF_BC7_BACKGROUND, NULL);
     const VkBufferCopy to = {0, g_astc.captures[slot].off, q.bytes};
     rec_CmdCopyBuffer(cb, g_astc.bc7_scratch, back, 1, &to);
     bg_to_image(cb, j, &q, g_astc.bc7_scratch, 0);
@@ -1628,6 +1761,8 @@ static int stream_ready(void) {
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                        &g_stream.bc7_work, &g_stream.work_mem) ||
+        !stream_buffer(g_astc.cap / 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | copies, &g_stream.bc7_choice,
+                       &g_stream.choice_mem) ||
         !stream_buffer(g_astc.cap, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | copies, &g_stream.bl, &g_stream.bl_mem)) {
         LOG("vulkan: no memory for the ASTC stream's buffers: ASTC textures load on the graphics queue\n");
         return 0;
@@ -1931,7 +2066,7 @@ static int astc_upload_(VkCommandBuffer cb, Surf* t, u32 x, u32 y0, u32 w, u32 h
             u32 row_texels = 0, image_rows = 0;
             if (bc7) {
                 /* the blocks straight into BC7 blocks (astc_bc7.comp), in rows of cx blocks */
-                bc7_transcode(cb, set, bc7_build, w, height, nx, n, nz, bw, bh, (u32)srgb, 0, VK_PROF_BC7);
+                bc7_transcode(cb, set, bc7_build, w, height, nx, n, nz, bw, bh, (u32)srgb, 0, VK_PROF_BC7, NULL);
                 if (capture >= 0) { /* strips start on whole rows of BC7 blocks, so each is one range of the level's */
                     const VkBufferCopy r = {
                         0, g_astc.captures[capture].off + ((u64)z * ((h + 3) / 4) + y * bh / 4) * cx * 16,
@@ -2169,8 +2304,13 @@ int vk_bc7_encode_kept(VkCommandBuffer cb, Surf* t, VkImage dst, u32 level, u32 
     if (!set) return 0;
     const int srgb = t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK;
     keep_barrier(cb, t, 0);
+    /* the level's kept choices where its key is known (texture.c keys each whole level it keeps for the encoder): the
+       strip's first block among the level's, rows of 4x4 blocks a slice, slices after slices */
+    const u32 lcx = (lw + 3) / 4, lcy = (lh + 3) / 4;
+    const ChoiceAt choice_at = {(t->bc7.keyed >> level) & 1 ? t->bc7.key[level] : NULL, (u64)lcx * lcy * slices,
+                                ((u64)z * lcy + (u64)y * bh / 4) * lcx};
     bc7_transcode(cb, set, vk_bc7_build(lw, lh, is3d ? slices : 1), lw, height, nx, n, nz, bw, bh, (u32)srgb,
-                  (u32)((at - start) / 16), VK_PROF_BC7);
+                  (u32)((at - start) / 16), VK_PROF_BC7, &choice_at);
     VkBufferImageCopy out = {.bufferRowLength = cx * 4,
                              .bufferImageHeight = cy * 4,
                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, is3d ? 0 : z, is3d ? 1 : nz},

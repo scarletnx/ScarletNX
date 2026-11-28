@@ -2323,6 +2323,19 @@ typedef struct {
     u64 bytes, levels; /* held now; keys met, held or not */
 } VkBc7CacheStats;
 void vk_bc7_cache_stats(VkBc7CacheStats* s);
+/* bc7_choices.c: the BC7 encoder's choices by level (vk_bc7_key's key), a word a block, 0 where none is known: the
+   level's words, NULL where none are kept for a level of n blocks (find), or made zero for one (take: NULL where
+   there is no memory); a strip's come back from its encode (put: count words from block first); a strip's blocks
+   given choices, of which known had one (given); the levels and bytes kept, and the blocks given and known so far
+   (stats); the game's file read as the device starts (load: the levels read; its path kept) and written there at the
+   exit (save) */
+u16* vk_bc7_choices_find(const u64 key[2], u64 n);
+u16* vk_bc7_choices_take(const u64 key[2], u64 n);
+void vk_bc7_choices_put(const u64 key[2], u64 n, u64 first, const void* got, u64 count);
+void vk_bc7_choices_given(u64 blocks, u64 known);
+void vk_bc7_choices_stats(u64* levels, u64* bytes, u64* given, u64* known);
+u64 vk_bc7_choices_load(const char* path);
+void vk_bc7_choices_save(void);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */

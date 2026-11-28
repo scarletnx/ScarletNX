@@ -711,6 +711,58 @@ static int al_cached(void) {
     return failed;
 }
 
+/* (i) The BC7 encoder's choices (astc.c over bc7_choices.c): a level's come back once its frames are done, kept by the
+   level's key, and a second texture of the same bytes (the header's twin at another address), with a BC7 cache that
+   keeps no level so that it is encoded again, takes them in place of the search (a block of one colour has none to take), and
+   its blocks are the first texture's, bit for bit. The cache is closed after, as al_cached leaves it */
+static int al_choices(void) {
+    static const AlCase c = {"ASTC 8x8 256x256, choices", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
+    AlTex x;
+    u64 levels0, bytes0, given0, known0, levels1, bytes1, given1, known1, size = 0, twin_size = 0;
+    int over;
+    vk_bc7_cache_open(16); /* a cache that keeps no level: the levels get their keys, and the twin is encoded again */
+    vk_bc7_choices_stats(&levels0, &bytes0, &given0, &known0);
+    Surf* t = al_make(&x, &c, 6);
+    CHECK(t && t->bc7.queued && t->bc7.keyed == (1u << x.tex.d.levels) - 1);
+    u64 keys[16][2]; /* the levels' keys, which the texture lets go once its BC7 image is made */
+    for (u32 l = 0; l < x.tex.d.levels && l < 16; l++) keys[l][0] = t->bc7.key[l][0], keys[l][1] = t->bc7.key[l][1];
+    al_until_done(t, &over);
+    vk_lock();
+    vk_finish(); /* the choices read back land in their levels' */
+    vk_unlock();
+    vk_bc7_choices_stats(&levels1, &bytes1, &given1, &known1);
+    const u16* level0 = vk_bc7_choices_find(keys[0], 64u * 64u);
+    u32 chosen = 0;
+    for (u32 i = 0; level0 && i < 64u * 64u; i++) chosen += level0[i] != 0;
+    u8* first = al_image(&x, t, &size);
+    Surf* twin = al_frame(x.twin);
+    kind_land();
+    if (twin) al_until_done(twin, &over);
+    u64 levels2, bytes2, given2, known2;
+    vk_bc7_choices_stats(&levels2, &bytes2, &given2, &known2);
+    u8* again = twin ? al_image(&x, twin, &twin_size) : NULL;
+    const int same = first && again && size == twin_size && !memcmp(first, again, (size_t)size);
+    const int failed = levels1 - levels0 != x.tex.d.levels || !level0 || !chosen || !twin || twin == t ||
+                       twin->f.vk != VK_FORMAT_BC7_UNORM_BLOCK || given2 == given1 || known2 == known1 || !same;
+    if (failed)
+        fprintf(stderr,
+                "ASTC as BC7 between frames, %s: %llu levels' choices kept of %u, %u of level 0's 4096 blocks chosen; "
+                "the twin %p of format %d given %llu blocks' choices, %llu known; its blocks the first's %d\n",
+                c.name, (unsigned long long)(levels1 - levels0), x.tex.d.levels, chosen, (void*)twin,
+                twin ? (int)twin->f.vk : -1, (unsigned long long)(given2 - given1),
+                (unsigned long long)(known2 - known1), same);
+    else
+        printf(
+            "ASTC as BC7 between frames, %s: %u levels' choices kept (%u of level 0's 4096 blocks), and the same bytes "
+            "elsewhere encoded with them, %llu blocks, the first's blocks bit for bit\n",
+            c.name, x.tex.d.levels, chosen, (unsigned long long)(given2 - given1));
+    free(first);
+    free(again);
+    vk_bc7_cache_close();
+    al_free(&x);
+    return failed;
+}
+
 static int check_astc_later(void) {
     const int had = g_settings.astc_textures;
     u32 tic[8];
@@ -744,6 +796,7 @@ static int check_astc_later(void) {
     failed |= al_freed();
     failed |= al_timed();
     failed |= al_cached();
+    failed |= al_choices();
     g_settings.astc_textures = had;
     return failed;
 }

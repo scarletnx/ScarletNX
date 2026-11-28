@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
+/* the same with the choices each block's encode made (choices_out, EncodeChoice's words, 0 for a block of one colour),
+   and with the choices to take in place of the search (choices_in; 0: the search), either NULL for none */
+void bc7_encode_cpu_choices(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out,
+                            const uint32_t* choices_in, uint32_t* choices_out);
 /* The prior search: no bounded block stop or heuristic pruning, retaining only exact early exits. */
 void bc7_encode_cpu_whole(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
 void bc7_encode_cpu_whole_without_45(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);

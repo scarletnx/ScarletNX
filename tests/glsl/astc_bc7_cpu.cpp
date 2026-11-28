@@ -24,6 +24,7 @@ using namespace glsl;
     const leuvec4* astc_data;                                                                                          \
     leuvec4* bc7_blocks;                                                                                               \
     leuint* work;                                                                                                      \
+    leuint* choices;                                                                                                   \
     uint astc_block[39];
 // the builds in one pass: the fast one takes the hints, as its second pass does (the first never gets to them)
 #undef SNX_BC7_LINES
@@ -220,10 +221,12 @@ static void transcode(const uint8_t* src, uint32_t w, uint32_t h, uint32_t depth
     std::vector<glsl::leuvec4> in((size_t)nx * ny * depth);
     std::memcpy(in.data(), src, in.size() * 16);
     std::vector<glsl::leuvec4> blocks((size_t)cx * cy * depth, glsl::uvec4(0xdeadbeefu));
+    std::vector<glsl::leuint> choices(blocks.size(), 0u); // none kept: the whole search
     glsl::dispatch<T>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), [&](T& d) {
         setup(d, w, h, nx, ny, bw, bh, srgb);
         d.astc_data = in.data();
         d.bc7_blocks = blocks.data();
+        d.choices = choices.data();
         d.work = nullptr;
     });
     std::memcpy(out, blocks.data(), blocks.size() * 16);
@@ -237,12 +240,14 @@ static void transcode2(const uint8_t* src, uint32_t w, uint32_t h, uint32_t dept
     std::vector<glsl::leuvec4> in((size_t)nx * ny * depth);
     std::memcpy(in.data(), src, in.size() * 16);
     std::vector<glsl::leuvec4> blocks((size_t)cx * cy * depth, glsl::uvec4(0xdeadbeefu));
+    std::vector<glsl::leuint> choices(blocks.size(), 0u); // none kept: the whole search
     std::vector<glsl::leuint> work(4 + blocks.size(), 0u);
     work[1] = work[2] = 1u;
     const auto each = [&](auto& d) {
         setup(d, w, h, nx, ny, bw, bh, srgb);
         d.astc_data = in.data();
         d.bc7_blocks = blocks.data();
+        d.choices = choices.data();
         d.work = work.data();
     };
     glsl::dispatch<A>(glsl::uvec3((cx + 63) / 64, cy, depth), glsl::uvec3(64u, 1u, 1u), each);

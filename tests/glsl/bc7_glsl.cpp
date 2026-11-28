@@ -7,6 +7,7 @@
 // edges, noise and alpha comes back no worse than the PSNR each region is held to; sizes that are not a multiple of 4
 // and strips of several slices encode as vk/astc.c dispatches them. No GPU is needed.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -697,6 +698,50 @@ static void same_blocks() {
     if (prior_hash != prior_want) failures++;
 }
 
+// An encode that takes each block's choice from an earlier one (choices_in) makes the earlier one's block, bit for bit,
+// for every mode the search writes: the picture, random texels with alpha and opaque ones. Without the other jobs and
+// the partitions' spreads it costs less; the CPU's time of each, which the GPU's follows only roughly, is printed
+static void choices_same() {
+    std::vector<glsl::leuint> pic((size_t)128 * 128), any((size_t)64 * 64), opaque((size_t)64 * 64);
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 128; x++) pic[(size_t)y * 128 + x] = picture(x, y);
+    uint32_t s = 0x2545F491u;
+    for (auto& t : any) t = xorshift(s);
+    for (auto& t : opaque) t = xorshift(s) | 0xFF000000u;
+    struct Case {
+        const char* name;
+        const std::vector<glsl::leuint>* texels;
+        uint32_t w, h;
+    } const cases[3] = {
+        {"the picture", &pic, 128, 128}, {"random texels", &any, 64, 64}, {"random opaque", &opaque, 64, 64}};
+    for (const Case& c : cases) {
+        const size_t n = (size_t)((c.w + 3) / 4) * ((c.h + 3) / 4);
+        std::vector<uint8_t> first(n * 16), again(n * 16);
+        std::vector<uint32_t> choices(n), again_choices(n);
+        const auto t0 = std::chrono::steady_clock::now();
+        bc7_encode_cpu_choices(reinterpret_cast<const uint8_t*>(c.texels->data()), c.w, c.h, 1, first.data(), nullptr,
+                               choices.data());
+        const auto t1 = std::chrono::steady_clock::now();
+        bc7_encode_cpu_choices(reinterpret_cast<const uint8_t*>(c.texels->data()), c.w, c.h, 1, again.data(),
+                               choices.data(), again_choices.data());
+        const auto t2 = std::chrono::steady_clock::now();
+        uint32_t differ = 0, chosen = 0, moved = 0;
+        for (size_t i = 0; i < n; i++) {
+            differ += std::memcmp(&first[i * 16], &again[i * 16], 16) != 0;
+            chosen += choices[i] != 0u;
+            moved += choices[i] != again_choices[i];
+        }
+        const double search = std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                     taken = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        const bool ok = !differ && !moved && chosen;
+        std::printf("%s %s: %zu blocks, %u with a choice; with them %u blocks differ and %u choices moved; the CPU "
+                    "%.1f ms searching, %.1f ms taking the choices (%.1fx)\n",
+                    ok ? "PASS" : "FAIL", c.name, n, chosen, differ, moved, search, taken,
+                    taken > 0 ? search / taken : 0.0);
+        if (!ok) failures++;
+    }
+}
+
 int main() {
     tables();
     weights();
@@ -714,6 +759,7 @@ int main() {
     alpha_kept();
     shapes();
     same_blocks();
+    choices_same();
     if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
