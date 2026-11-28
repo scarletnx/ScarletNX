@@ -1755,6 +1755,33 @@ static void check_half_block(void) {
     check_counts(0);
 }
 
+/* An empty spare block kept in a heap is given back when a request in that heap finds no room (such as a dedicated
+   allocation larger than half a block), letting the request succeed within the budget instead of spilling past it */
+static void check_empty_spare_give(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0;
+    while (n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS) n++;
+    CHECK(n > 64);
+    /* empty one 64 MiB block: kept as the kind's one empty spare while the heap stays at its cap */
+    u32 blk = 0;
+    for (u32 i = 0; i < g_devmem.nblock && !blk; i++)
+        if (g_devmem.block[i].mem && !g_devmem.block[i].own && g_devmem.block[i].size == 64 * MIB) blk = i + 1;
+    CHECK(blk);
+    for (u32 i = 0; i < n; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == blk) unmake(&g_dh[i]);
+    CHECK(g_devmem.block[blk - 1].mem && !g_devmem.block[blk - 1].allocs);
+    /* a 54 MiB request (> half a block) needs dedicated memory: giving back the 64 MiB spare makes room under cap */
+    Held big;
+    CHECK(make(1, 54 * MIB, 4096, ~0u, 0, tex, &big) == VK_SUCCESS);
+    CHECK(alone_of(&big) && !g_devmem.past && !g_devmem.over_bytes);
+    unmake(&big);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) unmake(&g_dh[i]);
+    check_counts(0);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1784,6 +1811,7 @@ int main(void) {
     check_drain_pace();
     check_drain_unfit();
     check_half_block();
+    check_empty_spare_give();
     check_kinds();
     check_kind_fallback();
     check_keep();

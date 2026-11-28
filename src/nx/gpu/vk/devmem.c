@@ -742,6 +742,19 @@ static int own_give_all(void) {
         }
     return gave;
 }
+/* every empty spare block of heap goes: a request that cannot use a block (dedicated, or larger than half a block)
+   found no room under the cap while an unused spare block held it */
+static int empty_give_all(u32 heap) {
+    int gave = 0;
+    for (u32 i = 0; i < g_devmem.nblock; i++) {
+        Block* k = &g_devmem.block[i];
+        if (k->mem && !k->own && !k->allocs && !k->reserve && g_devmem.mp.memoryTypes[k->type].heapIndex == heap) {
+            block_gone(k);
+            gave = 1;
+        }
+    }
+    return gave;
+}
 /* k, memory of its own let go: kept when it can be, at the low class's priority, so that the driver moves it out of
    the GPU's memory first where that is short */
 static void own_keep(Block* k) {
@@ -1011,10 +1024,15 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         }
         /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
         if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
-        /* memory kept for reuse in this type's heap takes room the request has none of: it goes, and the request is
-           tried again in this type before the next, which may be a worse one (the mapped window, system memory) */
-        if (!*mem && g_devmem.kept_heap[g_devmem.mp.memoryTypes[type].heapIndex] && own_give_all())
-            *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, &res);
+        /* memory kept for reuse or empty spare blocks in this type's heap take room the request has none of: they go,
+           and the request is tried again in this type before the next, which may be a worse one (the mapped window,
+           system memory) */
+        if (!*mem) {
+            const u32 h = g_devmem.mp.memoryTypes[type].heapIndex;
+            int gave = g_devmem.kept_heap[h] ? own_give_all() : 0;
+            if (empty_give_all(h)) gave = 1;
+            if (gave) *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, &res);
+        }
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
