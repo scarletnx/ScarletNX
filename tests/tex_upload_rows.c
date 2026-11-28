@@ -827,6 +827,7 @@ void vk_shared_note(u32 which) { (void)which; }
 _Atomic int g_vk_share_on;
 _Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
 u32 vk_share_serial(void) { return 0; }
+u64 vk_work_id(void) { return (g_vk_dispatches + g_vk_drawn) << 2; } /* render.c's: a number for each draw */
 VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }
 void vk_surf_before_reset(const Surf* s) { (void)s; }
 int vk_compute_pending_held(u64 a, u64 n) { return (void)a, (void)n, 0; }
