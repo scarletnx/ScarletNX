@@ -2681,7 +2681,13 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
        level never bound: sampled at half its resolution from the start, a quarter of its bytes left. Its size stays
        the texture's, so textureSize and texelFetch read as the game's, and the level comes back as a shed one's does,
        when there is room (vk_tex_finer) */
-    const int can_shed = !holes && !written && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
+    /* Not one with drawn targets over its memory: its texels come from them, a level at a time (tex_take_drawn), and
+       memory has none of them to load a level from when it comes back. A game that blurs its frame down a chain of
+       targets samples each of them through one header of five levels: made at half its resolution, the first level's
+       pixels went into memory that was not there, and every pass after it read zeros */
+    Surf* over;
+    const int drawn = vk_rt_drawn_in(gva, gva + layer_size * layers, &over, 1) > 0;
+    const int can_shed = !holes && !written && !drawn && bl && levels > 1 && type != VK_IMAGE_VIEW_TYPE_3D &&
                          g_vk.has_view_min_lod &&
                          (f.conv == VKC_NONE ||
                           (f.conv == VKC_ASTC && !(is_bc7(f.vk) && !g_vk.astc_at_load) && !vk_astc_bcn(f.vk)));
