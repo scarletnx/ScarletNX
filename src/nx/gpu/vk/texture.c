@@ -3036,7 +3036,42 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
 static Surf* copy_read(Surf* rt, Surf* c);
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     const int why = !as ? VK_RT_COPY_CROP : w == rt->w && h == rt->h ? VK_RT_COPY_FORMAT : VK_RT_COPY_FORMAT_CROP;
-    return copy_read(rt, rt_copy(rt, w, h, as, why, 1, 1));
+    Surf* c = rt_copy(rt, w, h, as, why, 1, 1);
+    if (c && c != rt) c->corner = (u8)(why + 1);
+    return copy_read(rt, c);
+}
+/* A draw reads a corner of a target that a pass before it drew. Its copy (rt_crop) is made at the draw, in its pass,
+   which the copy ends: in one game's world, 8 times a present the same pass then began again. Made here, at the
+   start of the pass after the one that drew the target, the copy is the target's pixels as the draw would copy them
+   while no pass draws the target between, and the draw finds it made (crop_gen). A copy that a texture read in this
+   present or the one before is made: one that no draw reads costs the copy alone, which is a few KB */
+void vk_rt_corners_refresh(Surf* rt) {
+    if (!rt || rt->host || vk_surf_layout(rt) == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    struct {
+        u32 w, h;
+        int why;
+        VkFmt f;
+        u64 used;
+    } want[4];
+    u32 n = 0;
+    for (const Surf* c = rt->crop; c && n < 4; c = c->next)
+        if (c->corner && c->crop_gen != rt->wgen && (i32)(g_vk_present - (u32)c->last_used) <= 1)
+            want[n++] = (typeof(want[0])){c->w, c->h, c->corner - 1, c->f, c->last_used};
+    if (!n) return;
+    /* the draw that begins the pass can have written a descriptor of rt in the layout it is in now (sampled), and the
+       copies move it to a transfer layout: rt goes back to it, as the descriptor names it */
+    const VkImageLayout was = vk_surf_layout(rt);
+    const VkPipelineStageFlags2 stage = rt->stage;
+    const VkAccessFlags2 access = rt->access;
+    /* rt_copy finds each copy again, and frees the ones unused too long: the list may change under a walk */
+    for (u32 i = 0; i < n; i++) {
+        const int as = want[i].why != VK_RT_COPY_CROP;
+        Surf* c = rt_copy(rt, want[i].w, want[i].h, as ? &want[i].f : NULL, want[i].why, 1, 1);
+        /* a refresh is no read: a copy that no draw reads ages out as before (rt_copy's 60 presents) */
+        if (c && c != rt) c->last_used = want[i].used;
+    }
+    if (vk_surf_layout(rt) != was && (was == VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) || was == VK_IMAGE_LAYOUT_GENERAL))
+        vk_surf_use(vk_cmd(), rt, was, stage, access);
 }
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     for (const Surf* x = rt->crop; x; x = x->next)
@@ -4679,25 +4714,43 @@ static VkSamplerAddressMode wrap(u32 m) {
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
+/* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
+   of the table left free for probing, new sampler states get the first sampler made. An entry is written one time,
+   its state first and then its sampler with a release store, so that vk_sampler_find reads it with no share lock */
+enum { SAMPLER_TAB = 4096, SAMPLER_MAX = 3072 };
+static struct {
+    u32 tsc[8];
+    int raise, integer;
+    _Atomic(VkSampler) s;
+} g_sampler_tab[SAMPLER_TAB];
+static u32 sampler_slot(const u32* tsc, int raise, int integer) {
+    u32 hk = SNX_FNV32_BASIS;
+    for (int i = 0; i < 8; i++) hk = snx_fnv32_step(hk, tsc[i]);
+    hk = snx_fnv32_step(hk, (u32)(raise << 1 | integer));
+    return hk & (SAMPLER_TAB - 1);
+}
+VkSampler vk_sampler_find(const u32* tsc, int raise, int integer) {
+    u32 j = sampler_slot(tsc, raise, integer);
+    for (u32 probe = 0; probe < SAMPLER_TAB; probe++, j = (j + 1) & (SAMPLER_TAB - 1)) {
+        VkSampler const s = atomic_load_explicit(&g_sampler_tab[j].s, memory_order_acquire);
+        if (!s) return VK_NULL_HANDLE;
+        if (!memcmp(g_sampler_tab[j].tsc, tsc, 32) && g_sampler_tab[j].raise == raise &&
+            g_sampler_tab[j].integer == integer)
+            return s;
+    }
+    return VK_NULL_HANDLE;
+}
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     vk_shared_note(15);
-    /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
-       of the table left free for probing, new sampler states get the first sampler made */
-    enum { TAB = 4096, MAX = 3072 };
-    static struct {
-        u32 tsc[8];
-        int raise, integer;
-        VkSampler s;
-    } tab[TAB];
+    enum { TAB = SAMPLER_TAB, MAX = SAMPLER_MAX };
     static u32 n, ncustom;
     static VkSampler first;
-    u32 hk = 2166136261u;
-    for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
-    hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
-    u32 j = hk & (TAB - 1);
-    for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
-    if (n >= MAX || tab[j].s) {
+    VkSampler const found = vk_sampler_find(tsc, raise, integer);
+    if (found) return found;
+    u32 j = sampler_slot(tsc, raise, integer);
+    for (u32 probe = 0; probe < TAB && atomic_load_explicit(&g_sampler_tab[j].s, memory_order_relaxed); probe++)
+        j = (j + 1) & (TAB - 1);
+    if (n >= MAX || atomic_load_explicit(&g_sampler_tab[j].s, memory_order_relaxed)) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
     }
@@ -4787,10 +4840,10 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     }
     VkSampler s;
     if (!VK_OK(vk_sampler_create(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
-    memcpy(tab[j].tsc, tsc, 32);
-    tab[j].raise = raise;
-    tab[j].integer = integer;
-    tab[j].s = s;
+    memcpy(g_sampler_tab[j].tsc, tsc, 32);
+    g_sampler_tab[j].raise = raise;
+    g_sampler_tab[j].integer = integer;
+    atomic_store_explicit(&g_sampler_tab[j].s, s, memory_order_release);
     ncustom += custom;
     if (!n++) first = s;
     return s;

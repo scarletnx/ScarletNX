@@ -831,22 +831,30 @@ void vk_pipeline_init(void) {
         char ban[1200] = "", line[2048];
         if (g_vk.cb_windows_ban) vk_ban_why(g_vk.cb_windows_ban, ban, sizeof ban);
         const SnxVkCbWindowDevice wd = {g_vk.props.limits.maxPushConstantsSize, g_vk.props.limits.maxUniformBufferRange,
-                                        g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
-                                        ban[0] ? ban : NULL};
+                                        g_spirv_translate.uniform_cbufs, ban[0] ? ban : NULL};
         g_spirv_translate.cb_windows =
             snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
         LOG("%s\n", line);
     }
+    /* SM86 banks shorter than their reads in windows too, with their sizes in the per-draw block: where descriptor
+       buffers or heaps hold the sets, which have no dynamic uniform buffers for them */
+    g_spirv_translate.cb_sizes = g_shader_sm86 && g_spirv_translate.cb_windows &&
+                                 (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support);
+    if (g_spirv_translate.cb_sizes)
+        LOG("vulkan: SM86 constant banks shorter than their reads in windows, with their sizes in the draw's block\n");
     /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
-       constant buffers are in windows (the words take one), the sets are plain ones, and the device pushes the
-       words' offsets and binds one more set */
+       constant buffers are in windows (the words take one), and the device pushes the words' offsets and binds one
+       more set. With descriptor buffers the table has a buffer of its own, which lasts from frame to frame: without
+       it, each frame wrote its stages' tables of textures again (785k of 805k texture tables a 600 presents in one
+       game's world were the same as an earlier frame's) */
     g_spirv_translate.tex_table = 0;
     if (g_shader_sm86) {
         const u32 table_set = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
         char why[160] = "";
         const char* no = !g_spirv_translate.cb_windows ? "constant buffers are not bound as windows"
-                         : g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support
-                             ? "descriptor buffers or heaps hold the sets"
+                         : g_vk.has_descriptor_heap_support &&
+                                 (!vk_descriptor_heaps_table() || !g_vk.has_descriptor_buffers)
+                             ? "descriptor heaps hold the sets, and they have no run for it or no descriptor buffers"
                          : g_vk.props.limits.maxPushConstantsSize < SH_PUSH_BYTES_TABLE
                              ? "the device pushes fewer than 240 bytes"
                          : g_vk.props.limits.maxBoundDescriptorSets <= table_set ? "the device binds fewer sets"
@@ -863,13 +871,14 @@ void vk_pipeline_init(void) {
                                         : why);
     }
     /* SM86 programs' global memory by device address, in the texture table's records: where the device gives
-       addresses (has_gbuf_address) and the buffers come from the GPU mirror or the ring, not memory shared with the
-       CPU */
+       addresses (has_gbuf_address) and has memory of its own. The buffers come from the GPU mirror, the ring, or the
+       imports of guest memory that a discrete GPU reads in place (vk_uma_choose), which take addresses
+       (guest_addresses in uma.c) */
     g_spirv_translate.gbuf_address = 0;
     if (g_shader_sm86) {
         const char* no = !g_spirv_translate.tex_table ? "no texture table"
                          : !g_vk.has_gbuf_address     ? "the device has no buffer device address or 64-bit integers"
-                         : vk_uma()                   ? "guest memory is shared with the CPU"
+                         : g_vk.mem_model == VK_MEM_UMA ? "the device shares the system's memory"
                          : !vk_table_scratch_init()   ? "no scratch memory"
                                                       : NULL;
         g_spirv_translate.gbuf_address = !no;
@@ -1176,9 +1185,16 @@ void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read) {
         prefix *= 2;
     }
 }
-static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
+/* whether nothing wrote the len bytes of code at gva since wseen (vk_ww_now) and gw (gpu_mem_generation) */
+static int code_quiet(u64 gva, u32 len, u32 wseen, u64 gw) {
     gmem_need(gva, len); /* pending results over the code land first, as the write tracking then sees them */
-    if (!gpu_mem_dirty_since(ca->gw, gva, len) && vk_written_since(gmem_host(gva, len), len, ca->wseen) == 0) return 1;
+    return !gpu_mem_dirty_since(gw, gva, len) && vk_written_since(gmem_host(gva, len), len, wseen) == 0;
+}
+int vk_shader_code_quiet(const VkSh* s, u64 gva, u64 gva_a, u32 wseen, u64 gw) {
+    return code_quiet(gva, s->clen, wseen, gw) && (!gva_a || code_quiet(gva_a, s->clen_a, wseen, gw));
+}
+static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
+    if (code_quiet(gva, len, ca->wseen, ca->gw)) return 1;
     u64 hash;
     return code_hash(gva, len, &hash) && hash == qh;
 }
@@ -1722,7 +1738,7 @@ typedef struct {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp; /* a mesh pipeline's mesh and task stages' */
     /* with descriptor heaps (k->heaps), each stage's mapping of its set's bindings */
     VkShaderDescriptorSetAndBindingMappingInfoEXT mappings[5];
-    VkDescriptorSetAndBindingMappingEXT binding_maps[5][SNX_VKB_END];
+    VkDescriptorSetAndBindingMappingEXT binding_maps[5][SNX_VKB_END + 2]; /* and the texture table's two */
     VkPipelineTessellationStateCreateInfo ts;
     VkVertexInputBindingDescription vb[33];
     VkVertexInputBindingDivisorDescriptionEXT dv[33];
@@ -1836,6 +1852,11 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                 .mappingCount = vk_descriptor_heaps_mapping(g_vk_dslayout[(k->arrays >> set) & 1][set], set,
                                                              o->binding_maps[o->nst], SNX_VKB_END, k->cb_addr[set]),
                 .pMappings = o->binding_maps[o->nst]};
+            /* the texture table's set, which the vertex and fragment programs read (table.c) */
+            if (g_spirv_translate.tex_table && (set == 0 || set == SHADER_VK_SET_FS) &&
+                o->mappings[o->nst].mappingCount)
+                o->mappings[o->nst].mappingCount += vk_descriptor_heaps_table_mapping(
+                    o->binding_maps[o->nst] + o->mappings[o->nst].mappingCount, g_spirv_translate.table_set);
             o->st[o->nst].pNext = &o->mappings[o->nst];
         }
         if (s == 4 && k->fs_spec) {
@@ -3714,7 +3735,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
                   (u32)g_spirv_translate.split_sets,
-                  (u32)g_spirv_translate.cb_windows,
+                  (u32)g_spirv_translate.cb_windows | (u32)g_spirv_translate.cb_sizes << 1,
                   (u32)g_spirv_translate.tex_table | (u32)g_spirv_translate.pool_map << 1,
                   (u32)g_spirv_translate.gbuf_address,
                   (u32)g_spirv_translate.vertex_fetch,

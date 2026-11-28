@@ -183,9 +183,9 @@ stage sets stay.
 
 The dynamic offsets that end the runs are the constant buffer windows' bases: each bank moved its 64 KiB window of the
 staging ring at its own time (1.20 million moves in 600 presents, of 16.9 million window binds). The setting
-`vk_cb_window_epochs=1` gives all windows in the ring one base, which moves for all of them at once; a kept copy below
-the base is copied again. Window moves fell to 0.27 million, and the runs one device-generated execute could take grew
-from 3.42 to 10.08 draws.
+`vk_cb_window_epochs=1` gives all windows of a draw thread in the ring one base, which moves for all of them at once; a
+kept copy below the base is copied again. The texture words and the GPU mirror's banks keep a window of their own.
+Window moves fell to 0.27 million, and the runs one device-generated execute could take grew from 3.42 to 10.08 draws.
 
 The epochs alone cost time (100 s a side, one build): the renderer thread 10.9 ms a present at 83 fps off, 11.2 to 11.4
 ms at 80 fps on. The constants part of a stage set rose from 96 to 111 ns (the copies made again).

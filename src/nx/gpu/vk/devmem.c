@@ -296,6 +296,10 @@ void vk_devmem_budgets(DevMemBudget* b) {
    place needs, and of those that do, the one that lacks the fewest properties the place prefers and has the fewest
    it avoids wins, the first of equals. The GPU's own memory avoids a type the CPU can map: on a discrete GPU with a
    small window that type is the window, which the whole desktop shares */
+/* where the descriptor tables that the CPU writes and the GPU reads go: the GPU's memory that the CPU maps where it
+   maps all of it, else system memory. A small window (256 MiB without resizable BAR) is the whole desktop's and the
+   staging rings', and the tables' arenas alone are 192 MiB */
+int vk_devmem_tables_at(void) { return g_vk.mem_model == VK_MEM_SMALL_BAR ? DM_HOST : DM_WINDOW; }
 static int type_pick(u32 bits, const DevMemWant* w) {
     VkMemoryPropertyFlags need = w->need, like = 0,
                           avoid = VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
@@ -1386,6 +1390,7 @@ VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
     if (!m || g_devmem.coherent || !atoms(m, off, size, &range)) return VK_SUCCESS;
     return vkFlushMappedMemoryRanges(g_vk.dev, 1, &range);
 }
+int vk_devmem_coherent(void) { return g_devmem.coherent; }
 VkResult vk_devmem_invalidate(DevMem m, u64 off, u64 size) {
     VkMappedMemoryRange range;
     if (!m || g_devmem.coherent || !atoms(m, off, size, &range)) return VK_SUCCESS;

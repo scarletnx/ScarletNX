@@ -1,0 +1,51 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A pending draw result's bytes over guest memory that the CPU wrote since the result took its input (vk/writelog.c
+   vk_result_merge, buffer.c gfx_rebase): a byte the draw changed from its original where guest memory still holds the
+   original is the result's, and each other byte is guest memory's as it is now. It is what the CPU's landing of the
+   result would leave in guest memory (writeback.c vk_write_changed_runs), made with no wait for the GPU. A thread
+   makes one word of the range, also over the result's own words. CMake compiles it into SPIR-V at build time
+   (cmake/glsl.cmake). */
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Res {
+    uint res[]; /* the result's buffer: the range's byte 0 is the binding's byte rbyte */
+};
+layout(std430, set = 0, binding = 1) readonly buffer In {
+    uint inp[]; /* the original bytes of the range from word 0, then guest memory's bytes from word gword */
+};
+layout(std430, set = 0, binding = 2) buffer Out {
+    uint dst[]; /* the range from word oword */
+};
+layout(push_constant) uniform Params {
+    uint words;  /* the range's words, its last one maybe in part */
+    uint rbyte;  /* where the range starts in Res */
+    uint rwords; /* the words of Res's binding */
+    uint gword;  /* where guest memory's bytes start in In */
+    uint oword;  /* where the range starts in Out */
+    uint tail;   /* the bytes of the range in its last word, 1 to 4 */
+};
+
+/* each nonzero byte of x to 0xFF: its bits ORed down into its low bit, then that bit times 0xFF */
+uint nonzero_bytes(uint x) {
+    x |= x >> 4u;
+    x |= x >> 2u;
+    x |= x >> 1u;
+    return (x & 0x01010101u) * 0xFFu;
+}
+
+void main() {
+    uint k = gl_GlobalInvocationID.x;
+    if (k >= words) return;
+    uint w = (rbyte >> 2u) + k, s = (rbyte & 3u) * 8u;
+    uint r = res[w];
+    if (s != 0u) r = (r >> s) | (w + 1u < rwords ? res[w + 1u] << (32u - s) : 0u);
+    uint o = inp[k], g = inp[gword + k];
+    uint m = nonzero_bytes(r ^ o) & ~nonzero_bytes(g ^ o), v = (r & m) | (g & ~m);
+    if (k + 1u == words && tail < 4u) { /* the bytes after the range keep theirs */
+        uint keep = ~0u << (tail * 8u);
+        v = (v & ~keep) | (dst[oword + k] & keep);
+    }
+    dst[oword + k] = v;
+}

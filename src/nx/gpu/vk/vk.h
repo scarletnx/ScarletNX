@@ -88,6 +88,9 @@ typedef struct {
     int has_copy_indirect;
     int has_inplace_loads; /* block linear loads read GPU results by device address (vk_bl_move_src) */
     int has_descriptor_heaps;
+    /* a draw thread's draws that fell back from heaps (render.c's retry), by its recording slot (VK_RC_SLOTS): the
+       other thread's draws of a split keep them. vk_heaps() reads both */
+    u8 heaps_off[4];
     int cb_address; /* the vk_cb_address setting: with heaps, constant buffers by address (vk_cb_addr_mask) */
     int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
@@ -464,6 +467,9 @@ void vk_surf_before_reset(const struct Surf* s);
 #define VK_RC_SLOTS 4
 extern _Thread_local u32 g_vk_slot; /* render.c's t_rc */
 static inline u32 vk_render_slot(void) { return g_vk_slot; }
+static_assert(sizeof g_vk.heaps_off == VK_RC_SLOTS, "a heaps_off for each recording slot");
+/* whether this thread's draw records with descriptor heaps */
+static inline int vk_heaps(void) { return g_vk.has_descriptor_heaps && !g_vk.heaps_off[g_vk_slot]; }
 void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait); /* in counter ticks */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
@@ -799,6 +805,16 @@ u64 vk_stage_buffer_size(VkBuffer b); /* a ring chunk's size, 0 for another buff
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* as vk_stage_upload without the share lock held: out of this thread's part of the ring, which takes the lock only for
+   a new part (draw_batches=2). page picks the part: 0 the thread's shared one, 1 to VK_UPLOAD_PAGES - 1 one of their
+   own, which the copies of one constant bank take (render.c's cb_get_) */
+#define VK_UPLOAD_PAGES (1 + DS_GFX_STAGES * DS_CBUFS + 2)
+/* the parts of the texture words of the vertex and fragment stages (render.c's table_words) */
+#define VK_UPLOAD_WORDS (1 + DS_GFX_STAGES * DS_CBUFS)
+u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off);
+/* whether off in buf is in this thread's part page of this frame (vk_stage_upload_own): 1 and the part's start in
+   *start. A window that starts there holds every copy of the part, as a part is a window's 64 KiB */
+int vk_stage_upload_part(u32 page, VkBuffer buf, u64 off, u64* start);
 /* the host's writes to staging made visible to the GPU before a submission to another queue reads them */
 void vk_stage_flush(void);
 /* the waits a graphics submission takes at most (cmd.c's submit, record.c's copy of them): vk_submit_after's or the
@@ -1015,7 +1031,7 @@ vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_spir
    mappings (PipeKey.cb_addr) and the draw's table take the mask from the same ShaderInfo */
 static inline u32 vk_cb_addr_mask(const ShaderInfo* si) {
     u32 m = 0;
-    if (!g_vk.has_descriptor_heaps || !g_vk.cb_address) return 0;
+    if (!vk_heaps() || !g_vk.cb_address) return 0;
     for (u32 b = si->cbuf_mask & 0x3FFFFu; b; b &= b - 1) {
         u32 i = snx_ctz32(b);
         if (si->cbuf_max[i] && si->cbuf_max[i] < 0x10000 && vk_cbuf_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
@@ -1439,6 +1455,7 @@ typedef struct Surf {
     u64 fb_draw[VK_RC_SLOTS];
     u32 wgen_prev; /* wgen before the last write (vk_surf_wrote) */
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
+    u8 corner;      /* a copy in crop that a texture reads as a corner or in another format (rt_crop): its why + 1 */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
        recency list and its place in the list of ended textures */
@@ -1573,6 +1590,9 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /
 /* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
    copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
 Surf* vk_rt_snapshot(Surf* rt, int pixels);
+/* rt's copies that a texture read as a corner or in another format (rt_crop) in this present or the one before, made
+   again where rt was drawn since: called outside a pass, after one that drew rt ended (render.c's render_begin) */
+void vk_rt_corners_refresh(Surf* rt);
 /* a draw wrote rt: when it sampled a copy of rt (a crop or a snapshot), the copy stands for rt with that draw's writes
    as well */
 void vk_rt_copy_drawn(Surf* rt);
@@ -2570,6 +2590,9 @@ void vk_null_headers_forget(void);
 /* The texture table (table.c): the set of ShCaps.tex_table, with a slot for each sampled view in a layout and for each
    sampler. vk_table_init says if the device can hold it (and why not, in why), and makes it */
 int vk_table_init(char* why, size_t size);
+/* the bytes of the table's own descriptor buffer, 0 without one: they count in the device's descriptor buffer address
+   spaces with the arena's (descriptors.c's arena_shared, after vk_table_init) */
+VkDeviceSize vk_table_descriptor_bytes(void);
 /* the push constant bytes of a draw's pipeline layouts (pipeline.c) */
 u32 vk_push_bytes(void);
 /* With ShCaps.gbuf_address (table.c): the scratch words that an access past a global buffer's length goes to, made
@@ -2583,6 +2606,9 @@ VkDescriptorSet vk_table_set(void);
    when the table is full */
 int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
                    u32* words);
+/* vk_table_words where each view and sampler already has its near entry, with no share lock: 0 where one hasn't */
+int vk_table_words_near(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
+                        u32* words);
 /* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
 void vk_table_forget_view(VkImageView view);
 /* The pool map's use of the table (ShCaps.pool_map): image slot 0 and sampler slot 0 kept for the null texture and
@@ -2604,7 +2630,7 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
    keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
    descriptor. Not with descriptor heaps yet: their writes take a NULL resource for a null descriptor too, which
    descriptor_heaps.c does not write */
-static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
+static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !vk_heaps(); }
 /* the step robustBufferAccess2 checks uniform ranges in: 16, or the device's alignment where that is larger */
 static inline u32 vk_cb_step(void) {
     return g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;
@@ -2636,6 +2662,8 @@ static inline u32 vk_sb_round(u32 bytes) {
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+/* the sampler that vk_sampler made before for this state, or VK_NULL_HANDLE: no share lock */
+VkSampler vk_sampler_find(const u32* tsc, int raise, int integer);
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 /* After a frame's present, its own submission: the BC7 encoder makes the BC7 images of ASTC textures held as BC7 from
@@ -2782,6 +2810,15 @@ u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
    (wlog_merge.comp), every other byte of dst kept. from, to, src_off and dst_off are multiples of 4; the caller orders
    it after that work and before what uses dst. 0 when it can't be (no descriptor set left), with nothing recorded */
 int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 src_off, VkBuffer dst, u64 dst_off);
+/* len bytes of a pending result over guest memory as the CPU's landing would leave them, in the command buffer being
+   recorded (result_merge.comp): the result's bytes from res_off in res, the original bytes from in_off in in, guest
+   memory's bytes after them from in_off + gap, into out from out_off, which can be res_off in res itself when that is
+   a multiple of 4. The bytes around the range in out keep theirs. in_off is a multiple of the storage offset
+   alignment, gap and out_off of 4. The caller orders it after the result's writer and before what reads out. 0 when
+   it can't be (no descriptor set left), with nothing recorded */
+int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len);
+/* whether vk_result_merge's alignments and the device's limits take that merge, with nothing recorded */
+int vk_result_merge_fits(u64 res_off, u64 in_off, u64 gap, u64 out_off, u64 len);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
 /* the host logs cleared at their last unref so far, the window flags those clears read, and the windows cleared */
 void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared);
@@ -2878,9 +2915,9 @@ typedef struct {
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
-    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's 4 words of its
-       record (SH_RECORD_ATTR) and its instance divisor (SH_RECORD_DIVISOR), which render.c's fetch_records fills from
-       the draw's vertex streams */
+    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's address, length
+       and format and its instance divisor, which render.c's fetch_records fills from the draw's vertex streams. The
+       record takes those of the attributes the program reads (ShaderInfo.fetch_attrs, SH_RECORD_ATTR) */
     u32 attr[32][4];
     u32 divisor[32];
     /* last: a draw clears what is above and the n[stage] buffers each stage has (render.c's draw_storage_read), not
@@ -3279,6 +3316,9 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, 
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
+/* whether nothing wrote the code of s at gva (and its VertexA's at gva_a, 0 for none) since wseen (vk_ww_now) and gw
+   (gpu_mem_generation): vk_shader_get's own check of a shader it found at that address before */
+int vk_shader_code_quiet(const VkSh* s, u64 gva, u64 gva_a, u32 wseen, u64 gw);
 /* counts the translations put in the shader table: after a new one, vk_shader_get can give another translation of
    a program than it gave before */
 u32 vk_shader_fold_gen(void);
@@ -3927,6 +3967,7 @@ enum {
     VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
     VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */
     VK_PROF_WLOG_MERGE,      /* a logged result written back on the GPU (wlog_merge.comp) */
+    VK_PROF_RESULT_MERGE,    /* a pending result over the CPU's later writes, for a read (result_merge.comp) */
     VK_PROF_BL_MOVE,         /* a block linear move (blocklinear.c) */
     VK_PROF_DEPTH_PACK,      /* a depth target packed into guest layout (depth_pack.comp) */
     VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */

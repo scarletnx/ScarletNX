@@ -244,6 +244,8 @@ static void mappings(void) {
         VK_SPIRV_RESOURCE_TYPE_COMBINED_SAMPLED_IMAGE_BIT_EXT,
         VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
         VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT};
+    /* each set's address slot in the free bytes of the push block (descriptor_heaps.c's static asserts) */
+    static const uint32_t push_at[] = {168, 216, 232, 240, 248};
     uint32_t resources[1024], samplers[1024];
     for (uint32_t i = 0; i < 1024; i++) { resources[i] = 0x100000 + i * 32; samplers[i] = 0x10000 + i * 16; }
     for (uint32_t set = 0; set < 5; set++)
@@ -255,7 +257,7 @@ static void mappings(void) {
                       mapping.resourceMask == masks[type], "mapping identifies the complete original SPIR-V resource class");
             const VkDescriptorMappingSourceIndirectIndexArrayEXT* s = &mapping.sourceData.indirectIndexArray;
             check(mapping.source == VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_ARRAY_EXT &&
-                      s->pushOffset == 128 + 8 * set && s->samplerPushOffset == s->pushOffset &&
+                      s->pushOffset == push_at[set] && s->samplerPushOffset == s->pushOffset &&
                       s->heapIndexStride == 1 && s->samplerHeapIndexStride == 1 && !s->useCombinedImageSamplerIndex &&
                       !s->pEmbeddedSampler && !s->heapOffset && !s->samplerHeapOffset,
                   "independent byte indices avoid packed-index limits and additional push data");
@@ -267,7 +269,25 @@ static void mappings(void) {
                       "mapping preserves every descriptor-array index and independent image/sampler offset");
             }
         }
+    /* the address slots: 8-byte aligned, inside the push block, apart from each other, and the address mapping's */
+    for (uint32_t set = 0; set < 5; set++) {
+        const uint32_t at = vk_descriptor_heap_push_at(set);
+        check(at == push_at[set] && !(at & 7u) && at + 8 <= VK_DESCRIPTOR_HEAP_PUSH_SIZE,
+              "each set's address slot is 8 aligned bytes in the push block");
+        for (uint32_t other = 0; other < set; other++)
+            check(vk_descriptor_heap_push_at(other) + 8 <= at, "the address slots do not overlap");
+        VkDescriptorSetAndBindingMappingEXT address;
+        check(vk_descriptor_heap_address_mapping(&address, set, 9, 6) &&
+                  address.source == VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT && address.descriptorSet == set &&
+                  address.firstBinding == 9 && address.bindingCount == 1 &&
+                  address.resourceMask == VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT &&
+                  address.sourceData.indirectAddress.pushOffset == at &&
+                  address.sourceData.indirectAddress.addressOffset == 24,
+              "an address mapping reads its bank's address from the set's slot");
+        check(!vk_descriptor_heap_address_mapping(&address, set, 9, 7), "an odd word is no 8-byte address");
+    }
     VkDescriptorSetAndBindingMappingEXT mapping;
+    check(!vk_descriptor_heap_address_mapping(&mapping, 5, 0, 0), "an address mapping of no stage set is rejected");
     check(!vk_descriptor_heap_binding_mapping(&mapping, 5, 0, 0, 0, types[0]), "invalid stage set rejected");
     check(!vk_descriptor_heap_binding_mapping(&mapping, 0, 0, UINT32_MAX, 0, types[0]), "resource word overflow rejected");
     check(!vk_descriptor_heap_binding_mapping(&mapping, 0, 0, 0, UINT32_MAX, types[0]), "sampler word overflow rejected");

@@ -19,6 +19,8 @@ typedef int64_t i64;
 #define SNX_VKB_END                                            64
 #define VK_OK(result)                                          ((result) == VK_SUCCESS)
 #define DM_HOST                                                1
+#define DM_WINDOW                                              2
+#define VK_RC_SLOTS                                            4
 typedef u32 DevMem;
 typedef struct {
     u32 at;
@@ -51,11 +53,16 @@ u64 vk_frame_id(void);
 void vk_frame_next(void);
 u32 vk_cb_begun(void);
 u64 vk_rec_set_binds(void);
+extern _Thread_local u32 g_vk_slot;
 void fatal(const char*, ...);
 void logf_(int, const char*, ...);
 void rec_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, u32, u32, const VkDescriptorSet*,
                                u32, const u32*);
 #define LOG(...) logf_(1, __VA_ARGS__)
+/* vk.h's and devmem.h's: no fallback from the heaps here, and the tables in the mapped window (no small BAR) */
+static inline int vk_heaps(void) { return g_vk.has_descriptor_heaps; }
+static inline int vk_devmem_tables_at(void) { return DM_WINDOW; }
+static inline VkDeviceSize vk_table_descriptor_bytes(void) { return 0; } /* no texture table */
 #include "nx/gpu/vk/descriptors.c"
 
 #define HANDLE(type, value) ((type)(uintptr_t)(value))
@@ -90,6 +97,16 @@ void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const Vk
 }
 void vk_descriptor_heaps_buffer_bound(u32 begun) { (void)begun; abort(); }
 void vk_descriptor_heaps_stats(void) { abort(); }
+void vk_descriptor_heaps_stream_reset(u32 slot) {
+    (void)slot;
+    abort();
+}
+/* the generations of the objects that a lasting table names: the test forgets none */
+u32 vk_descriptor_object_index(u64 object) { return (u32)object; }
+u32 vk_descriptor_object_gen(u32 index) {
+    (void)index;
+    return 0;
+}
 void vk_descriptor_heaps_get_stats(VkDescriptorHeapStats* stats) {
     (void)stats;
     abort();
@@ -113,6 +130,7 @@ u64 vk_frame_id(void) { return 0; }
 void vk_frame_next(void) { abort(); }
 u32 vk_cb_begun(void) { return 1; }
 u64 vk_rec_set_binds(void) { return 0; }
+_Thread_local u32 g_vk_slot;
 void fatal(const char* fmt, ...) {
     (void)fmt;
     abort();
@@ -132,9 +150,10 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer a, VkPipelineBindPoint b, VkPipel
     (void)g;
     (void)h;
 }
-void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress a) {
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress a, VkDeviceAddress table) {
     (void)cb;
     (void)a;
+    (void)table;
 }
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                           const VkDeviceSize* offsets) {
@@ -145,13 +164,14 @@ void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout l
     (void)offsets;
 }
 void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
-                                         u32 count, const VkDeviceSize* offsets) {
+                                         u32 count, const VkDeviceSize* offsets, u32 buffer) {
     (void)cb;
     (void)bp;
     (void)layout;
     (void)first;
     (void)count;
     (void)offsets;
+    (void)buffer;
 }
 VKAPI_ATTR VkDeviceAddress VKAPI_CALL vkGetBufferDeviceAddress(VkDevice device, const VkBufferDeviceAddressInfo* info) {
     (void)device;

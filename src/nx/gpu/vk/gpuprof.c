@@ -999,6 +999,7 @@ static void gp_report(void) {
                                                    [VK_PROF_MIRROR_FOLD] = "the GPU mirror's fold",
                                                    [VK_PROF_MIRROR_HARVEST] = "the GPU mirror's harvest",
                                                    [VK_PROF_WLOG_MERGE] = "the write log's merge",
+                                                   [VK_PROF_RESULT_MERGE] = "a result's merge for a read",
                                                    [VK_PROF_BL_MOVE] = "a block linear move",
                                                    [VK_PROF_DEPTH_PACK] = "the depth pack",
                                                    [VK_PROF_TEXCONV] = "a texture conversion",

@@ -8,9 +8,15 @@
 #include <stddef.h>
 #include <string.h>
 
-/* Existing translated graphics shaders use push bytes0..127. One address per Vulkan set follows them. */
-#define VK_DESCRIPTOR_HEAP_PUSH_OFFSET 128u
-#define VK_DESCRIPTOR_HEAP_PUSH_SIZE (VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 5u * 8u)
+/* The push data bytes of the five stage sets' table addresses: the 8-byte slots that the programs' push block leaves
+   free with the constant buffer windows on (shader.h, checked in descriptor_heaps.c). They are the bytes after bank
+   17's offset in the vertex and the fragment stage's window offsets, z and w of the texture words, and the 16 bytes
+   after the block. In the window bytes from 128, which the sets' addresses took, the windows were off with heaps, and
+   each draw whose constants moved wrote its stage's whole table again */
+#define VK_DESCRIPTOR_HEAP_PUSH_SIZE 256u
+static inline uint32_t vk_descriptor_heap_push_at(uint32_t set) {
+    return set == 0 ? 168u : set == 1 ? 216u : set == 2 ? 232u : 240u + 8u * (set - 3u);
+}
 
 /* Formatted texel-buffer descriptors belong to the image class. The buffer class covers unformatted buffer
    addresses, so using its smaller alignment for a typed buffer can silently select the wrong descriptor. */
@@ -295,7 +301,7 @@ static inline int vk_descriptor_heap_address_mapping(VkDescriptorSetAndBindingMa
         .descriptorSet = set, .firstBinding = binding, .bindingCount = 1,
         .resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT,
         .source = VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT,
-        .sourceData.indirectAddress = {.pushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .sourceData.indirectAddress = {.pushOffset = vk_descriptor_heap_push_at(set),
                                        .addressOffset = 4 * word}};
     return 1;
 }
@@ -320,9 +326,9 @@ static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMa
         default: return 0;
     }
     VkDescriptorMappingSourceIndirectIndexArrayEXT source = {
-        .pushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .pushOffset = vk_descriptor_heap_push_at(set),
         .addressOffset = 4 * word, .heapIndexStride = 1,
-        .samplerPushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .samplerPushOffset = vk_descriptor_heap_push_at(set),
         .samplerAddressOffset = 4 * sampler_word, .samplerHeapIndexStride = 1};
     *mapping = (VkDescriptorSetAndBindingMappingEXT){
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
@@ -361,6 +367,14 @@ uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, uint32_t set,
 VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, uint32_t count,
                                            const VkWriteDescriptorSet* writes, uint32_t cb_addr);
 void vk_descriptor_heaps_bind(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkDescriptorSet* sets);
+/* The texture table of SM86 programs (table.c) in a run of each heap that lasts the run: whether the heaps have it,
+   the write of a slot of binding 0 (images) or 1 (samplers), and the 2 mappings of the table set's bindings, at set,
+   with constant offsets into those runs: the table needs no push data and no bind */
+int vk_descriptor_heaps_table(void);
+/* the sampler slots of the table's run, fewer than SNX_TABLE_SAMPLERS where the sampler heap is small */
+uint32_t vk_descriptor_heaps_table_samplers(void);
+int vk_descriptor_heaps_table_write(uint32_t binding, uint32_t slot, const VkDescriptorImageInfo* ii);
+uint32_t vk_descriptor_heaps_table_mapping(VkDescriptorSetAndBindingMappingEXT* maps, uint32_t set);
 /* Writes returnNULL on exhaustion. The renderer retries the whole draw with its legacy backend; no write submits.
    Reset only after the slot's GPU work completes and its command pool is reset. */
 void vk_descriptor_heaps_reset(uint32_t slot);
@@ -403,14 +417,23 @@ void vk_descriptor_heaps_forget_view(VkImageView view);
 /* the forgets so far, in any descriptor mode: a descriptor set kept by the handles its writes name holds while it
    stays the same, as a destroy in the middle of a frame lets a new object of the same handle come */
 uint64_t vk_descriptor_heaps_forgets(void);
+/* an object's generation counter (by a hash of its handle, a buffer's or a view's), and the counter's value: it
+   moves on at each forget of an object with that counter (vk_descriptor_heaps_forget_buffer, _view) */
+uint32_t vk_descriptor_object_index(uint64_t object);
+uint32_t vk_descriptor_object_gen(uint32_t index);
 
 /* Any legacy descriptor or push command invalidates heap state across both bind points. */
 void vk_descriptor_heaps_invalidate(void);
 /* Graphics descriptor-buffer offsets were actually bound in this command-buffer generation. */
 void vk_descriptor_heaps_buffer_bound(uint32_t begun);
+/* The epoch, the pipeline state and what the heaps' binds kept are the calling thread's recording stream's
+   (g_vk_slot): a worker's list plays after the renderer thread's commands, both recorded at the same time */
 uint64_t vk_descriptor_heaps_epoch(void);
 void vk_descriptor_heaps_pipeline_state(int active);
 int vk_descriptor_heaps_active(void);
+/* the stream of a slot starts again: its next draw binds the heaps again, whatever the command buffer holds. At a
+   worker list's start, and at the renderer thread's after the list goes into the ring */
+void vk_descriptor_heaps_stream_reset(uint32_t slot);
 
 /* Owned by the device registry. The copied pNext chain must remain valid in chain while the descriptor is encoded.
    Samplers return heap-compatible custom-border index state; unsupported chains return0. */

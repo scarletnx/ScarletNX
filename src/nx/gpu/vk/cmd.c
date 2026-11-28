@@ -199,11 +199,15 @@ u64 vk_sample_hash(u64 gva, u64 len) {
 }
 
 /* the size of the ring chunk whose buffer b is, 0 when b is no chunk's: how far a window of the chunk may reach (the
-   constant buffers' windows, vk/render.c) */
+   constant buffers' windows, vk/render.c). Under the share lock: a worker asks while the renderer thread's
+   stage_alloc can grow g_cmd.chunk (draw_batches=2) */
 u64 vk_stage_buffer_size(VkBuffer b) {
-    for (u32 i = 0; b && i < g_cmd.nchunk; i++)
-        if (g_cmd.chunk[i].buf == b) return g_cmd.chunk[i].size;
-    return 0;
+    u64 size = 0;
+    vk_share_lock();
+    for (u32 i = 0; b && i < g_cmd.nchunk && !size; i++)
+        if (g_cmd.chunk[i].buf == b) size = g_cmd.chunk[i].size;
+    vk_share_unlock();
+    return size;
 }
 u64 vk_stage_align(void) {
     static u64 al;
@@ -1106,6 +1110,56 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 	return stage_alloc(size, align, buf, off, NULL, 0);
 }
 
+/* A draw thread's parts of the frame's upload ring (vk_stage_upload_own): the share lock only for a new part. A part
+   lives while its frame does, as the ring's allocations do. Only on coherent memory: a part's bytes written after a
+   submit that flushed its chunk would not be flushed again.
+   A constant bank's copies go into a part of their own, of a constant buffer window's 64 KiB: its window (render.c's
+   cb_window_place) then moves when the part is full. In one part for all banks, each bank's window moved after 64 KiB
+   of all the banks' copies, and with descriptor buffers or heaps each move is a new table of the stage (571k moves a
+   600 presents on one thread in one game's world) */
+#define UPLOAD_PART (64u << 10)
+/* by the draw thread's recording slot (vk_render_slot), not in each thread's own storage: 5 KiB a slot, which every
+   thread of the process would hold */
+static struct {
+    VkBuffer buf;
+    u8* p;
+    u64 off, used, frame;
+} g_upload_part[VK_RC_SLOTS][VK_UPLOAD_PAGES];
+u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off) {
+    if (!vk_devmem_coherent() || size > UPLOAD_PART / 4 || page >= VK_UPLOAD_PAGES) {
+        vk_share_lock();
+        u8* p = vk_stage_upload(size, align, buf, off);
+        vk_share_unlock();
+        return p;
+    }
+    typeof(g_upload_part[0][0])* const t = &g_upload_part[vk_render_slot()][page];
+    if (align < 16) align = 16;
+    u64 at = (t->off + t->used + align - 1) / align * align - t->off;
+    if (!t->p || t->frame != g_frame_id + 1 || at + size > UPLOAD_PART) {
+        vk_share_lock();
+        vk_shared_note(11); /* a new part is one take of the ring, as vk_stage_upload's */
+        /* at a uniform buffer offset's alignment: a window can start at the part's start (vk_stage_upload_part) */
+        const u64 window_align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+        t->p = stage_alloc(UPLOAD_PART, window_align > align ? window_align : align, &t->buf, &t->off, NULL, 0);
+        t->frame = g_frame_id + 1; /* after stage_alloc: a fresh slot moves on in it */
+        vk_share_unlock();
+        if (!t->p) return NULL;
+        at = 0;
+    }
+    t->used = at + size;
+    *buf = t->buf;
+    *off = t->off + at;
+    return t->p + at;
+}
+
+int vk_stage_upload_part(u32 page, VkBuffer buf, u64 off, u64* start) {
+    if (!page || page >= VK_UPLOAD_PAGES) return 0;
+    const typeof(g_upload_part[0][0])* const t = &g_upload_part[vk_render_slot()][page];
+    if (!t->p || t->frame != g_frame_id + 1 || t->buf != buf || off < t->off || off - t->off >= UPLOAD_PART) return 0;
+    *start = t->off;
+    return 1;
+}
+
 /* Guest input read once by a copy or conversion. Keep GPU-owned bytes near the GPU; CPU-only bytes go through
    host RAM rather than CPU writes through the device's mapped window. Both rings share the frame's fence. */
 u8* vk_stage_guest_input(u64 gva, u64 source_size, u64 bytes, VkBuffer* buf, u64* off) {
@@ -1204,7 +1258,7 @@ const char* const g_vk_sub_name[VK_SUB_N] = {"other", "present", "finish", "1 ms
 /* the results added so far, of every kind (the mirror's writes, storage images and queued releases too), and the
    writes in place, which the page model counts apart */
 static u64 results_added(void) {
-    return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
+    return atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes();
 }
 /* results_added at the last submission: a split run of draws (render.c) submits first where the commands being
    recorded added any, as a finish in it lands only what was submitted before */

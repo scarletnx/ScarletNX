@@ -317,6 +317,24 @@ static inline u64 gpu_dma_span(const GpuDmaSide* s, u32 lines, u32 line) {
     i64 p = gpu_dma_pitch(s);
     return lines ? (u64)(p < 0 ? -p : p) * (lines - 1) + line : 0;
 }
+/* the guest bytes [b[0], b[1]) that a side can touch, with lines of line bytes, or more: a pitch linear side's span, or
+   a block linear surface from its start to the end of the slab of slice z. The sizes are the game's: a range past 0
+   or 2^64 ends at the bottom or the top of the address space */
+static inline void gpu_dma_side_bounds(const GpuDmaSide* s, u32 lines, u32 line, u64 b[2]) {
+    if (!s->bl) {
+        const u64 down = (u64)-gpu_dma_low(s, lines); /* gpu_dma_low is 0 or less, and above INT64_MIN */
+        b[0] = s->addr >= down ? s->addr - down : 0;
+        if (__builtin_add_overflow(b[0], gpu_dma_span(s, lines, line), &b[1])) b[1] = ~0ull;
+        return;
+    }
+    const u64 gob = 8ull << s->bh, rows = ((u64)s->h + gob - 1) / gob * gob,
+              depth = (((u64)s->z >> s->bd) + 1) << s->bd;
+    u64 bytes;
+    b[0] = s->addr;
+    if (__builtin_mul_overflow(((u64)s->wb + 63) / 64 * 64, rows, &bytes) ||
+        __builtin_mul_overflow(bytes, depth, &bytes) || __builtin_add_overflow(s->addr, bytes, &b[1]))
+        b[1] = ~0ull;
+}
 /* whether a pitch linear source's lines are read one by one, packed (line k at k * line), and not as their span: when
    the span is more than twice their bytes. A 256x256 region of an 8192 texel wide RGBA8 surface is 256 lines of
    1 KiB, 32 KiB apart: 256 KiB read for its lines, 8 MiB for its span */

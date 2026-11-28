@@ -8,14 +8,21 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 /* cb_addr: the constant buffer slots that heaps take by address (vk_cb_addr_mask); descriptor buffers write them all */
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                      u32 cb_addr);
+/* the same, for a table that can last from frame to frame: hash names its layout and writes (render.c's set key). A
+   table that an earlier frame wrote with them is bound again, while no object it names was forgotten since. Only the
+   renderer thread's stream takes it (render.c) */
+VkDescriptorSet vk_descriptors_write_lasting(VkDescriptorSetLayout layout, u32 count,
+                                             const VkWriteDescriptorSet* writes, u32 cb_addr, const u64 hash[2]);
 /* ndyn dynamic offsets dyn of the sets' dynamic constant buffers (cb_dynamic.h), in the order of set and binding: only
    with descriptor sets, 0 otherwise */
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
                          u32 ndyn, const u32* dyn);
 /* Heap bindings invalidate legacy descriptor state across both pipeline bind points. */
 void vk_descriptors_invalidate(void);
+/* the descriptor buffers' and heaps' binds of a recording slot start again (vk_descriptor_heaps_stream_reset) */
+void vk_descriptors_stream_reset(uint32_t slot);
 void vk_descriptors_reset(u32 slot);
-/* whether the device has the memory the frames' descriptor tables live in (host-visible, coherent and cached) */
+/* whether the device has the memory the frames' descriptor tables live in (host-visible and coherent, ARENA_MEMORY) */
 int vk_descriptors_memory(VkPhysicalDevice phys);
 /* whether the frame slot's descriptor memory holds the tables of one more draw: else vk_frame_check moves on to the
    next frame before the draw's setup starts, which must not submit */
@@ -26,17 +33,26 @@ typedef struct {
     u64 buffer_requests, buffer_driver_calls, buffer_hits, buffer_evictions;
     u64 image_requests, image_driver_calls, image_hits, image_evictions, image_replicas;
     u64 address_queries, frame_advances, peak_used_bytes, arena_allocated_bytes, cache_allocated_bytes;
+    /* the tables that last (vk_descriptors_write_lasting): bound again, written, found with a forgotten object, and
+       written in the frame's part as no slot was free */
+    u64 lasting_hits, lasting_made, lasting_stale, lasting_full;
 } VkDescriptorStats;
 /* Monotonic counters; allocated bytes and peak use are gauges. Log reporting does not reset these counters. */
 void vk_descriptors_get_stats(VkDescriptorStats* stats);
 VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
                           DevMem* memory, DevMemInfo* details);
-void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address);
+/* the frame's arena at buffer index 0, and the texture table's own buffer at index 1 where table is not 0 */
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address, VkDeviceAddress table);
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets);
-/* the same at another bind point, a compute pipeline's (vk_descriptors_bind_compute) */
+/* the same at another bind point, a compute pipeline's (vk_descriptors_bind_compute), with the sets in the bound
+   descriptor buffer of index buffer */
 void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
-                                         u32 count, const VkDeviceSize* offsets);
+                                         u32 count, const VkDeviceSize* offsets, u32 buffer);
+/* With descriptor buffers: the texture table's own descriptor buffer (table.c), bound at index 1 with each frame's
+   arena from then on, and its set bound at set number at (offset 0 in it) */
+void vk_descriptors_table(VkDeviceAddress table);
+void vk_descriptors_bind_table(VkCommandBuffer cb, VkPipelineLayout layout, u32 at);
 /* a compute dispatch's set, at the compute bind point: descriptor sets, or descriptor buffers where the renderer
    uses them (descriptor heaps have no compute path) */
 void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, VkDescriptorSet set);

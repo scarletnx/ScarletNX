@@ -1047,6 +1047,9 @@ static u32 imp_find(u64 cpu) {
     }
     return lo;
 }
+/* whether the buffers over guest memory and their memory take device addresses: descriptor buffers name them by
+   address, and SM86 programs read global memory by address (gbuf_address) */
+static int guest_addresses(void) { return g_vk.has_descriptor_buffers || g_vk.has_gbuf_address; }
 /* what a buffer over guest memory is bound as: what the staging ring's buffers are (cmd.c), as callers bind either,
    written in place and published into too */
 static VkBufferUsageFlags guest_usage(void) {
@@ -1055,7 +1058,7 @@ static VkBufferUsageFlags guest_usage(void) {
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                            VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (g_vk.has_descriptor_buffers) u |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    if (guest_addresses()) u |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     if (g_vk.has_xfb) u |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
     return u;
 }
@@ -1154,11 +1157,11 @@ static int chunk_make(Chunk* c, u64 cpu) {
     VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkExportMemoryAllocateInfo ex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-                                     .pNext = g_vk.has_descriptor_buffers ? &flags : NULL,
+                                     .pNext = guest_addresses() ? &flags : NULL,
                                      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                .pNext = g_uma.can_view                ? (const void*)&ex
-                                        : g_vk.has_descriptor_buffers ? (const void*)&flags
+                                        : guest_addresses()           ? (const void*)&flags
                                                                       : NULL,
                                .allocationSize = MEM_PLACED,
                                .memoryTypeIndex = g_uma.place_type};
@@ -1429,7 +1432,7 @@ static int imp_bind(Imp* m, u64 cpu, u64 size, VkExternalMemoryHandleTypeFlagBit
                                        .pNext = import,
                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                               .pNext = g_vk.has_descriptor_buffers ? (const void*)&flags : import,
+                               .pNext = guest_addresses() ? (const void*)&flags : import,
                                .allocationSize = alloc,
                                .memoryTypeIndex = t};
     if (t == ~0u || req.size > alloc ||

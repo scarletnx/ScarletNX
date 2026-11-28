@@ -266,6 +266,8 @@ static void own_unlink(u32 i) {
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
 static u64 g_owned_bound; /* bytes draws read where their owners hold them (buf_get_owned) */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
+/* pending results that the CPU wrote over, merged with its bytes on the GPU in place of a landing (gfx_rebase) */
+static u64 g_merges, g_merge_bytes;
 /* aliasing draws: given the atlas, its pages, bound in place, and why each of the others was not (VK_ALIAS_*). Counted
    always, logged with buffer_copy_stats */
 static u64 g_alias_draws, g_alias_pages, g_alias_inplace, g_alias_why[VK_ALIAS_N];
@@ -1286,7 +1288,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return atomic_load_explicit(&g_gfx_any, memory_order_relaxed); }
-u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_relaxed); }
+u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_acquire); }
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -1749,12 +1751,66 @@ static GfxOut* out_absorb(GfxOut* h) {
     out_list_free(&l);
     return h;
 }
+/* A pending result o that the CPU wrote over since o took its input, made one that took guest memory as it is now:
+   its buffer gets the bytes that landing o would leave in guest memory, on the GPU (result_merge.comp), and its
+   original bytes are guest memory's. Each byte the CPU wrote is then the same in both, and landing o later writes
+   what its draws wrote alone, as before. o is copyable again, and its readers and writers bind it in place. Landed
+   instead, each of them finished all the work recorded first: in one game's world a result of 128 KiB that the CPU
+   wrote into and a draw then bound, about 500 times in 600 presents, 8 ms of the GPU thread each. Only a result of one
+   run of guest memory whose original bytes are guest memory's (not a kept, logged, write-only or GPU-made one), taken
+   into this submission, as its copy back for landing is recorded at the submission's end. 0 when it can't be, with
+   no merge recorded: with nothing recorded where it is refused before the merge (a split's worker, the conditions
+   above, the device's limits, no staging, o not taken), and where no descriptor set is left, after the pass's end
+   and a barrier, with o taken into this submission */
+static int range_owned(u64 gva, u64 len);
+static int gfx_rebase(GfxOut* o) {
+    /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
+       half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
+       before its merge. A batch of draw_batches=1 records in slot 1 too, while the renderer thread waits: it lands o
+       as before, which costs a submit but never the order */
+    if (vk_render_slot()) return 0;
+    if (o->cpu == ~0ull || !o->org || o->initial || o->keep || o->no_input || (o->off & 3) ||
+        !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
+        range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
+        return 0;
+    u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (a < 4) a = 4;
+    const u64 words = ((u64)o->size + 3) / 4, gap = (words * 4 + a - 1) & ~(a - 1);
+    /* the ring's offset is aligned to a, so the input's alignment holds whatever offset vk_stage gives */
+    if (!vk_result_merge_fits(o->off, 0, gap, o->off, o->size)) return 0;
+    VkBuffer in;
+    u64 in_off;
+    u8* p = vk_stage(gap + words * 4, a, &in, &in_off);
+    if (!p || (o->frame != vk_submit_number() && !out_take_into_submit(o))) return 0;
+    memcpy(p, o->org, o->size);
+    vk_render_end();
+    copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    /* the merge reads its input at the submission, so the guest bytes come after it is recorded: a merge that fails
+       leaves o's original bytes as they were, which landing o still needs */
+    if (!vk_result_merge(o->buf, o->off, in, in_off, gap, o->buf, o->off, o->size)) return 0;
+    copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                 out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    /* guest memory into o's original bytes, and from them into the merge's input: the staging ring can be memory
+       that the CPU writes only (a BAR heap), never one that it reads back */
+    o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
+    read_untracked(o->addr, o->org, o->size);
+    memcpy(p + gap, o->org, o->size);
+    g_buffer.wstat.copied += o->size;
+    if (copy_stats_on()) {
+        g_merges++;
+        g_merge_bytes += o->size;
+    }
+    return 1;
+}
 /* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
    that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
    at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
    recorded at its submit's end) or taken into it (out_take_into_submit), from this frame otherwise. Returns 2 when
    pending results cover the range and can all be copied over guest memory on the GPU (gfx_overlay), 0 when none do,
-   or after landing them because one can't: the guest wrote its original bytes since. A result counts only with bytes
+   or after landing them because one can't: the guest wrote its original bytes since, and gfx_rebase could not merge
+   them on the GPU. A result counts only with bytes
    of the range (out_meets): two storage buffers sharing a page, one after the other, made each read of one compose
    with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
    feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
@@ -1794,11 +1850,13 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
        times a frame (114,000 compositions in 600 frames, against 3,600 for an offset or a submit) */
     if (gva >= newest->addr && gva + len <= newest->addr + newest->size) {
         if (!out_still_copyable(newest, gva, len, &rm)) {
-            if (copy_stats_on()) g_wb_draw_miss[newest->frame_id != vk_frame_id() ? 0 : 2]++;
-            out_list_free(&l);
-            range_map_free(&rm);
-            land_reason(WB_DRAW);
-            return 0;
+            if (!gfx_rebase(newest)) {
+                if (copy_stats_on()) g_wb_draw_miss[newest->frame_id != vk_frame_id() ? 0 : 2]++;
+                out_list_free(&l);
+                range_map_free(&rm);
+                land_reason(WB_DRAW);
+                return 0;
+            }
         }
         match = newest;
         count = 1;
@@ -1808,7 +1866,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         for (u32 i = 0; i < l.n; i++) { /* not inside the tail: l holds what the search found */
             GfxOut* o = l.v[i];
             if (!out_meets(o, gva, len, &q, &rm)) continue;
-            if (!out_still_copyable(o, gva, len, &rm)) {
+            if (!out_still_copyable(o, gva, len, &rm) && !gfx_rebase(o)) {
                 if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
                 out_list_free(&l);
                 range_map_free(&rm);
@@ -2862,7 +2920,6 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return 1;
 }
 
-static int range_owned(u64 gva, u64 len);
 static int written_since_gva(u64 gva, u64 len, u32 since);
 /* Keep an owned input on the GPU. Only the baseline needed to merge later CPU edits
    is copied to host-cached staging, asynchronously with the draw. */
@@ -3498,8 +3555,9 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, D
    were recorded, after the shaders that wrote them: an aliased draw doesn't wait for earlier results to land in guest
    memory (one game drew about four a frame, each landing everything with a vk_finish). Its outputs keep guest memory as
    their original bytes until those results land (out_rebase). Compute results that haven't landed land for the
-   atlas's pages alone. A result whose original bytes the guest has written since can't be copied whole: it lands
-   first, as in gfx_gpu_src, which submits, and the draw starts its setup over. 1 when a result was copied in */
+   atlas's pages alone. A result whose original bytes the guest has written since can't be copied whole: gfx_rebase
+   merges the guest's bytes into it on the GPU, else it lands first, as in gfx_gpu_src, which submits, and the draw
+   starts its setup over. 1 when a result was copied in */
 /* into l, the pending results on the atlas's pages (p, sorted by key): on a run of its guest pages, or with an unmapped
    page at a GPU page the atlas has unmapped (draw_page_key) */
 static void out_near_atlas(OutList* l, const DrawPage* p, size_t unique) {
@@ -3536,12 +3594,13 @@ static int atlas_fill(DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 a
     out_list_init(&l);
     if (!t_buffer.out_landing) out_near_atlas(&l, p, unique);
     for (u32 k = 0; k < l.n && !landed; k++) {
-        const GfxOut* o = l.v[k];
+        GfxOut* o = l.v[k];
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
             if (at < unique && p[at].key == key &&
-                (!out_copyable(o, lo, hi) || (!(key & (1ull << 63)) && vk_uma_pending_cpu(key << 12, 4096)))) {
+                ((!out_copyable(o, lo, hi) && !gfx_rebase(o)) ||
+                 (!(key & (1ull << 63)) && vk_uma_pending_cpu(key << 12, 4096)))) {
                 land_reason(WB_DRAW);
                 landed = 1;
             }
@@ -4997,6 +5056,11 @@ int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
     vk_defer_buffer(e->buf, e->mem); /* the frames in flight that read it are done first; its owner goes */
     e->buf = b;
     e->mem = m;
+    /* another buffer: the token of the old one ends (vk_buf_own_got), as at a drop. A memo that held the token bound
+       the old buffer after it was destroyed: a memo of draws kept past its epoch did, in each run of one game's town
+       with draw_batches=2 (vkCmdBindVertexBuffers2 with a destroyed buffer, then the device lost) */
+    e->own_id = ++g_buffer.own_made;
+    own_dropped();
     vk_devmem_owner(m, VK_MOVE_BUF(i));
     *bytes = e->len;
     return 1;
@@ -5250,6 +5314,11 @@ static void buf_frame(void) {
                 "bytes copied over its pages\n",
                 (unsigned long long)g_composed_pages, (double)g_composed_pages_bytes / 1048576.0);
         g_composed_pages = g_composed_pages_bytes = 0;
+        if (g_merges)
+            LOG("vulkan: %llu pending results (%.1f MB) that the CPU wrote over took its bytes on the GPU, with no "
+                "landing\n",
+                (unsigned long long)g_merges, (double)g_merge_bytes / 1048576.0);
+        g_merges = g_merge_bytes = 0;
         LOG("vulkan: writable storage over 600 presents: %llu bytes copied before the draws, %llu read back, %llu "
             "results merged, %llu bindings kept on the GPU\n",
             (unsigned long long)(g_buffer.wstat.copied - g_buffer.wstat_seen.copied),

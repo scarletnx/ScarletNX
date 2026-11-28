@@ -150,7 +150,7 @@ static int guest_covered(u64 a, u64 size) {
 static int mapping_lands(u64 gva, u64 size, int kind) {
     if (kind == GPU_MAPPING_GMMU) return 0;
     if (kind == GPU_MAPPING_GUEST || size == ~0ull || gva + size < gva)
-        return g_pend_any.total || own_any() || atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed);
+        return atomic_load_explicit(&g_pend_any.total, memory_order_relaxed) || own_any() || atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed);
     return guest_held(gva, size);
 }
 /* The brackets of this thread that skipped vk_lock, a bit each by depth: mem.c's brackets don't nest, the GMMU's

@@ -74,6 +74,8 @@ VkCommandBuffer vk_cmd(void) { return VK_NULL_HANDLE; }
 u32 vk_cb_begun(void) { return 1; }
 u64 vk_frame_id(void) { return g_test.frame; }
 u32 vk_frame_slot(void) { return 0; }
+_Thread_local u32 g_vk_slot;
+int g_shader_sm86; /* no SM86 programs: the texture table needs no table features here */
 Settings g_settings;
 int vk_lock_held(void) { return 1; }
 u64 vk_submit_number(void) { return g_test.submit; }
@@ -120,6 +122,7 @@ VkResult vk_devmem_buffer(const VkBufferCreateInfo* info, const DevMemWant* allo
 }
 void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
 void vk_mem_untrack(DevMem a) { (void)a; }
+int vk_devmem_tables_at(void) { return DM_WINDOW; } /* no small BAR here */
 void vk_devmem_buffer_destroy(VkBuffer buffer, DevMem memory) {
     (void)buffer;
     if (memory > 0x2000 && memory <= 0x2004) {
@@ -294,7 +297,10 @@ int main(void) {
     vkWriteSamplerDescriptorsEXT = NULL;
     refused(&props, 1, "the driver has no vkWriteSamplerDescriptorsEXT", "an entry point missing");
     props.maxPushDataSize = 100;
-    refused(&props, 0, "maxPushDataSize is 100 bytes, 168 needed", "too little push data");
+    char push_why[96];
+    snprintf(push_why, sizeof push_why, "maxPushDataSize is 100 bytes, %u needed",
+             (unsigned)VK_DESCRIPTOR_HEAP_PUSH_SIZE);
+    refused(&props, 0, push_why, "too little push data");
     props = good_properties();
     g_test.sampler_size = 0;
     refused(&props, 1,

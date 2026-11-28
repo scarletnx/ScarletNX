@@ -323,6 +323,8 @@ typedef struct {
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
     /* the program adds each bank's window offset from push constants to its constant buffer reads (cb_windows) */
     u32 cb_window;
+    /* and it reads 0 past each windowed bank's guest size, from its per-draw block (ShCaps.cb_sizes) */
+    u32 cb_sizes;
     /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
        view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
     u32 tex_table; /* with SH_TEX_TABLE_MAP: its plain slots' view and sampler slots come from the pool map */
@@ -333,6 +335,7 @@ typedef struct {
        attribute's address, length and format are words of its record (SH_RECORD_ATTR), and the draw binds no vertex
        buffers and sets no vertex input */
     u32 vertex_fetch;
+    u32 fetch_attrs; /* with vertex_fetch: the generic attributes it fetches, as bits, in its record in that order */
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -552,6 +555,13 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
 #define SH_DRAW_MAP_WORDS_VS    (SH_DRAW_MAP + 4u)
 #define SH_DRAW_MAP_WORDS_FS    (SH_DRAW_MAP + 6u)
 #define SH_DRAW_BYTES_MAP       ((SH_DRAW_MAP + 8u) * 4u)
+/* With cb_sizes: the per-draw block's words SH_DRAW_CB_SIZES on (after the map's), 9 words for the vertex stage and 9
+   for the fragment stage, two banks a word: bank b's guest size in 4-byte words (16384 for 64 KiB, and for a bank that
+   binds alone, whose descriptor's range ends it) in the 16 bits at (b & 1) * 16 of word b / 2. A read of a word at
+   that size or past it is 0, as the console's past a bank's size */
+#define SH_DRAW_CB_SIZES        (SH_DRAW_MAP + 8u)
+#define SH_DRAW_CB_SIZES_FS     (SH_DRAW_CB_SIZES + 9u)
+#define SH_DRAW_BYTES_SIZES     ((SH_DRAW_CB_SIZES + 18u) * 4u)
 #define SNX_TABLE_MAP           2u
 #define SH_MAP_WINDOW           (16u << 20) /* the bytes of the storage buffer the program declares */
 #define SNX_TABLE_IMAGES        65536u
@@ -562,20 +572,23 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
    goes. The texture words follow */
 #define SH_RECORD_GBUF          68u
 #define SH_RECORD_SCRATCH       64u
-/* With vertex_fetch, a vertex program's record holds the 32 generic attributes after the global buffers, 4 words an
-   attribute: the address of its first element (low, high), the bytes from there to the end of its stream (0: no data),
-   and its format, packed with the SH_ATTR_ fields. Each attribute's instance divisor follows in a word of its own at
-   SH_RECORD_DIVISOR (the 3D engine's divisor has 32 bits), then the texture words at SH_RECORD_TEX_FETCH. A fragment
-   program's texture words stay at SH_RECORD_GBUF */
+/* With vertex_fetch, a vertex program's record holds the generic attributes it fetches (ShaderInfo.fetch_attrs)
+   after the global buffers, in the order of their numbers, SH_ATTR_WORDS words an attribute: the address of its first
+   element (low, high), the bytes from there to the end of its stream (0: no data), its format, packed with the
+   SH_ATTR_ fields, and its instance divisor (the 3D engine's divisor has 32 bits). The texture words follow them, at
+   SH_RECORD_FETCH_TEX of the count. A fragment program's texture words stay at SH_RECORD_GBUF. Only the attributes
+   the program reads take words: a draw writes the record whole, and 32 of them were 160 words a draw */
 #define SH_RECORD_ATTR          68u
-#define SH_RECORD_DIVISOR       (SH_RECORD_ATTR + 32u * 4u)
-#define SH_RECORD_TEX_FETCH     (SH_RECORD_DIVISOR + 32u)
+#define SH_ATTR_WORDS           5u
+#define SH_RECORD_FETCH_TEX(n)  (SH_RECORD_ATTR + SH_ATTR_WORDS * (u32)(n))
+#define SH_RECORD_FETCH_MAX     SH_RECORD_FETCH_TEX(32)
 #define SH_ATTR_STRIDE_MASK     0xFFFu /* bits 0-11: the stream's stride in bytes */
 #define SH_ATTR_SIZE_SHIFT      12     /* bits 12-17: the 3D engine's size code */
 #define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
 #define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
 #define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
-#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (SH_RECORD_DIVISOR) instances, not each vertex */
+/* an element each divisor (its last record word) instances, not each vertex */
+#define SH_ATTR_INSTANCED       (1u << 23)
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {
@@ -594,6 +607,11 @@ typedef struct {
        each bank's offset into its window comes from push constants (SH_PUSH_CB_WINDOW), so a draw that writes new
        constants keeps its buffer set (vk/render.c stage_set_) */
     unsigned cb_windows : 1;
+    /* with cb_windows, an SM86 vertex or fragment program reads 0 past each windowed bank's guest size, which the
+       per-draw block gives (SH_DRAW_CB_SIZES): a bank that the guest binds shorter than the program can read takes a
+       window too, where its window holds the ring's next bytes past it. Descriptor buffers and heaps take it: they have
+       no dynamic uniform buffers for those banks, and each new offset was a new table */
+    unsigned cb_sizes : 1;
     /* with cb_windows, an SM86 vertex or fragment program's plain textures come from the texture table at set
        table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
     unsigned tex_table : 1;

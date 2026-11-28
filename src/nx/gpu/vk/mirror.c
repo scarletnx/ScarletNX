@@ -67,7 +67,7 @@ static PendPages g_mir_pend = {.also = &g_pend_blk};
    flag before it asks the mirror for anything (gpu.c's gmem_need) */
 static void mir_pend_pages(u64 first, u64 last, int delta) {
     pend_add_pages(&g_mir_pend, first, last, delta);
-    atomic_store_explicit(&g_mir_any, g_mir_pend.total != 0, memory_order_relaxed);
+    atomic_store_explicit(&g_mir_any, atomic_load_explicit(&g_mir_pend.total, memory_order_relaxed) != 0, memory_order_relaxed);
 }
 static struct {
     int on; /* -1 until vk_mirror_init has decided */

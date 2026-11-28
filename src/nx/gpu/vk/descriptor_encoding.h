@@ -56,13 +56,4 @@ static inline int vk_descriptor_active_end(uint64_t layout_size, uint64_t bindin
     *end = binding_offset + ((uint64_t)first + count) * stride;
     return 1;
 }
-/* The first opaque pattern is already present. Double from initialized, disjoint ranges; no descriptor bytes
-   are interpreted, and the last copy is bounded by the remaining number of elements. */
-static inline void vk_descriptor_repeat(void* destination, size_t stride, uint32_t count) {
-    for (uint32_t filled = 1; filled < count;) {
-        uint32_t take = filled < count - filled ? filled : count - filled;
-        memcpy((uint8_t*)destination + (size_t)filled * stride, destination, (size_t)take * stride);
-        filled += take;
-    }
-}
 #endif

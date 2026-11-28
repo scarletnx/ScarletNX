@@ -345,6 +345,57 @@ int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 s
     return 1;
 }
 
+#include "nx/gpu/vk/result_merge_spv.h" /* compiled from result_merge.comp by the build (cmake/glsl.cmake) */
+typedef struct {
+    u32 words, rbyte, rwords, gword, oword, tail;
+} ResultMergeParams;
+static VkDescriptorSetLayout g_rm_ds;
+static VkPipelineLayout g_rm_layout;
+static VkPipeline g_rm_pipe;
+int vk_result_merge_fits(u64 res_off, u64 in_off, u64 gap, u64 out_off, u64 len) {
+    if (!len) return 1;
+    if (len > 0xFFFFFFF0ull || ((in_off | gap | out_off) & 3)) return 0;
+    u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (a < 4) a = 4;
+    /* the device's limits: one group a 128 words, and each of the three storage ranges (vk_result_merge's) */
+    const u64 words = (len + 3) / 4, rb = res_off & ~(a - 1), rend = (res_off + len + 3) & ~3ull,
+              ob = out_off & ~(a - 1), range = g_vk.props.limits.maxStorageBufferRange;
+    return (words + 127) / 128 <= g_vk.props.limits.maxComputeWorkGroupCount[0] && rend - rb <= range &&
+           gap + words * 4 <= range && out_off - ob + words * 4 <= range;
+}
+int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len) {
+    if (!len) return 1;
+    if (!vk_result_merge_fits(res_off, in_off, gap, out_off, len)) return 0;
+    if (!g_rm_pipe) {
+        if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, sizeof(ResultMergeParams), &g_rm_ds, &g_rm_layout)))
+            fatal("vulkan: cannot create the result merge's descriptor and pipeline layouts");
+        if (!VK_OK(snx_vk_compute_pipeline(g_vk.dev, vk_pipeline_cache(), g_rm_layout, result_merge_spv,
+                                           result_merge_spv_size, &g_rm_pipe)))
+            fatal("vulkan: cannot create the result merge's pipeline");
+    }
+    u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (a < 4) a = 4;
+    /* the result's and the output's descriptors start at offsets the device takes, before the range, and the result's
+       ends at the word that holds the range's last byte */
+    const u64 words = (len + 3) / 4, rb = res_off & ~(a - 1), rend = (res_off + len + 3) & ~3ull,
+              ob = out_off & ~(a - 1);
+    VkDescriptorSet set = vk_desc_alloc(g_rm_ds);
+    if (!set) return 0;
+    VkDescriptorBufferInfo info[3] = {{res, rb, rend - rb},
+                                      {in, in_off, gap + words * 4},
+                                      {out, ob, out_off - ob + words * 4}};
+    snx_vk_storage_buffers(g_vk.dev, set, info, 3);
+    ResultMergeParams p = {(u32)words, (u32)(res_off - rb), (u32)((rend - rb) / 4), (u32)(gap / 4),
+                           (u32)((out_off - ob) / 4), (u32)(len - (words - 1) * 4)};
+    VkCommandBuffer cb = vk_cmd();
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_rm_pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_rm_layout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_rm_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+    vk_gpuprof_tag(VK_PROF_RESULT_MERGE);
+    rec_CmdDispatch(cb, (u32)((words + 127) / 128), 1, 1);
+    return 1;
+}
+
 u64 vk_wlog_again(void) { return g_wlog.again; }
 void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared) {
     *unrefs = g_wlog.unrefs;

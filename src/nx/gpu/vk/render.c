@@ -67,6 +67,49 @@ _Thread_local u32 g_vk_slot;
    cache line of its own), which the renderer thread folds in at the join (cnt_fold). Both threads adding to one count
    at each draw moved its line between the two cores */
 #define CNT(x) (*(t_rc ? &w_##x : &x))
+/* The small staging writes of the draws (the per-draw block, the texture table's words, inline constants and the
+   rest) out of a block of each thread's own (t_rc), STAGE_ARENA_BYTES taken from the frame's ring at a time. A
+   block holds while its frame and its submission do: the ring's chunk lives for the frame, and the submission flushes
+   the bytes handed out of the chunk, the block's whole range among them. With draw_batches=2 each vk_stage took the
+   share lock, the most taken of its calls: about 7,500 takes a present in one game's busiest town, about one in
+   eight of all its takes. A block takes it once for many draws. Requests past STAGE_ARENA_MAX, or of an alignment past
+   the ring's own, go to vk_stage as before */
+#define STAGE_ARENA_BYTES 16384u
+#define STAGE_ARENA_MAX   4096u
+typedef struct {
+    u8* p; /* the block's bytes, NULL for none */
+    VkBuffer b;
+    u64 base, used; /* the block's offset in b, and the bytes handed out of it */
+    u64 frame, sub; /* the frame (vk_frame_id) and submission (vk_submit_number) it was taken in */
+} StageArena;
+static StageArena g_stage_arena[RC_SLOTS];
+static u8* stage_small(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    const u64 ring_align = vk_stage_align();
+    if (size > STAGE_ARENA_MAX || align > ring_align || (align & (align - 1)))
+        return sh_vk_stage(size, align, buf, off);
+    if (align < 16) align = 16; /* as the ring's own (ring_take) */
+    StageArena* a = &g_stage_arena[t_rc];
+    const u64 frame = vk_frame_id(), sub = vk_submit_number();
+    u64 at = (a->base + a->used + align - 1) & ~(align - 1);
+    if (!a->p || a->frame != frame || a->sub != sub || at + size > a->base + STAGE_ARENA_BYTES) {
+        VkBuffer b;
+        u64 o;
+        u8* p = sh_vk_stage(STAGE_ARENA_BYTES, ring_align, &b, &o);
+        if (!p) {
+            a->p = NULL;
+            return NULL;
+        }
+        /* the submission number after the take: a take that submitted (a full ring) starts the block in the new one */
+        *a = (StageArena){.p = p, .b = b, .base = o, .frame = vk_frame_id(), .sub = vk_submit_number()};
+        at = o;
+    }
+    a->used = at + size - a->base;
+    *buf = a->b;
+    *off = at;
+    return a->p + (at - a->base);
+}
+#undef vk_stage
+#define vk_stage stage_small
 static struct {
     Surf* rt[8];
     Surf* zt;
@@ -440,6 +483,7 @@ static void async_tell(int may_skip) {
    draw samples, which the pass needs in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback_order). area: the render area when no
    attachment has a surface (a draw's color targets all sampled and none written, render_draw), the targets' the guest
    bound */
+static int split_pending(void);
 static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb, VkExtent2D area) {
     SNX_ZONE_V(z, "vk render begin", 2); /* 2 a new pass, 1 the open pass reused, 0 none opened */
     srgb_write = !!srgb_write;
@@ -462,7 +506,21 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         return 1; /* the open pass serves: no new attachments or feedback slots */
     }
     if (same) CNT(g_vk_fb_restarts)++; /* only a target's layout changes */
+    /* the targets of the pass that ends here, which the new pass doesn't draw: their corners that draws read are
+       copied now, outside a pass, and not in the pass of the draw that reads one (vk_rt_corners_refresh). The
+       renderer thread's alone, with no split under way, whose worker would read the copies at the same time */
+    u32 ended_n = 0;
+    Surf* ended[9];
+    if (!t_rc && !split_pending() && g_rp[0].open) {
+        for (u32 i = 0; i <= g_rp[0].n; i++) {
+            Surf* e = i < g_rp[0].n ? g_rp[0].rt[i] : g_rp[0].zt;
+            int kept = !e || e == zt;
+            for (u32 j = 0; j < n && !kept; j++) kept = rt[j] == e;
+            if (!kept && e->crop) ended[ended_n++] = e;
+        }
+    }
     vk_render_end();
+    for (u32 i = 0; i < ended_n; i++) vk_rt_corners_refresh(ended[i]);
     VkCommandBuffer cb = vk_cmd();
     vk_surf_written_flush(cb, rt, n, zt); /* the barriers at the writer, outside the pass (writer_barriers) */
     for (u32 i = 0; i < n; i++)
@@ -642,7 +700,11 @@ static struct {
     u64 own[2];
 } g_map_draw[RC_SLOTS];
 /* the bytes of a draw's block: the push constants' words, and with the pool map its words (SH_DRAW_MAP) */
-static u32 draw_block_bytes(void) { return g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP : SH_PUSH_BYTES_TABLE; }
+static u32 draw_block_bytes(void) {
+    return g_spirv_translate.cb_sizes   ? SH_DRAW_BYTES_SIZES
+           : g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP
+                                        : SH_PUSH_BYTES_TABLE;
+}
 static int draw_block_take(void) {
     VkBuffer b;
     u64 o;
@@ -1665,7 +1727,6 @@ static _Thread_local u64 g_memo_miss[MEMO_CAUSES]; /* TEST */
    found no entry of their key in the table (HOLD_NONE) */
 enum {
     HOLD_PATH,
-    HOLD_SHADER_GEN,
     HOLD_FOLD,
     HOLD_HEAPS,
     HOLD_KEY,
@@ -1675,6 +1736,7 @@ enum {
     HOLD_SWIZZLE,
     HOLD_CHOSEN,
     HOLD_CB,
+    HOLD_CODE,
     HOLD_NONE,
     HOLD_N
 };
@@ -1807,16 +1869,17 @@ void vk_render_stats_log(void) {
         (unsigned long long)(n->hashed - w->hashed), (double)(submits - was_submits) / (double)presents,
         (double)(periodic - g_stats.submits[VK_SUB_PERIODIC]) / (double)presents,
         (double)(u32)(epoch - g_stats.ww_epoch) / (double)presents, (double)(n->epochs - w->epochs) / (double)presents);
-    LOG("vulkan: kept draws' checks that failed in the last %llu presents: path %llu, shader generation %llu, "
-        "folds %llu, heaps %llu, owner, topology or epoch %llu, vertex format %llu, capture %llu, window %llu, "
-        "swizzle %llu, translation chosen %llu, constant buffer words %llu; no entry of the key %llu\n",
+    LOG("vulkan: kept draws' checks that failed in the last %llu presents: path %llu, folds %llu, "
+        "heaps %llu, owner or topology %llu, vertex format %llu, capture %llu, window %llu, "
+        "swizzle %llu, translation chosen %llu, constant buffer words %llu, shader code written %llu; no entry of "
+        "the key %llu\n",
         (unsigned long long)presents, (unsigned long long)g_hold_fail[HOLD_PATH],
-        (unsigned long long)g_hold_fail[HOLD_SHADER_GEN], (unsigned long long)g_hold_fail[HOLD_FOLD],
+        (unsigned long long)g_hold_fail[HOLD_FOLD],
         (unsigned long long)g_hold_fail[HOLD_HEAPS], (unsigned long long)g_hold_fail[HOLD_KEY],
         (unsigned long long)g_hold_fail[HOLD_VFORMAT], (unsigned long long)g_hold_fail[HOLD_XFB],
         (unsigned long long)g_hold_fail[HOLD_WINDOW], (unsigned long long)g_hold_fail[HOLD_SWIZZLE],
         (unsigned long long)g_hold_fail[HOLD_CHOSEN], (unsigned long long)g_hold_fail[HOLD_CB],
-        (unsigned long long)g_hold_fail[HOLD_NONE]);
+        (unsigned long long)g_hold_fail[HOLD_CODE], (unsigned long long)g_hold_fail[HOLD_NONE]);
     memset(g_hold_fail, 0, sizeof g_hold_fail);
     LOG("vulkan: index buffer binds in the last %llu presents: %llu, and %llu draws kept the last binding\n",
         (unsigned long long)presents, (unsigned long long)g_ib_binds, (unsigned long long)g_ib_kept);
@@ -1867,7 +1930,7 @@ void vk_render_stats_log(void) {
         (unsigned long long)(g_vk_dset_new - g_stats.dset_new),
         (unsigned long long)(g_vk_dset_reused - g_stats.dset_reused), (unsigned long long)(n->sets_last - w->sets_last),
         (unsigned long long)(g_vk_targets_kept - g_stats.targets_kept));
-    if (g_vk.has_descriptor_heaps) {
+    if (vk_heaps()) {
         VkDescriptorHeapStats h;
         vk_descriptor_heaps_get_stats(&h);
         LOG("vulkan: descriptor heaps in the last %llu presents: %llu buffer descriptors written by the driver, %llu "
@@ -2068,7 +2131,8 @@ static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
        (a result added elsewhere moves only the count). Not with results past the tables (overflow, which pend_hit reads
        as over every page), nor the sum a way is kept with (pgen_ok): its first check goes the full way */
     u32 g_tic = 0, g_tsc = 0, g_tex = 0;
-    const int gens = !g_pend_any.overflow && addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
+    const int gens = !atomic_load_explicit(&g_pend_any.overflow, memory_order_relaxed) &&
+                     addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
                      addr_gens_read(ADDR_GENS_GPU, tsc_at, 32, &g_tsc) &&
                      addr_gens_read(ADDR_GENS_GPU, m->t->gva, size, &g_tex);
     if (gens && m->pgen_ok && g_tic + g_tsc + g_tex == m->pgen) {
@@ -2213,7 +2277,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     u64 gw = gpu_mem_generation();
     u32 epoch = vk_ww_epoch(), now = vk_ww_now(); /* before the headers are read */
     /* a write in place is no result added: its own count moves (vk_uma_writes) */
-    u64 adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
+    u64 adds = atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes();
     g_stats.n.tex[VK_TEX_MEMO]++;
     x->handle = handle;
     x->have = 1;
@@ -2516,7 +2580,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
     TexRecent* r = &g_tex_recent[t_rc][((u64)handle * VK_FIB_MULT) >> (64 - TEX_RECENT_BITS)];
     /* the results added count the writes in place too, as the memo's do */
     const u64 gw = gpu_mem_generation(),
-              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes(),
               img_adds = vk_gfx_image_adds();
     const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
     const u64 take = vk_rt_take_gen();
@@ -2852,7 +2916,7 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     const DsBindings* b = &ds->bind;
     /* the results added count the writes in place too, as the memo's do */
     const u64 gw = gpu_mem_generation(),
-              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+              adds = atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes(),
               img_adds = vk_gfx_image_adds(), take = vk_rt_take_gen();
     const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
     const int why = !g_fs_last[t_rc].valid ? VK_FS_NONE
@@ -3334,7 +3398,7 @@ static struct {
    images and queued releases too: an entry lives past the submission that lands them). Both counts only grow, so
    their sum stays while both do */
 static u64 cb_adds(void) {
-    return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) +
+    return atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) +
            vk_uma_writes(); /* the writes in place, which no other count has */
 }
 /* e made now, binding what lives as life says. CB_OWN: what the buffer cache's last lookup bound, its own buffer or
@@ -3478,17 +3542,27 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
     return 1;
 }
 /* constant buffer i of a stage, at an offset that is a multiple of align: 16 for a bank bound through a window
-   (cb_window_place), vk_stage_align() for one bound alone. A kept entry at another offset is not taken by a bank that
-   binds alone */
+   (cb_window_place, windowed 1), vk_stage_align() for one bound alone. A kept entry at another offset is not taken by a
+   bank that binds alone. windowed says which, as align can't: vk_stage_align() is 16 on some devices */
 static int cb_epoch_refuses(VkBuffer b, u64 o);
-static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuffer* buf, u64* off) {
+static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, int windowed);
+/* the part of the draw thread's upload ring that bank i of a stage copies into (vk_stage_upload_own): its window moves
+   only when that part is full. With vk_cb_window_epochs=1, every bank's copies go into the thread's one part (0), in
+   the ring's order, which the thread's one window of all banks needs (g_cb_epoch) */
+static u32 cb_page(int stage, int i) {
+    if (g_settings.constant_buffer_window_epochs) return 0;
+    return (u32)stage < DS_GFX_STAGES && (u32)i < DS_CBUFS ? 1 + (u32)stage * DS_CBUFS + (u32)i : 0;
+}
+static int cb_get_(const DsState* ds, int stage, int i, u32 sz, int windowed, VkBuffer* buf, u64* off) {
+    const u64 align = windowed ? 16 : vk_stage_align();
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
         /* staged again only when this block changed (DsState.inl_gen), not when another inline block did */
         const u64 gen = ds_cb_inline_gen(ds, stage, (u32)i);
         CbEntry* e = &g_cb[t_rc].slot[stage][i];
-        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e) && !cb_epoch_refuses(e->buf, e->off)) {
+        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e) && !(e->off % align) &&
+            !cb_epoch_refuses(e->buf, e->off) && !cb_window_refuses(stage, i, e->buf, e->off, sz, windowed)) {
             *buf = e->buf;
             *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
@@ -3496,7 +3570,9 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
             if (check) cb_check(e, 0, in.bytes, e->sz < in.size ? e->sz : in.size);
             return 1;
         }
-        u8* p = vk_stage(sz, vk_stage_align(), buf, off);
+        /* in the bank's part of the ring, as its copies from guest memory are: in the device ring, its window moved to
+           another buffer at each change between the two, and shared 64 KiB with every other block there */
+        u8* p = vk_stage_upload_own(sz, align, cb_page(stage, i), buf, off);
         if (!p) return 0;
         u32 n = sz < in.size ? sz : in.size;
         memcpy(p, in.bytes, n);
@@ -3527,16 +3603,21 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached. Neither is
        one under a result of another kind (the mirror's writes, a storage image, a queued release), which the buffer
        cache looks for: the entry would live past the submission that lands it */
-    /* the checks and the staging below under one take of the share lock (draw_batches=2), not one take each */
+    /* the checks below under one take of the share lock (draw_batches=2), not one take each. The GPU page table is
+       read before it (its entries are atomics), and a copy's staging after it, from this thread's part of the ring
+       (vk_stage_upload_own): under the lock they were 60 of a copy's 90 ns there, and each copy took the lock */
+    u64 cpu = 0;
+    const int whole = a && gmmu_run(a, sz, &cpu) == sz;
     const int grouped = a != 0;
     if (grouped) vk_share_lock();
     if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && a) vk_compute_mem_need(a, sz);
     int pending = a && ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(a, sz)) ||
                         vk_uma_pending(a, sz) || /* written in place too */
                         pend_hit(&g_pend_any, a, sz));
-    if (!pending && ((cb_kept(e, a, sz, 0, epoch) && !(e->off % align) && !cb_epoch_refuses(e->buf, e->off)) ||
+    if (!pending && ((cb_kept(e, a, sz, 0, epoch) && !(e->off % align) && !cb_epoch_refuses(e->buf, e->off) &&
+                      !cb_window_refuses(stage, i, e->buf, e->off, sz, windowed)) ||
                      (cb_kept(x, a, sz, 0, epoch) && !(x->off % align) && !cb_epoch_refuses(x->buf, x->off) &&
-                      (*e = *x, 1)))) {
+                      !cb_window_refuses(stage, i, x->buf, x->off, sz, windowed) && (*e = *x, 1)))) {
         /* no result of any kind is over the bytes it holds: the next draw takes it at the first check, while no
            result is added */
         if (e->sz == sz) {
@@ -3558,13 +3639,13 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        is checked against is read before the bytes are. Unified memory whose buffer cache copies them
        (vk_uma_imports_dear) copies them here too: guest memory has their bytes once no write in place is
        pending over them (pending above), and the cache's checks and hash cost each constant buffer more than its copy */
-    u64 cpu = 0, adds = cb_adds(), gw = gpu_mem_generation();
+    u64 adds = cb_adds(), gw = gpu_mem_generation();
     u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
-    if (a && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
-        gmmu_run(a, sz, &cpu) == sz) {
+    if (whole && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) &&
+        !vk_mirror_holds(a, sz)) {
         u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
-        u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
-        vk_share_unlock(); /* grouped: a is set */
+        vk_share_unlock(); /* grouped: whole needs a */
+        u8* p = vk_stage_upload_own(sz, vk_stage_align(), cb_page(stage, i), buf, off);
         if (!p) return 0;
         life = CB_FRAME;
         if (!own_any())
@@ -3594,9 +3675,9 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
     }
     return 1;
 }
-static int cb_get(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuffer* buf, u64* off) {
+static int cb_get(const DsState* ds, int stage, int i, u32 sz, int windowed, VkBuffer* buf, u64* off) {
     const u64 t0 = g_ph.in_sets ? ph_now() : 0;
-    int r = cb_get_(ds, stage, i, sz, align, buf, off);
+    int r = cb_get_(ds, stage, i, sz, windowed, buf, off);
     if (t0) g_ph.lk[0] += ph_now() - t0;
     return r;
 }
@@ -3765,7 +3846,7 @@ static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int stage, int i,
                                           .format = bi.fmt,
                                           .offset = o,
                                           .range = bi.bytes};
-    int address = g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps;
+    int address = g_vk.has_descriptor_buffers || vk_heaps();
     VkBufferView view = VK_NULL_HANDLE;
     if (!address) {
         for (u32 k = 0; k < BUFIMG_VIEWS && !view; k++)
@@ -4282,9 +4363,9 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
     u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY) + 1];
     size_t words = vk_descriptor_key(key, layout, d->w, d->n);
     key[words++] = d->cb_addr; /* the same writes give a table of other words where other slots go by address */
-    const u64 mode = g_vk.has_descriptor_heaps ? 2 : g_vk.has_descriptor_buffers ? 1 : 0;
+    const u64 mode = vk_heaps() ? 2 : g_vk.has_descriptor_buffers ? 1 : 0;
     u64 frame = (((vk_frame_id() + 1) << 2) | mode) ^ vk_descriptor_heaps_forgets() * VK_FIB_MULT;
-    u64 heaps = g_vk.has_descriptor_heaps ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
+    u64 heaps = vk_heaps() ? vk_descriptor_heaps_epoch() : 0; /* it moves at each draw without heaps */
     int keep = (u32)stage < 2 * DS_GFX_STAGES && words <= sizeof g_dset[t_rc].last[0].key / sizeof *key;
     if (keep && g_dset[t_rc].last[stage].frame == frame && g_dset[t_rc].last[stage].heaps == heaps &&
         g_dset[t_rc].last[stage].n == words && !memcmp(g_dset[t_rc].last[stage].key, key, words * sizeof *key)) {
@@ -4319,8 +4400,13 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
         DescSetEntry* e = dset_frame(&bucket[0]) != frame   ? &bucket[0]
                           : dset_frame(&bucket[1]) != frame ? &bucket[1]
                                                             : &bucket[hash[1] >> 63];
-        set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
-                                                                         : vk_rec_new_set(layout, d->n, d->w);
+        /* the renderer thread's tables can last from frame to frame (vk_descriptors_write_lasting): the worker's
+           stream writes into the frame's part only */
+        set = g_vk.has_descriptor_buffers && !vk_heaps() && t_rc == 0
+                  ? vk_descriptors_write_lasting(layout, d->n, d->w, d->cb_addr, hash)
+              : (g_vk.has_descriptor_buffers || vk_heaps())
+                  ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
+                  : vk_rec_new_set(layout, d->n, d->w);
         if (!set) return VK_NULL_HANDLE;
         CNT(g_vk_dset_new)++;
         dset_put(e, hash[0], hash[1], frame, set);
@@ -4476,6 +4562,8 @@ typedef struct {
 #define CB_WINDOW_WORDS 18
 static CbWindow g_cb_windows[RC_SLOTS][2][19];
 static u16 g_cb_offsets[RC_SLOTS][2][19]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
+/* and each bank's guest size in 4-byte words, which an SM86 program reads 0 past (ShCaps.cb_sizes) */
+static u16 g_cb_sizes[RC_SLOTS][2][18];
 /* the draw's dynamic offsets of the constant buffers that the vertex and fragment sets bind as dynamic uniform buffers
    (cb_dynamic.h), by the stage's set and slot: 0 for a slot the program has not, whose descriptor no draw reads */
 static u32 g_cb_dyn[RC_SLOTS][2][VK_CB_DYNAMIC_SLOTS];
@@ -4536,25 +4624,48 @@ static u32 cb_dyn_offsets(u32* dyn, int fs) {
         for (u32 m = g_cb_dynamic.mask[s]; m; m &= m - 1) dyn[n++] = g_cb_dyn[t_rc][s][snx_ctz32(m)];
     return n;
 }
-/* vk_cb_window_epochs=1: one window of the staging ring for every bank of both stages' sets, the epoch. Copies land
-   at the ring's head, after the epoch's base: a new copy past its 64 KiB starts the next epoch there, for every bank at
-   once. A kept copy below the base (cb_get, cb_epoch_refuses) is copied again, at the head, so no bank pulls a window
-   back. The GPU mirror's banks keep a window of their own */
-static CbWindow g_cb_epoch;
+/* vk_cb_window_epochs=1: one window of the staging ring for every bank of both stages' sets, the epoch, for each
+   recording slot. Copies land in the ring's order, in the thread's one upload part (cb_page 0), after the epoch's
+   base: a new copy past its 64 KiB starts the next epoch there, for every bank at once. A kept copy below the base
+   (cb_get, cb_epoch_refuses) is copied again, at the head, so no bank pulls a window back. The GPU mirror's banks and
+   the texture words, which have a part of their own (table_words), keep a window of their own */
+static CbWindow g_cb_epoch[RC_SLOTS];
+/* whether a kept copy of a windowed bank is out of the bank's window of this frame, where a fresh copy
+   lands in it: binding the kept copy moved the window back, and the next fresh copy moved it on again, and with
+   descriptor buffers or heaps each move is a new table (in one game's world a kept copy below the window was 294k of
+   the 690k moves a 600 presents). A copy costs less than the table */
+static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, int windowed) {
+    if (!windowed || (!g_vk.has_descriptor_buffers && !vk_heaps()) || (u32)bank >= DS_CBUFS) return 0;
+    const int vs_fs = stage == 0 ? 0 : stage == 4 ? 1 : -1; /* the DS stages of the vertex and fragment sets */
+    if (vs_fs < 0) return 0;
+    const CbWindow* w = &g_cb_windows[t_rc][vs_fs][bank];
+    return w->b && w->frame == vk_frame_id() + 1 && (w->b != b || o < w->base || o + sz > w->base + w->range);
+}
 static int cb_epoch_refuses(VkBuffer b, u64 o) {
     /* a ring chunk's (vk_stage_buffer_size), as the epoch's are: another chunk, or below the base */
-    return g_settings.constant_buffer_window_epochs && g_cb_epoch.b && g_cb_epoch.frame == vk_frame_id() + 1 &&
-           b != vk_mirror_buffer() && vk_stage_buffer_size(b) && (g_cb_epoch.b != b || o < g_cb_epoch.base);
+    const CbWindow* e = &g_cb_epoch[t_rc];
+    return g_settings.constant_buffer_window_epochs && e->b && e->frame == vk_frame_id() + 1 &&
+           b != vk_mirror_buffer() && vk_stage_buffer_size(b) && (e->b != b || o < e->base);
 }
-static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
+/* page: the part of the draw thread's upload ring that the copy went into, cb_page(stage, bank) of its DS stage (a
+   mesh program's too, whose set is the vertex one), or the texture words' own (VK_UPLOAD_WORDS + vs_fs) */
+static int cb_window_place(int vs_fs, int bank, u32 page, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
     CbWindow* w = &g_cb_windows[t_rc][vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
-    if (g_settings.constant_buffer_window_epochs && b != vk_mirror_buffer()) w = &g_cb_epoch;
+    const int epoch = g_settings.constant_buffer_window_epochs && b != vk_mirror_buffer() && bank != CB_WINDOW_WORDS;
+    if (epoch) w = &g_cb_epoch[t_rc];
     if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
         /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
         const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
                   align = g_vk.props.limits.minUniformBufferOffsetAlignment;
-        const u64 at = align ? o / align * align : o;
+        u64 at = align ? o / align * align : o;
+        /* a copy in the bank's part of the ring: the window starts at the part's start, and holds the whole part. At
+           the copy, the part's copies before it were below the window (51k of 512k moves a 600 presents in one game's
+           world), as were the copies that the draws kept from earlier in it */
+        u64 start;
+        if (!epoch && vk_stage_upload_part(page, b, o, &start) &&
+            !(align && start % align) && o + sz <= start + 65536)
+            at = start;
         if (!size || at >= size || (o - at) & 15) return 0;
         const u64 reach = size - at < 65536 ? size - at : 65536;
         if (o + sz > at + reach) return 0;
@@ -4569,7 +4680,7 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
    SH_PUSH_TEX_WORDS. The same words as the stage's last draw in this frame take the same bytes: the set and the push
    stay */
 static struct {
-    u32 words[SH_RECORD_TEX_FETCH + SH_MAXTEX], n;
+    u32 words[SH_RECORD_FETCH_MAX + SH_MAXTEX], n;
     u64 frame;
     VkBuffer b;
     u64 o;
@@ -4584,7 +4695,9 @@ static int table_words(DescWrites* d, VkDescriptorSet set, int vs_fs, const u32*
         b = g_table_words[t_rc][vs_fs].b;
         o = g_table_words[t_rc][vs_fs].o;
     } else {
-        u8* data = vk_stage(bytes, 16, &b, &o);
+        /* in the stage's own part of the ring, where its window stays until the part is full: in the device ring the
+           window moved after the 64 KiB of every other copy there (58k moves a 600 presents in one game's world) */
+        u8* data = vk_stage_upload_own(bytes, 16, VK_UPLOAD_WORDS + (u32)vs_fs, &b, &o);
         if (!data) return 0;
         memset(data, 0, bytes);
         memcpy(data, words, n * 4);
@@ -4595,7 +4708,8 @@ static int table_words(DescWrites* d, VkDescriptorSet set, int vs_fs, const u32*
         g_table_words[t_rc][vs_fs].b = b;
         g_table_words[t_rc][vs_fs].o = o;
     }
-    if (cb_window_place(vs_fs, CB_WINDOW_WORDS, b, o, bytes, &base, &range)) {
+    if (cb_window_place(vs_fs, CB_WINDOW_WORDS, VK_UPLOAD_WORDS + (u32)vs_fs, b, o, bytes, &base,
+                        &range)) {
         g_cb_offsets[t_rc][vs_fs][CB_WINDOW_WORDS] = (u16)((o - base) >> 4);
         dw_buffer(d, set, SNX_VKB_TEXWORDS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, base, (u32)range);
         return 1;
@@ -4794,14 +4908,15 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                    ? ds->bind.cb_size[stage][i]
                                    : 65536,
                   reads = s->si.cbuf_max[i] ? s->si.cbuf_max[i] : 65536;
-        const int windowed =
-            s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs && guest_size >= reads;
+        /* a program that reads 0 past the bank's size (si.cb_sizes) takes the window whatever the guest's size */
+        const int windowed = s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs &&
+                             (guest_size >= reads || s->si.cb_sizes);
         /* a windowed bank takes its bytes where the GPU mirror has them at any 16 bytes, which a descriptor of its
            own can't: the mirror copied them out instead, and ended the rendering pass for it (most of one game's
            pass ends). One whose window can't be placed takes them again at the descriptor's alignment */
-        if (!cb_get(ds, stage, i, sz, windowed ? 16 : vk_stage_align(), &b, &o)) return VK_NULL_HANDLE;
-        const int placed = windowed && cb_window_place(vs_fs, i, b, o, sz, &base, &range);
-        if (!placed && o % vk_stage_align() && !cb_get(ds, stage, i, sz, vk_stage_align(), &b, &o))
+        if (!cb_get(ds, stage, i, sz, windowed, &b, &o)) return VK_NULL_HANDLE;
+        const int placed = windowed && cb_window_place(vs_fs, i, cb_page(stage, i), b, o, sz, &base, &range);
+        if (!placed && o % vk_stage_align() && !cb_get(ds, stage, i, sz, 0, &b, &o))
             return VK_NULL_HANDLE;
         if (vs_fs < 2 && g_draw_depth == 1 && !gpu_spec()) { /* the offsets probe (cb_move_log) */
             const int why = placed                                   ? 0
@@ -4817,13 +4932,15 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             g_cb_move.buf[vs_fs][i] = b;
             if (!placed) g_cb_move.slot[vs_fs][i]++;
         }
+        if (vs_fs < 2) /* a bank that binds alone: its descriptor's range ends it */
+            g_cb_sizes[t_rc][vs_fs][i] = (u16)(placed ? (guest_size + 3) >> 2 : 16384);
         if (placed) {
             g_cb_offsets[t_rc][vs_fs][i] = (u16)((o - base) >> 4);
             dw_cbuf(&d, set, vs_fs, i, b, base, (u32)range);
         } else {
             if (vs_fs < 2) g_cb_offsets[t_rc][vs_fs][i] = 0;
-            /* by address (with heaps, which take no windows), every byte the shader reads is in the binding: past a
-               short one, zeros */
+            /* by address (with heaps, a bank that takes no window), every byte the shader reads is in the binding:
+               past a short one, zeros */
             if ((d.cb_addr >> i & 1) && sz < vk_cb_range(s->si.cbuf_max[i]) &&
                 !cb_pad(&b, &o, sz, vk_cb_range(s->si.cbuf_max[i])))
                 return VK_NULL_HANDLE;
@@ -4850,21 +4967,25 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     /* The stage's record in its words' window (table_words): with gbuf_address, each global buffer slot's device
        address and length and the scratch words' address (SH_RECORD_GBUF), then the texture words. A program of
        gbuf_address takes its slots' addresses there, at any offset, where a descriptor was bound. A vertex program
-       that fetches its own attributes has their words after the global buffers' (SH_RECORD_ATTR, fetch_records), and
-       its texture words after those */
+       that fetches its own attributes has the words of those it reads after the global buffers' (SH_RECORD_ATTR,
+       fetch_records), and its texture words after those */
     const int recorded = g_spirv_translate.gbuf_address && shader_vk_set(s->stage) < 2;
     const int addressed = recorded && s->si.gbuf_address;
     const int fetch = recorded && s->si.vertex_fetch && s->stage == ST_VS;
-    const u32 tex_at = fetch ? SH_RECORD_TEX_FETCH : recorded ? SH_RECORD_GBUF : 0;
-    u32 rec[SH_RECORD_TEX_FETCH + SH_MAXTEX], rec_n = 0;
+    const u32 tex_at = fetch      ? SH_RECORD_FETCH_TEX(snx_popcount64(s->si.fetch_attrs))
+                       : recorded ? SH_RECORD_GBUF
+                                  : 0;
+    u32 rec[SH_RECORD_FETCH_MAX + SH_MAXTEX], rec_n = 0;
     if (addressed || fetch) {
         memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         const u64 scratch = vk_table_scratch();
         rec[SH_RECORD_SCRATCH] = (u32)scratch;
         rec[SH_RECORD_SCRATCH + 1] = (u32)(scratch >> 32);
-        if (fetch) {
-            memcpy(rec + SH_RECORD_ATTR, draw->attr, sizeof draw->attr);
-            memcpy(rec + SH_RECORD_DIVISOR, draw->divisor, sizeof draw->divisor);
+        u32* at = rec + SH_RECORD_ATTR;
+        for (u32 m = fetch ? s->si.fetch_attrs : 0; m; m &= m - 1, at += SH_ATTR_WORDS) {
+            const u32 i = snx_ctz32(m);
+            at[0] = draw->attr[i][0], at[1] = draw->attr[i][1], at[2] = draw->attr[i][2], at[3] = draw->attr[i][3];
+            at[4] = draw->divisor[i];
         }
         rec_n = tex_at;
     }
@@ -5078,11 +5199,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         const u64 in[] = {(u64)(uintptr_t)s, (u64)stage, (u64)(uintptr_t)gpu_ds_canonical(ds), ds->bind.tex_pool,
                           ds->bind.smp_pool, (u64)ds->bind.tex_max << 32 | ds->bind.smp_max,
                           (u64)ds->bind.tex_bank << 8 | ds->bind.smp_mode, gpu_mem_generation(),
-                          atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+                          atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes(),
                           vk_gfx_image_adds(), part_epoch,
                           vk_ww_epoch(), vk_rt_take_gen(), g_vk_present, vk_frame_id(), vk_submit_number(),
                           (u64)(uintptr_t)zt,
-                          (u64)n << 8 | (u64)images->sampled_general << 2 | (u64)(fb != NULL) << 1 | (u64)(scaled != NULL),
+                          (u64)n << 8 | (u64)images->sampled_general << 2 | (u64)(fb != NULL) << 1 |
+                              (u64)(scaled != NULL),
                           (u64)table << 1 | (u64)(table && recorded && !addressed && !fetch)};
         part_key = SNX_FNV_BASIS;
         for (u32 k = 0; k < sizeof in / sizeof in[0]; k++) part_key = snx_fnv_step(part_key, in[k]);
@@ -5399,7 +5521,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (table && nt) {
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
-        if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
+        /* the near entries first, with no share lock (vk_table_words_near) */
+        if (!vk_table_words_near(tviews, tlayouts, tsamplers, (u32)nt, words) &&
+            !vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words))
+            return VK_NULL_HANDLE;
         /* the slots whose records did not hold their view and sampler: the records hold them for the draws after */
         for (u64 m = learn; m; m &= m - 1) {
             const int i = (int)snx_ctz64(m);
@@ -5791,7 +5916,7 @@ typedef struct {
     /* a vertex program that fetches its own attributes (fetch_plan): each attribute's format word (SH_ATTR_), and vi
        its bindings, one a stream, for the lookups. No vertex input state is made from vi then */
     u32 fetch[32];
-    u32 divisor[32]; /* each attribute's instance divisor, 0 for one a vertex (SH_RECORD_DIVISOR) */
+    u32 divisor[32]; /* each attribute's instance divisor, 0 for one a vertex (the last of its SH_ATTR_WORDS) */
 } VertexPlan;
 /* pl's vertex layout as dynamic state, when the one the command buffer has (g_dyn) is another or none. Every draw
    pipeline takes it dynamic then, so binding another keeps it; a draw before it is set reads a layout of the driver's */
@@ -5840,20 +5965,27 @@ typedef struct {
     u32 mesh, heaps;
 } DrawKey;
 /* What a draw made from its state, kept for later draws while nothing it was made from changed: the state's owner and
-   its groups (g_draw_groups and the vertex format), the draw's topology, the shaders' code (trusted within an epoch and
-   shader generation, as vk_shader_get trusts it) and the constant buffer words their translation read (checked each
-   draw, as vk_shader_get checks them on a hit). What else goes into it is found each draw and compared: the fragment
-   variant's key (its textures' formats), the targets' formats, which vertex streams are empty, and whether the draw
-   samples a target it renders to. Draws made all of it again, a 1 KiB key built and compared included, for each of
-   the ~3,400 draws a frame in one game, most of them with the state of the draw before. draw_state_check=1 makes it
-   again for each draw that keeps it, and warns of any difference: a register missing from a group, or an input that
-   isn't compared */
+   its groups (g_draw_groups and the vertex format), the draw's topology, the shaders' code (trusted while nothing wrote
+   it since the entry's marks, as vk_shader_get trusts it: draw_code_quiet) and the constant buffer words their
+   translation read (checked each draw, as vk_shader_get checks them on a hit). What else goes into it is found each
+   draw and compared: the fragment variant's key (its textures' formats), the targets' formats, which vertex streams
+   are empty, and whether the draw samples a target it renders to. Draws made all of it again, a 1 KiB key built and
+   compared included, for each of the ~3,400 draws a frame in one game, most of them with the state of the draw
+   before. draw_state_check=1 makes it again for each draw that keeps it, and warns of any difference: a register
+   missing from a group, or an input that isn't compared */
 typedef struct {
     DrawKey key;           /* owner, topology and the groups' hashes */
     u64 gen[DS_GENS];      /* the state's generations at the last draw that made or took it */
     u32 epoch;             /* vk_ww_epoch */
     u32 used;              /* g_draw.use when last made or taken: of a set's ways, the one used longest ago makes room */
-    u64 shader_generation; /* instruction invalidations also expire kept draws */
+    /* g_vk.shader_generation when made or last found to hold, and the write tracking's marks before its shaders were
+       found. A new epoch (3 a frame) or a game's shader cache invalidation (NVN_BARRIER_INVALIDATE_SHADER_BIT, about
+       22 a frame in one game's town) keeps the entry while nothing wrote its programs' code since the marks
+       (draw_code_quiet), as vk_shader_get keeps the shader it found at an address. Without it, each made every kept
+       draw again: 300 of a frame's 2,700 draws on the renderer thread, at 8 us each */
+    u64 shader_generation;
+    u64 code_gw;
+    u32 code_wseen;
     /* A program can have more than one translation, each with other constant buffer words folded (cb_fold.h), and
        vk_shader_get takes the one that folds the most words of those that hold. A kept shader still holds when
        another translation of its program starts to hold, because it doesn't read the words that the other folds. So
@@ -5973,7 +6105,7 @@ static void draw_memo_key(const DsState* ds, u32 topology, int mesh, int check, 
     key->owner = ds->owner;
     key->topology = topology;
     key->mesh = (u32)mesh;
-    key->heaps = (u32)g_vk.has_descriptor_heaps;
+    key->heaps = (u32)vk_heaps();
 }
 /* a key's words mixed, odd: its set is the top DRAW_SET_BITS */
 static u64 draw_key_mix(const DrawKey* key) {
@@ -6013,16 +6145,35 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawKept* e) {
     }
     return 1;
 }
+/* the write tracking's marks at the start of this thread's draw, before its shaders are found (draw_find) */
+static _Thread_local struct {
+    u64 gw;
+    u32 wseen;
+} t_code_marks;
+/* whether nothing wrote the code of e's programs since e's marks: the vertex and fragment programs of ds, the ones
+   e's groups name. 0 for the other stages and paths, which take the draw's lookups again */
+static int draw_code_quiet(const DrawKept* e, const DsState* ds) {
+    const DrawShaders* s = &e->sh;
+    const DsPrograms* p = &ds->prog;
+    if (s->mesh || s->task_compute || s->tcs || s->tes || s->gs || vk_host_programs(p)) return 0;
+    const u64 a = (p->on & 1) ? p->code[0] : 0;
+    vk_share_lock(); /* one take for the three checks: each wrapped call inside it is no take of its own */
+    const int quiet =
+        vk_shader_code_quiet(s->vs, p->code[1], a, e->code_wseen, e->code_gw) &&
+        (!s->fs0 || vk_shader_code_quiet(s->fs0, p->code[5], 0, e->code_wseen, e->code_gw)) &&
+        (!e->fs || e->fs == s->fs0 || vk_shader_code_quiet(e->fs, p->code[5], 0, e->code_wseen, e->code_gw));
+    vk_share_unlock();
+    return quiet;
+}
 /* whether entry e, whose groups' bytes are this draw's, holds for this draw of ds, as far as what is checked before
    drawing tells */
 static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u32 epoch) {
     const DrawShaders* s = &e->sh;
     /* a draw's path, as draw_shaders' mesh argument: 1 mesh, 2 the compute-task path (sm86.h) */
     if (!s->vs || (int)(s->mesh | (s->task_compute ? 2 : 0)) != mesh) return hold_no(HOLD_PATH);
-    if (e->shader_generation != g_vk.shader_generation) return hold_no(HOLD_SHADER_GEN);
     if (e->fold_gen != vk_shader_fold_gen()) return hold_no(HOLD_FOLD); /* a translation came that a lookup may take */
-    if (e->k.heaps != (u32)g_vk.has_descriptor_heaps) return hold_no(HOLD_HEAPS);
-    if (e->key.owner != ds->owner || e->key.topology != topology || e->epoch != epoch) return hold_no(HOLD_KEY);
+    if (e->k.heaps != (u32)vk_heaps()) return hold_no(HOLD_HEAPS);
+    if (e->key.owner != ds->owner || e->key.topology != topology) return hold_no(HOLD_KEY);
     if (e->gen[DS_VFORMAT] != ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
         if (!vertex_format_holds(&ds->vfmt, e)) return hold_no(HOLD_VFORMAT);
         e->gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
@@ -6030,6 +6181,13 @@ static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u3
     if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return hold_no(HOLD_XFB); /* capture began or ended */
     if (s->window_xy != !ds->vp.transform_on) return hold_no(HOLD_WINDOW);  /* the viewports' group keys no shader */
     if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return hold_no(HOLD_SWIZZLE);
+    if (e->epoch != epoch || e->shader_generation != g_vk.shader_generation) { /* last: it reads the write tracking */
+        if (!draw_code_quiet(e, ds)) return hold_no(HOLD_CODE);
+        e->epoch = epoch;
+        e->shader_generation = g_vk.shader_generation;
+        e->code_gw = t_code_marks.gw;
+        e->code_wseen = t_code_marks.wseen;
+    }
     const VkSh* used[6];
     used_shaders(e, used);
     for (int i = 0; i < 6; i++) {
@@ -6047,6 +6205,8 @@ static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u3
    key is compared with them */
 static u32 draw_find(const DsState* ds, u32 topology, int mesh, u32 epoch, int check, DrawKey* key, int* have) {
     u32 last = g_draw[t_rc].last;
+    t_code_marks.gw = gpu_mem_generation();
+    t_code_marks.wseen = vk_ww_now();
     *have = 0;
     g_stats.n.lookups++;
     if (last) {
@@ -6109,6 +6269,8 @@ static u32 draw_keep(const DsState* ds, const DrawKey* key, u32 found, u32 epoch
     e->epoch = epoch;
     e->used = ++g_draw[t_rc].use;
     e->shader_generation = g_vk.shader_generation;
+    e->code_gw = t_code_marks.gw;
+    e->code_wseen = t_code_marks.wseen;
     /* the translations as they are after this draw's lookups, which can have made some */
     e->fold_gen = vk_shader_fold_gen();
     e->sh = *sh;
@@ -6480,7 +6642,7 @@ static int fetch_plan(const DsVertexFormat* vf, u32 in_mask, VertexPlan* pl) {
         u32 b = 0;
         while (b < vi->nbind && pl->key[b] != sbuf) b++;
         if (b == vi->nbind) {
-            /* the divisor whole, in the record's word of its own (SH_RECORD_DIVISOR) */
+            /* the divisor whole, in the record's word of its own (the last of the attribute's SH_ATTR_WORDS) */
             const u32 div = (vf->instanced >> sbuf) & 1 ? (vf->divisor[sbuf] ? vf->divisor[sbuf] : 1) : 0;
             pl->key[b] = sbuf; /* from the stream's start: an attribute's offset is its own */
             pl->stride[b] = stride;
@@ -6518,7 +6680,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     const VkSh* vs = sh->vs;
     u32 topology = sh->topology;
     memset(k, 0, sizeof *k);
-    k->heaps = (u32)g_vk.has_descriptor_heaps;
+    k->heaps = (u32)vk_heaps();
     memset(pl, 0, sizeof *pl);
     k->vs = vs->mod;
     k->fs = fs ? fs->mod : VK_NULL_HANDLE;
@@ -7478,7 +7640,7 @@ typedef struct {
 static void prep_stamps(PrepStamps* st) {
     *st = (PrepStamps){
         .gw = gpu_mem_generation(),
-        .adds = atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+        .adds = atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes(),
         .cs_adds = vk_compute_adds(),
         .gfx_adds = vk_buf_adds(),
         .img_adds = vk_gfx_image_adds(),
@@ -7492,7 +7654,7 @@ static void prep_stamps(PrepStamps* st) {
         .present = g_vk_present,
         .shader_gen = g_vk.shader_generation,
         .fold_gen = vk_shader_fold_gen(),
-        .heaps = (u64)g_vk.has_descriptor_heaps,
+        .heaps = (u64)vk_heaps(),
     };
 }
 /* A draw's resolve made ahead of it: what render_draw_main's resolve (its start to the pipeline key) leaves for the
@@ -7827,6 +7989,7 @@ static void render_batch_run(void) {
        between. The batch binds everything again (g_dyn fresh) */
     g_dyn[t_rc].cb = 0;
     g_ib[t_rc].cb = VK_NULL_HANDLE; /* and the index buffer bound (index_bind) */
+    vk_descriptors_stream_reset(t_rc); /* and the heaps */
     vk_surf_view_reset();
     g_rp[t_rc] = g_rp[0]; /* the pass open on the renderer thread, which the batch's commands follow */
     vk_rec_list_begin(g_batch.list);
@@ -7835,9 +7998,9 @@ static void render_batch_run(void) {
         DrawCall dc;
         DrawOwner* own;
         if (!gpu_ds_batch_draw(g_batch.recs[i], &ds, &dc, &own)) continue;
-        const int heaps = g_vk.has_descriptor_heaps;
+        const u8 heaps_off = g_vk.heaps_off[t_rc];
         render_draw(ds, &dc, own, NULL, NULL);
-        g_vk.has_descriptor_heaps = heaps;
+        g_vk.heaps_off[t_rc] = heaps_off;
     }
     g_batch.ok = vk_rec_list_end();
     vk_surf_view_reset();
@@ -7905,6 +8068,7 @@ static void render_batch(void) {
     g_rp[t_rc] = g_rp[1]; /* the pass the batch's commands left open */
     g_ib[t_rc].cb = VK_NULL_HANDLE;
     g_dyn[t_rc].cb = 0; /* the batch's binds are the command buffer's now: the next draw here binds everything again */
+    vk_descriptors_stream_reset(t_rc);
     gpu_ds_batch_end();
     gpu_ds_batch_done(n);
     g_batch.batches++;
@@ -7931,11 +8095,18 @@ static struct {
     u64 submit; /* the submission the worker's commands name their command buffer in */
     u64 inplace; /* vk_mirror_inplace_count at the split's start */
     VkOwnHeld held; /* the worker's held results, which the renderer thread takes at the join (vk_own_held_hand) */
+    /* the pass the worker's commands begin in: the renderer thread's open pass at the split, which goes on across
+       the join (render_split_join). inherit 0: none, and the worker's first draw begins its own */
+    typeof(g_rp[0]) pass;
+    int inherit;
+    int took; /* the worker took the ring (vk_split_ring_wait), and ended the pass in its commands before that */
+    u64 kept, begun_again; /* the joins that kept the pass open, and those that began the worker's again */
     u64 splits, draws;
     /* the ticks of render_split's steps and of the join, for the stats line: the batch's peek, the copies, the
        hold and the command buffers, the kick, the join */
     u64 t_peek, t_snap, t_cmd, t_kick, t_join, peeks;
 } g_split;
+static int split_pending(void) { return g_split.pending; }
 static void split_log(void) {
     static u64 tsc0, ns0;
     const u64 tsc = __builtin_readcyclecounter(), ns = plat_ns();
@@ -7988,6 +8159,10 @@ static void split_log(void) {
         }
         LOG("vulkan: draw_batches=2: the share lock's takes a present by function (and their waits):%s\n", line);
     }
+    if (g_split.kept || g_split.begun_again)
+        LOG("vulkan: draw_batches=2: %llu joins kept the pass open over the last 600 presents, %llu began the "
+            "worker's pass again\n", (unsigned long long)g_split.kept, (unsigned long long)g_split.begun_again);
+    g_split.kept = g_split.begun_again = 0;
     const u64 handed = atomic_exchange_explicit(&g_split.handovers, 0, memory_order_relaxed);
     if (handed)
         LOG("vulkan: draw_batches=2: the worker waited for the ring at %llu joins over the last 600 presents\n",
@@ -8002,8 +8177,20 @@ static void render_split_run(void) {
     g_dyn[t_rc].cb = 0;
     for (u32 st = 0; st < 2 * DS_GFX_STAGES; st++) g_dset[t_rc].last[st].n = 0; /* what it holds at the join is newer */
     g_ib[t_rc].cb = VK_NULL_HANDLE;
+    /* the heaps the renderer thread bound, or a classic set bound after them, are in commands that it records while
+       this list does: the list binds its own */
+    vk_descriptors_stream_reset(t_rc);
     vk_surf_view_reset();
     g_rp[t_rc] = (typeof(g_rp[0])){.rate_want = RATE_KEEP}; /* no pass: the first draw begins its own */
+    if (g_split.inherit) { /* the renderer thread's pass, open at the join (render_split_join) */
+        g_rp[t_rc] = g_split.pass;
+        g_rp[t_rc].rate_want = RATE_KEEP;
+        g_rp[t_rc].clears = 0;
+        /* its feedback slots: the renderer thread's draws after the split, which come before these, may have
+           written and sampled each, so the first of these that samples or writes one is ordered after them */
+        const u32 fb = g_rp[t_rc].fb;
+        g_rp[t_rc].fb_written = g_rp[t_rc].fb_read = g_rp[t_rc].due_written = g_rp[t_rc].due_read = fb;
+    }
     vk_rec_list_begin(g_split.list);
     vk_rec_list_parallel(1);
     for (u32 i = 0; i < g_split.apply; i++) gpu_ds_batch_apply(g_split.recs[i]);
@@ -8012,9 +8199,9 @@ static void render_split_run(void) {
         DrawCall dc;
         DrawOwner* own;
         if (!gpu_ds_batch_draw(g_split.recs[i], &ds, &dc, &own)) continue;
-        const int heaps = g_vk.has_descriptor_heaps;
+        const u8 heaps_off = g_vk.heaps_off[t_rc];
         render_draw(ds, &dc, own, NULL, NULL);
-        g_vk.has_descriptor_heaps = heaps;
+        g_vk.heaps_off[t_rc] = heaps_off;
     }
     vk_rec_list_parallel(0);
     g_split.ok = vk_rec_list_end();
@@ -8028,11 +8215,27 @@ static void render_split_run(void) {
    renderer thread to reach the join, which hands it the ring once the first half's commands are in it. The share lock
    is let go of meanwhile, as the renderer thread's draws take it */
 void vk_split_ring_wait(void) {
+    /* the ring's commands next are the worker's own, a submit or a command buffer's begin, which no pass may span:
+       the pass its list went on in ends there, and the join knows that none is open (render_split_join) */
+    vk_render_end();
+    g_split.took = 1;
     const int paused = vk_share_pause();
     atomic_fetch_add_explicit(&g_split.handovers, 1, memory_order_relaxed);
     while (!atomic_load_explicit(&g_split.granted, memory_order_acquire))
         plat_wait_word(&g_split.granted, 0, 1000000);
     vk_share_resume(paused);
+}
+/* the split's pass (g_split.pass) begun again for the worker's commands, which go on in it: the open pass ends, and
+   the targets take the barriers they need */
+static void split_pass_again(void) {
+    const typeof(g_rp[0])* p = &g_split.pass;
+    vk_render_end();
+    g_rp[0].rate_want = RATE_KEEP; /* no pass open: no rate attachment, as the split's pass had */
+    Surf* rt[8];
+    memcpy(rt, p->rt, sizeof rt);
+    if (!render_begin(rt, p->zt, p->n, p->zt_ro, p->srgb_write, p->fb, p->ext))
+        fatal("vulkan: draw_batches=2: the pass the worker's commands go on in could not begin again\n");
+    rp_record();
 }
 static void render_split_join(void) {
     const u64 tj = ph_now();
@@ -8040,14 +8243,39 @@ static void render_split_join(void) {
         fatal("vulkan: draw_batches=2: the renderer thread submitted while a worker recorded: the worker's commands "
               "name an old command buffer\n");
     /* the first half's pass ends and its barriers go into the ring: the worker's commands begin their own pass, and
-       from here the ring is the worker's if it needs it (vk_split_ring_wait) */
-    vk_render_end();
+       from here the ring is the worker's if it needs it (vk_split_ring_wait). Where the worker's commands go on in
+       the pass of the split (inherit), the pass stays open when it is still that one: the same targets in the same
+       layouts need no barrier, and draws of one pass are ordered. Otherwise that pass begins again for them, with
+       the barriers its targets need. Its query ends either way, as the worker's draws begin their own */
+    if (g_split.inherit) {
+        const typeof(g_rp[0])* p = &g_split.pass;
+        const int same = g_rp[0].open && g_rp[0].n == p->n && g_rp[0].zt == p->zt && g_rp[0].zt_ro == p->zt_ro &&
+                         g_rp[0].srgb_write == p->srgb_write && g_rp[0].fb == p->fb && !g_rp[0].rate &&
+                         g_rp[0].ext.width == p->ext.width && g_rp[0].ext.height == p->ext.height &&
+                         g_rp[0].layers == p->layers && !memcmp(g_rp[0].rt, p->rt, sizeof p->rt);
+        if (same) {
+            rp_record(); /* begun, if a clear alone opened it */
+            vk_query_pass_end(vk_cmd());
+            g_split.kept++;
+        } else {
+            split_pass_again();
+            g_split.begun_again++;
+        }
+    } else
+        vk_render_end();
     vk_rec_barrier_flush();
     atomic_store_explicit(&g_split.granted, 1, memory_order_release);
     plat_wake_word(&g_split.granted);
     vk_prep_join_wait();
-    /* a draw of either half that wrote the mirror in place: its writes before the other half's commands after them */
-    if (vk_mirror_inplace_count() != g_split.inplace) vk_mirror_order_join();
+    /* the worker took the ring: its commands in it ended the pass, and the rest of them begin their own */
+    if (g_split.took) g_rp[0].open = g_rp[0].begun = g_rp[0].clears = 0;
+    /* a draw of either half that wrote the mirror in place: its writes before the other half's commands after them.
+       The barrier ends the pass, which the worker's commands still go on in unless the worker took the ring */
+    if (vk_mirror_inplace_count() != g_split.inplace) {
+        const int open = g_rp[0].open;
+        vk_mirror_order_join();
+        if (g_split.inherit && open && !g_split.took) split_pass_again();
+    }
     cnt_fold();
     vk_share_active(0);
     if (!g_split.ok) fatal("vulkan: draw_batches=2: a worker's command list ran out of memory\n");
@@ -8068,6 +8296,7 @@ static void render_split_join(void) {
     g_rp[t_rc] = g_rp[1];
     g_ib[t_rc].cb = VK_NULL_HANDLE;
     g_dyn[t_rc].cb = 0;
+    vk_descriptors_stream_reset(t_rc); /* the worker's binds and classic sets are the command buffer's now */
     gpu_ds_batch_end();
     gpu_ds_batch_done(g_split.n);
     g_split.pending = 0;
@@ -8101,6 +8330,12 @@ static void render_split(void) {
     (void)vk_cmd_upload(1); /* and the uploads' command buffer, which a worker's draw can't begin (its ring) */
     g_split.submit = vk_submit_number();
     g_split.inplace = vk_mirror_inplace_count();
+    /* a begun pass with no shading rate attachment: the worker's draws go on in it, with its feedback slots. A rate
+       attachment is a draw's to choose. A pass with no target is none that render_begin can begin again at the join
+       (split_pass_again) */
+    g_split.inherit = g_rp[0].open && g_rp[0].begun && !g_rp[0].rate && (g_rp[0].n || g_rp[0].zt);
+    if (g_split.inherit) g_split.pass = g_rp[0];
+    g_split.took = 0;
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
     vk_share_active(1); /* before the worker's first call */
     /* the last draw's probe off before the worker reads it: no draw of the split run probes (render_draw_main) */
@@ -8124,7 +8359,7 @@ static void render_split(void) {
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE_V(z, "vk: draw", dc->count);
     render_split();
-    int heaps = g_vk.has_descriptor_heaps;
+    const u8 heaps_off = g_vk.heaps_off[t_rc];
     static int prep_init;
     if (!prep_init) {
         prep_init = 1;
@@ -8134,7 +8369,7 @@ void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     u64 pipe_hash = 0;
     const char* why = render_draw(ds, dc, o, NULL, &pipe_hash);
     g_draw_marks[DM_RENDER_DONE] = DRAW_MARK();
-    g_vk.has_descriptor_heaps = heaps;
+    g_vk.heaps_off[t_rc] = heaps_off;
 #if defined(SNX_TRACY)
     SNX_ZONE_TEXT(z, "n=%u inst=%u topo=%u pipe=%016llx%s%s", dc->count, dc->instances, dc->topology,
                   (unsigned long long)pipe_hash, why ? " skipped: " : "", why ? why : "");
@@ -9136,8 +9371,8 @@ resolved:
     if (!vset || (fs && !fset) || !bset_ok) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
-        if (g_vk.has_descriptor_heaps) {
-            g_vk.has_descriptor_heaps = 0;
+        if (vk_heaps()) {
+            g_vk.heaps_off[t_rc] = 1; /* this draw, on this thread (vk_heaps) */
             vk_descriptor_heaps_invalidate();
             draw_forget();
             goto retry;
@@ -9577,13 +9812,13 @@ resolved:
     }
     /* only what differs from the previous draw's in this command buffer (g_dyn) */
     u64 heap_epoch = vk_descriptor_heaps_epoch();
-    int fresh = g_dyn[t_rc].cb != vk_cb_begun() || (g_vk.has_descriptor_heaps && g_dyn[t_rc].heap_epoch != heap_epoch) ||
-                g_dyn[t_rc].heaps != g_vk.has_descriptor_heaps;
+    int fresh = g_dyn[t_rc].cb != vk_cb_begun() || (vk_heaps() && g_dyn[t_rc].heap_epoch != heap_epoch) ||
+                g_dyn[t_rc].heaps != vk_heaps();
     if (fresh) {
         memset(&g_dyn[t_rc], 0, sizeof g_dyn[t_rc]);
         g_dyn[t_rc].cb = vk_cb_begun();
         g_dyn[t_rc].heap_epoch = heap_epoch;
-        g_dyn[t_rc].heaps = g_vk.has_descriptor_heaps;
+        g_dyn[t_rc].heaps = vk_heaps();
     }
     if (g_vk.has_descriptor_buffers && g_dyn[t_rc].set_binds != vk_rec_set_binds()) { /* the sets go again */
         memset(g_dyn[t_rc].sets, 0, sizeof g_dyn[t_rc].sets);
@@ -9619,7 +9854,7 @@ resolved:
     }
     vk_share_lock(); /* one take for the three (draw_batches=2) */
     vk_vrs_draw(cb, dc->shading_rate);
-    vk_descriptor_heaps_pipeline_state(g_vk.has_descriptor_heaps);
+    vk_descriptor_heaps_pipeline_state(vk_heaps());
     VkPipelineLayout layout = vk_pipeline_layout(pipe, k->arrays);
     vk_share_unlock();
     if (g_vk.has_feedback_dynamic)
@@ -9670,7 +9905,12 @@ resolved:
         const u32 at = g_spirv_translate.table_set;
         if (fresh || g_dyn[t_rc].sets[at] != table) {
             g_dyn[t_rc].sets[at] = table;
-            vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);
+            if (vk_heaps()) {
+                /* none: the heaps' mappings name the table's runs with constant offsets */
+            } else if (g_vk.has_descriptor_buffers)
+                vk_descriptors_bind_table(cb, layout, at); /* its own buffer (table.c) */
+            else
+                vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);
         }
     }
     /* a program that fetches its own attributes takes an empty layout: its pipeline has the layout static and ignores
@@ -9987,12 +10227,28 @@ resolved:
                               (u32)(g_map_draw[t_rc].own[1] >> 32)};
             for (u32 k = 0; k < 8; k++) snx_st_le32(block + SH_PUSH_BYTES_TABLE + 4 * k, w[k]);
         }
+        if (g_spirv_translate.cb_sizes) /* each windowed bank's guest size (SH_DRAW_CB_SIZES) */
+            for (u32 st = 0; st < 2; st++)
+                for (u32 w = 0; w < 9; w++)
+                    snx_st_le32(block + 4 * ((st ? SH_DRAW_CB_SIZES_FS : SH_DRAW_CB_SIZES) + w),
+                                (u32)g_cb_sizes[t_rc][st][2 * w] | (u32)g_cb_sizes[t_rc][st][2 * w + 1] << 16);
         const u32 at[4] = {block_at, 0, 0, 0};
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
+    } else if (vk_heaps()) {
+        /* around the stage sets' address slots, which the block leaves free (vk_descriptor_heap_push_at) */
+        const u32 n = vk_push_bytes();
+        const u32 piece[3][2] = {{0, vk_descriptor_heap_push_at(0)},
+                                 {vk_descriptor_heap_push_at(0) + 8, vk_descriptor_heap_push_at(1)},
+                                 {vk_descriptor_heap_push_at(1) + 8, vk_descriptor_heap_push_at(2)}};
+        for (u32 i = 0; i < 3 && piece[i][0] < n; i++) {
+            const u32 end = piece[i][1] < n ? piece[i][1] : n;
+            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, piece[i][0], end - piece[i][0],
+                                 (const u8*)pc + piece[i][0]);
+        }
     } else
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
 
-    if (capture && !g_vk.has_descriptor_heaps)
+    if (capture && !vk_heaps())
         rec_CmdPushConstants(cb, layout, VK_PUSH_STAGES, 112, sizeof g_capture_draw.primitive, &g_capture_draw.primitive);
 
     /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are. Not
@@ -10202,8 +10458,8 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* texture) {
     call.indirect = 0;
     call.xfb_control = 0;
     DrawOwner owner = texture->owner;
-    int heaps = g_vk.has_descriptor_heaps;
+    const u8 heaps_off = g_vk.heaps_off[t_rc];
     render_draw(&state, &call, &owner, texture, NULL);
-    g_vk.has_descriptor_heaps = heaps;
+    g_vk.heaps_off[t_rc] = heaps_off;
     draw_forget();
 }

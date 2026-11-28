@@ -728,6 +728,9 @@ static inline Surf* sh_vk_rt_snapshot(Surf* rt, int pixels) {
 }
 static inline VkSampler sh_vk_sampler(const u32* tsc, int raise, int integer) {
     if (!vk_share_on()) return vk_sampler(tsc, raise, integer);
+    /* a sampler made before: its table entry is written one time, and read with no share lock */
+    VkSampler const found = vk_sampler_find(tsc, raise, integer);
+    if (found) return found;
     vk_share_lock_at(96);
     VkSampler const r = vk_sampler(tsc, raise, integer);
     vk_share_unlock();
@@ -828,20 +831,6 @@ static inline int sh_vk_surf_can_writeback(const Surf* s) {
     vk_share_unlock();
     return r;
 }
-static inline u32 sh_vk_surf_epoch_at(u64 gva) {
-    if (!vk_share_on()) return vk_surf_epoch_at(gva);
-    vk_share_lock_at(110);
-    u32 const r = vk_surf_epoch_at(gva);
-    vk_share_unlock();
-    return r;
-}
-static inline u64 sh_vk_surf_guest_size(const Surf* s) {
-    if (!vk_share_on()) return vk_surf_guest_size(s);
-    vk_share_lock_at(111);
-    u64 const r = vk_surf_guest_size(s);
-    vk_share_unlock();
-    return r;
-}
 static inline int sh_vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     if (!vk_share_on()) return vk_surf_keep_begin(s, k);
     vk_share_lock_at(112);
@@ -866,13 +855,6 @@ static inline void sh_vk_surf_wrote(Surf* s) {
     vk_share_lock_at(114);
     vk_surf_wrote(s);
     vk_share_unlock();
-}
-static inline VkDescriptorSet sh_vk_table_set(void) {
-    if (!vk_share_on()) return vk_table_set();
-    vk_share_lock_at(115);
-    VkDescriptorSet const r = vk_table_set();
-    vk_share_unlock();
-    return r;
 }
 static inline int sh_vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n, u32* words) {
     if (!vk_share_on()) return vk_table_words(views, layouts, samplers, n, words);
@@ -1066,8 +1048,22 @@ static inline int sh_vk_ww_take(const u8* host, u64 len) {
     vk_share_unlock();
     return r;
 }
+static inline int sh_vk_shader_code_quiet(const VkSh* s, u64 gva, u64 gva_a, u32 wseen, u64 gw) {
+    if (!vk_share_on()) return vk_shader_code_quiet(s, gva, gva_a, wseen, gw);
+    vk_share_lock_at(142);
+    int const r = vk_shader_code_quiet(s, gva, gva_a, wseen, gw);
+    vk_share_unlock();
+    return r;
+}
+static inline VkDescriptorSet sh_vk_descriptors_write_lasting(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes, u32 cb_addr, const u64 hash[2]) {
+    if (!vk_share_on()) return vk_descriptors_write_lasting(layout, count, writes, cb_addr, hash);
+    vk_share_lock_at(143);
+    VkDescriptorSet const r = vk_descriptors_write_lasting(layout, count, writes, cb_addr, hash);
+    vk_share_unlock();
+    return r;
+}
 /* the wrapped functions by their number in vk_share_lock_at, for the stats line */
-static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_buf_copy", "vk_buf_copy_writable", "vk_buf_copy_writable_word", "vk_buf_draw_has_alias", "vk_buf_draw_prepare", "vk_buf_get_at", "vk_buf_get_input", "vk_buf_get_storage", "vk_buf_get_uniform_at", "vk_buf_get_window", "vk_buf_get_window_input", "vk_buf_mem_need", "vk_buf_own_got", "vk_buf_own_holds", "vk_buf_owned", "vk_buf_pending", "vk_buffer_address", "vk_buffer_create", "vk_buffer_image", "vk_capture_clear", "vk_capture_get", "vk_capture_get_mixed_targets", "vk_capture_mixed_resolve", "vk_capture_mixed_source", "vk_capture_resolve", "vk_compute_gpu_src", "vk_compute_mem_need", "vk_compute_pending", "vk_conservative_dilation", "vk_defer_buffer", "vk_defer_buffer_view", "vk_depth_shadow_aliases", "vk_depth_shadow_cancel", "vk_depth_shadow_finish", "vk_depth_shadow_prepare", "vk_depth_shadow_range_aliases", "vk_depth_shadow_reserve", "vk_descriptor_heaps_get_stats", "vk_descriptor_heaps_invalidate", "vk_descriptor_heaps_pipeline_state", "vk_descriptors_bind", "vk_descriptors_bind_compute", "vk_descriptors_write", "vk_draw_texture_fragment", "vk_draw_texture_vertex", "vk_format_minmax_filter", "vk_frame_check", "vk_gfx_image_after", "vk_gfx_image_pending", "vk_gfx_image_pending_besides", "vk_gfx_image_record", "vk_gfx_image_unrecorded", "vk_gpuprof_op_begin", "vk_gpuprof_op_end", "vk_gpuprof_pass_begin", "vk_gpuprof_pass_end", "vk_host_shader", "vk_indirect_quads", "vk_mem_track", "vk_mirror_holds", "vk_mirror_pending", "vk_module_spv", "vk_module_spv_location", "vk_null_buffer_image", "vk_null_header_first", "vk_null_storage", "vk_null_view", "vk_own_res_unref", "vk_pages_read", "vk_pipe_unwritten_targets", "vk_pipeline_get", "vk_pipeline_get_deferred", "vk_pipeline_layout", "vk_pipeline_now", "vk_pipeline_ready", "vk_playout_compute", "vk_pointer_windows", "vk_predraw_drawn", "vk_predraw_fragment", "vk_predraw_next", "vk_predraw_pass_begin", "vk_predraw_reserve", "vk_predraw_view", "vk_query_pass_end", "vk_rec_new_set", "vk_rt_array", "vk_rt_attachment", "vk_rt_copy_drawn", "vk_rt_drawn", "vk_rt_drawn_full", "vk_rt_find", "vk_rt_note_read", "vk_rt_save", "vk_rt_snapshot", "vk_sampler", "vk_shader_cb_hold", "vk_shader_chosen", "vk_shader_fold_top", "vk_shader_get", "vk_shader_get_ex", "vk_shader_mesh", "vk_stage", "vk_stage_output", "vk_stage_upload", "vk_submits", "vk_surf_batch_begin", "vk_surf_batch_end", "vk_surf_can_writeback", "vk_surf_epoch_at", "vk_surf_guest_size", "vk_surf_keep_begin", "vk_surf_view_reset", "vk_surf_wrote", "vk_table_set", "vk_table_words", "vk_tc_index", "vk_tc_restride", "vk_tess_passthrough", "vk_tex_from_tic", "vk_tex_from_tic_guest", "vk_tex_from_tic_raw", "vk_tex_from_tic_storage", "vk_tex_is_copy_of", "vk_tex_recheck", "vk_tex_storage_view", "vk_tex_view", "vk_tex_view_format", "vk_tex_view_refusal", "vk_tic_names_none", "vk_uma_pending", "vk_varying_geometry", "vk_view_type_name", "vk_vrs_draw", "vk_vrs_keep", "vk_written_since", "vk_xfb_control_buffer", "vk_xfb_indirect", "vk_zt_array", "vk_shader_fold_draw", "vk_ww_take"};
+static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_buf_copy", "vk_buf_copy_writable", "vk_buf_copy_writable_word", "vk_buf_draw_has_alias", "vk_buf_draw_prepare", "vk_buf_get_at", "vk_buf_get_input", "vk_buf_get_storage", "vk_buf_get_uniform_at", "vk_buf_get_window", "vk_buf_get_window_input", "vk_buf_mem_need", "vk_buf_own_got", "vk_buf_own_holds", "vk_buf_owned", "vk_buf_pending", "vk_buffer_address", "vk_buffer_create", "vk_buffer_image", "vk_capture_clear", "vk_capture_get", "vk_capture_get_mixed_targets", "vk_capture_mixed_resolve", "vk_capture_mixed_source", "vk_capture_resolve", "vk_compute_gpu_src", "vk_compute_mem_need", "vk_compute_pending", "vk_conservative_dilation", "vk_defer_buffer", "vk_defer_buffer_view", "vk_depth_shadow_aliases", "vk_depth_shadow_cancel", "vk_depth_shadow_finish", "vk_depth_shadow_prepare", "vk_depth_shadow_range_aliases", "vk_depth_shadow_reserve", "vk_descriptor_heaps_get_stats", "vk_descriptor_heaps_invalidate", "vk_descriptor_heaps_pipeline_state", "vk_descriptors_bind", "vk_descriptors_bind_compute", "vk_descriptors_write", "vk_draw_texture_fragment", "vk_draw_texture_vertex", "vk_format_minmax_filter", "vk_frame_check", "vk_gfx_image_after", "vk_gfx_image_pending", "vk_gfx_image_pending_besides", "vk_gfx_image_record", "vk_gfx_image_unrecorded", "vk_gpuprof_op_begin", "vk_gpuprof_op_end", "vk_gpuprof_pass_begin", "vk_gpuprof_pass_end", "vk_host_shader", "vk_indirect_quads", "vk_mem_track", "vk_mirror_holds", "vk_mirror_pending", "vk_module_spv", "vk_module_spv_location", "vk_null_buffer_image", "vk_null_header_first", "vk_null_storage", "vk_null_view", "vk_own_res_unref", "vk_pages_read", "vk_pipe_unwritten_targets", "vk_pipeline_get", "vk_pipeline_get_deferred", "vk_pipeline_layout", "vk_pipeline_now", "vk_pipeline_ready", "vk_playout_compute", "vk_pointer_windows", "vk_predraw_drawn", "vk_predraw_fragment", "vk_predraw_next", "vk_predraw_pass_begin", "vk_predraw_reserve", "vk_predraw_view", "vk_query_pass_end", "vk_rec_new_set", "vk_rt_array", "vk_rt_attachment", "vk_rt_copy_drawn", "vk_rt_drawn", "vk_rt_drawn_full", "vk_rt_find", "vk_rt_note_read", "vk_rt_save", "vk_rt_snapshot", "vk_sampler", "vk_shader_cb_hold", "vk_shader_chosen", "vk_shader_fold_top", "vk_shader_get", "vk_shader_get_ex", "vk_shader_mesh", "vk_stage", "vk_stage_output", "vk_stage_upload", "vk_submits", "vk_surf_batch_begin", "vk_surf_batch_end", "vk_surf_can_writeback", "vk_surf_epoch_at", "vk_surf_guest_size", "vk_surf_keep_begin", "vk_surf_view_reset", "vk_surf_wrote", "vk_table_set", "vk_table_words", "vk_tc_index", "vk_tc_restride", "vk_tess_passthrough", "vk_tex_from_tic", "vk_tex_from_tic_guest", "vk_tex_from_tic_raw", "vk_tex_from_tic_storage", "vk_tex_is_copy_of", "vk_tex_recheck", "vk_tex_storage_view", "vk_tex_view", "vk_tex_view_format", "vk_tex_view_refusal", "vk_tic_names_none", "vk_uma_pending", "vk_varying_geometry", "vk_view_type_name", "vk_vrs_draw", "vk_vrs_keep", "vk_written_since", "vk_xfb_control_buffer", "vk_xfb_indirect", "vk_zt_array", "vk_shader_fold_draw", "vk_ww_take", "vk_shader_code_quiet", "vk_descriptors_write_lasting"};
 #define vk_all_barrier_by sh_vk_all_barrier_by
 /* vk_astc_bcn (sh_names' 1) reads its argument alone: no share lock. It was the lock's most taken function, 7060
    takes a present in one game's race */
@@ -1114,6 +1110,7 @@ static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_b
 #define vk_descriptors_bind sh_vk_descriptors_bind
 #define vk_descriptors_bind_compute sh_vk_descriptors_bind_compute
 #define vk_descriptors_write sh_vk_descriptors_write
+#define vk_descriptors_write_lasting sh_vk_descriptors_write_lasting
 #define vk_draw_texture_fragment sh_vk_draw_texture_fragment
 #define vk_draw_texture_vertex sh_vk_draw_texture_vertex
 #define vk_format_minmax_filter sh_vk_format_minmax_filter
@@ -1179,12 +1176,15 @@ static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_b
 #define vk_surf_batch_begin sh_vk_surf_batch_begin
 #define vk_surf_batch_end sh_vk_surf_batch_end
 #define vk_surf_can_writeback sh_vk_surf_can_writeback
-#define vk_surf_epoch_at sh_vk_surf_epoch_at
-#define vk_surf_guest_size sh_vk_surf_guest_size
+/* vk_surf_epoch_at (sh_names' 110) reads one bucket's epoch, an atomic word as g_vk_surf_epoch is: no share lock. It
+   was among the lock's most taken functions, about 3,100 takes a present in one game's town, with the most waits */
+/* vk_surf_guest_size (sh_names' 111) reads a target's rt_size, set one time when the target is made, or a texture's
+   size fields, which do not change: no share lock. About 2,300 takes a present in one game's town */
 #define vk_surf_keep_begin sh_vk_surf_keep_begin
 #define vk_surf_view_reset sh_vk_surf_view_reset
 #define vk_surf_wrote sh_vk_surf_wrote
-#define vk_table_set sh_vk_table_set
+/* vk_table_set (sh_names' 115) returns the table's set, which vk_table_init makes before any draw: no share lock.
+   Each draw of the texture table took the lock for it, about 4,600 takes a present in one game's town */
 #define vk_table_words sh_vk_table_words
 #define vk_tc_index sh_vk_tc_index
 #define vk_tc_restride sh_vk_tc_restride
@@ -1211,4 +1211,5 @@ static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_b
 #define vk_zt_array sh_vk_zt_array
 #define vk_shader_fold_draw sh_vk_shader_fold_draw
 #define vk_ww_take sh_vk_ww_take
+#define vk_shader_code_quiet sh_vk_shader_code_quiet
 #endif
