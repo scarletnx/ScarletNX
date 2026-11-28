@@ -46,6 +46,12 @@ int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* c
                          const char* soname, const char* path, const unsigned char* owned,
                          void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
                          size_t error_size);
+/* The ELF linker for a test, in memory or (path) into a file, which leaves output its size alone: the PC-relative
+   references of the module's code (x86-64's PC32 and PLT32, AArch64's ADRP) reach `reach` bytes, not the machine's 2
+   or 4 GiB, so a module of a few MiB is laid out, or refused, as one of as many GiB is (link_elf.c's layout) */
+int snx_link_elf_reach(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                       const char* soname, uint64_t reach, const char* path, SnxLinkOutput* output, char* error,
+                       size_t error_size);
 int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                   const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,

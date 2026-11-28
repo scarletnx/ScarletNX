@@ -3,6 +3,10 @@
 /* ELF: x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 or s390x ET_REL objects into an ET_DYN shared object for
    Linux, FreeBSD and Android.
    Layout: [R: headers, .hash .dynsym .dynstr .rela.dyn, read-only data] [RX: .text] [RW: .data .got .dynamic, .bss].
+   An x86-64 or AArch64 module larger than its code's PC-relative references reach (2 and 4 GiB) has the data in the
+   middle of the code instead, half the code away at most: [R: headers...] [RX: the text's first half, x86-64's hub]
+   [R: read-only data] [RW: .data .got .dynamic, .bss] [RX: the text's second half]. The hub is x86-64's veneers, one
+   place for the module: a jump for each function called from another object, which a call out of reach goes through.
    Every symbol must be defined by one of the objects; the only dynamic relocations are R_*_RELATIVE, for absolute
    addresses in writable data and for GOT slots. The objects are read and relocated by elf_object.c, as the JIT loader
    (code_loader.c) reads and relocates them; the layout, the dynamic sections, the veneer islands and PowerPC64's TOC
@@ -77,6 +81,15 @@ typedef struct {
     uint64_t toc;               /* PowerPC64: .TOC., the base its TOC16 relocations count from */
     uint64_t gp;                /* MIPS64: the GOT's address plus SNX_ELF_MIPS_GP_OFFSET, which its code counts from */
     uint64_t kind_size[SNX_ELF_KINDS], kind_align[SNX_ELF_KINDS], kind_address[SNX_ELF_KINDS];
+    uint64_t reach; /* a test's for the references near_reach is of (snx_link_elf_reach), 0 for the machine's own */
+    /* A module larger than those references reach has its data in the middle of its code, where half the code is the
+       furthest any of it is from them: the text from position text_cut on sits text_gap bytes further on, past the
+       hub, the read-only data, the data, the GOT, .dynamic and the BSS. text_gap 0: the text whole, the data after */
+    uint64_t text_cut, text_gap;
+    /* x86-64's, in such a module: the address of the jumps at the cut, in reach of all the code and reaching all of
+       it, which a call too far from its target goes through (one for each target, hub_key's in veneer) */
+    uint64_t hub;
+    size_t hub_count;
     uint64_t got_address;
     size_t got_count, relative_count;
     /* MIPS64: the GOT's slots before the symbols' (the reserved two and room for every GOT_PAGE's page, as many as
@@ -88,6 +101,57 @@ typedef struct {
 
 static int fail(Link* l, const char* format, const char* a, const char* b) {
     return snx_link_fail(l->error, l->error_size, format, a, b);
+}
+
+/* a reference that reaches near_reach from its place: x86-64's 32-bit ones (PC32 to data, PLT32 a call), AArch64's
+   ADRP: what the code the back ends make reads its module's data by */
+static int near_reference(unsigned machine, unsigned type) {
+    if (machine == EM_X86_64) return type == R_X86_64_PC32 || type == R_X86_64_PLT32;
+    return machine == EM_AARCH64 && (type == SNX_A64_ADR_PREL_PG_HI21 || type == SNX_A64_ADR_PREL_PG_HI21_NC);
+}
+/* how far: 2 GiB on x86-64 and 4 on AArch64, less the 64 KiB a page and an addend may add; or the test's. 0 on the
+   other machines, whose modules keep the text whole */
+static uint64_t near_reach(const Link* l) {
+    if (l->reach) return l->reach;
+    if (l->machine == EM_X86_64) return ((uint64_t)1 << 31) - 0x10000;
+    return l->machine == EM_AARCH64 ? ((uint64_t)1 << 32) - 0x10000 : 0;
+}
+/* place reaches target: always but under a test's reach, which a machine's own field enforces by itself */
+static int reaches(const Link* l, uint64_t target, uint64_t place) {
+    return !l->reach || (target > place ? target - place : place - target) <= l->reach;
+}
+/* the address of the text's byte at position */
+static uint64_t text_at(const Link* l, uint64_t position) {
+    return l->kind_address[SNX_ELF_TEXT] + position + (l->text_gap && position >= l->text_cut ? l->text_gap : 0);
+}
+/* of two ends inside a text of size bytes, cut (0: none yet) and at, the nearer to its half */
+static uint64_t nearer_half(uint64_t cut, uint64_t at, uint64_t size) {
+    const uint64_t half = size / 2;
+    if (!at || at >= size) return cut;
+    return !cut || (at > half ? at - half : half - at) < (cut > half ? cut - half : half - cut) ? at : cut;
+}
+/* Where the text is cut for the data to sit in its middle: of the ends of its objects (each one's island with it),
+   or of its sections where they are ordered one by one (text; no object has an island then), the nearest to half of
+   its bytes. 0 when no such end is inside it: one object's code alone */
+static uint64_t text_half(const Link* l, const SnxElfPlace* text) {
+    const uint64_t size = l->kind_size[SNX_ELF_TEXT];
+    uint64_t cut = 0;
+    for (size_t i = 0; i < l->nobjs; ++i) {
+        const SnxElfObject* o = &l->objs[i];
+        uint64_t end = o->veneers ? o->island + o->veneers * (uint64_t)(l->machine == EM_PPC64 ? SNX_ELF_PPC_VENEER_SIZE
+                                                                                               : SNX_ELF_VENEER_SIZE)
+                                  : 0;
+        for (size_t j = 0; j < o->eh->e_shnum; ++j) {
+            if (o->kind[j] != SNX_ELF_TEXT) continue;
+            const uint64_t at = o->position[j] + o->sh[j].sh_size;
+            if (text)
+                cut = nearer_half(cut, at, size);
+            else if (at > end)
+                end = at;
+        }
+        if (!text) cut = nearer_half(cut, end, size);
+    }
+    return cut;
 }
 
 /* The defining object and symbol of object o's symbol index; *undefined_weak for an unresolved weak reference */
@@ -207,6 +271,38 @@ static int scan_relocations(Link* l) {
     return 0;
 }
 
+/* bytes of an x86-64 hub jump: jmp rel32 and three int3 */
+#define HUB_JUMP          8
+/* a hub jump's key: its target, a definition and the call's addend */
+static void hub_key(char* key, size_t size, size_t object, size_t index, int64_t addend) {
+    snprintf(key, size, "h%zu:%zu:%lld", object, index, (long long)addend);
+}
+/* x86-64, the text cut: a hub jump for every function called from another object, any of which may be the call out
+   of reach once the addresses are known */
+static int hub_scan(Link* l) {
+    size_t def_object, def_index, slot;
+    int weak;
+    char key[72];
+    for (size_t i = 0; i < l->nobjs; ++i) {
+        const SnxElfObject* o = &l->objs[i];
+        for (size_t j = 0; j < o->eh->e_shnum; ++j) {
+            const Elf64_Shdr* s = &o->sh[j];
+            if (s->sh_type != SHT_RELA || s->sh_info >= o->eh->e_shnum || o->kind[s->sh_info] < 0) continue;
+            const Elf64_Rela* r = (const Elf64_Rela*)(o->input->data + s->sh_offset);
+            size_t n = s->sh_size / sizeof(Elf64_Rela);
+            for (size_t k = 0; k < n; ++k) {
+                if (snx_elf_type(l->machine, r[k].r_info) != R_X86_64_PLT32 || symbolless(l, &r[k])) continue;
+                if (definition(l, i, snx_elf_symbol(l->machine, r[k].r_info), &def_object, &def_index, &weak))
+                    return -1;
+                if (weak || def_object == i) continue;
+                hub_key(key, sizeof key, def_object, def_index, r[k].r_addend);
+                if (!snx_link_find(&l->veneer, key, &slot)) snx_link_insert(&l->veneer, key, l->hub_count++);
+            }
+        }
+    }
+    return 0;
+}
+
 /* a .hash word, of size bytes in the host's order: 8 on s390x, whose loaders read its words as 64-bit (glibc's
    Elf_Symndx), 4 elsewhere */
 static void hash_word(unsigned char* p, size_t size, uint64_t value) {
@@ -289,11 +385,12 @@ enum {
     S_SYMTAB,
     S_STRTAB,
     S_SHSTRTAB,
+    S_TEXT2, /* the text past the data, of a module with its data in the middle: the last, and there only then */
     S_COUNT
 };
-static const char* const section_names[S_COUNT] = {"",        ".hash",   ".dynsym", ".dynstr",  ".rela.dyn",
-                                                   ".rodata", ".text",   ".data",   ".got",     ".dynamic",
-                                                   ".bss",    ".symtab", ".strtab", ".shstrtab"};
+static const char* const section_names[S_COUNT] = {"",        ".hash",   ".dynsym", ".dynstr",   ".rela.dyn",
+                                                   ".rodata", ".text",   ".data",   ".got",      ".dynamic",
+                                                   ".bss",    ".symtab", ".strtab", ".shstrtab", ".text.2"};
 static const int kind_section[SNX_ELF_KINDS] = {S_RODATA, S_TEXT, S_DATA, S_BSS};
 
 /* Where a module goes when it is not made in memory (snx_link_elf_to_file): its file, the inputs whose bytes are the
@@ -328,6 +425,10 @@ static unsigned char* got_at(const SnxLinkBuffer* out, const SnxLinkBuffer* mid,
     return mid->data ? mid->data + (offset - got_off) : out->data + offset;
 }
 
+/* the section of an address of the text: its second part's past the cut */
+static int text_section(const Link* l, uint64_t address) {
+    return l->text_gap && address >= text_at(l, l->text_cut) ? S_TEXT2 : S_TEXT;
+}
 /* object i's named functions and objects into the module's .symtab, as local symbols */
 static void object_symbols(Link* l, size_t i, SnxLinkBuffer* symtab, SnxLinkBuffer* strtab) {
     const SnxElfObject* o = &l->objs[i];
@@ -347,8 +448,9 @@ static void object_symbols(Link* l, size_t i, SnxLinkBuffer* symtab, SnxLinkBuff
             (uint32_t)snx_link_append(strtab, snx_elf_symbol_name(o, src), strlen(snx_elf_symbol_name(o, src)) + 1);
         s.st_info = ELF64_ST_INFO(STB_LOCAL, type);
         s.st_other = STV_DEFAULT;
-        s.st_shndx = (uint16_t)kind_section[o->kind[src->st_shndx]];
         s.st_value = o->address[src->st_shndx] + src->st_value;
+        s.st_shndx = (uint16_t)(o->kind[src->st_shndx] == SNX_ELF_TEXT ? text_section(l, s.st_value)
+                                                                       : kind_section[o->kind[src->st_shndx]]);
         s.st_size = src->st_size;
         snx_link_append(symtab, &s, sizeof(s));
     }
@@ -358,20 +460,23 @@ static void object_symbols(Link* l, size_t i, SnxLinkBuffer* symtab, SnxLinkBuff
    object's sections are relocated where they are, in the input where it is the linker's, written at their place in
    the file and the input given back, so the module is never in memory beside its objects */
 static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
-                    const char* soname, SnxLinkOutput* output, const Sink* sink, char* error, size_t error_size) {
-    Link l = {0};
+                    const char* soname, uint64_t reach, SnxLinkOutput* output, const Sink* sink, char* error,
+                    size_t error_size) {
+    Link l = {.reach = reach};
     /* a file's parts that are made in memory: out its head, up to the read-only data; mid the GOT and .dynamic; trail
        what follows the data. The objects' sections, between them, are never here */
     SnxLinkBuffer mid = {0}, trail = {0};
     /* the object being relocated: where each of its sections' bytes are, which of them are copies made here, and
        its island's */
-    unsigned char **base = NULL, *island = NULL;
+    unsigned char **base = NULL, *island = NULL, *hub = NULL; /* hub: a file's, held to its end */
     unsigned char* copied = NULL;
     size_t nbase = 0;
     Elf64_Sym** kept = NULL; /* the symbols of the objects given back already, which later ones still name */
     SnxLinkBuffer out = {0}, dynstr = {0}, strtab = {0}, symtab = {0}, rela = {0};
     Elf64_Shdr shdr[S_COUNT];
-    Elf64_Phdr ph[5];
+    Elf64_Phdr ph[7];
+    size_t nph = 5; /* a cut text adds its second part's segment and, where there is any, the read-only data's */
+    uint64_t hub_size = 0;
     Elf64_Ehdr eh;
     size_t nsyms = export_count + 1, ndyn = 0;
     int rc = -1;
@@ -402,19 +507,51 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     uint64_t nbucket = export_count ? export_count : 1;
     /* addresses */
     size_t hw = l.machine == EM_S390 ? 8 : 4; /* hash_word's */
-    uint64_t hash_off = snx_align_up(sizeof(Elf64_Ehdr) + sizeof(ph), 8);
-    uint64_t dynsym_off = snx_align_up(hash_off + hw * (2 + nbucket + nsyms), 8);
-    uint64_t dynstr_off = dynsym_off + nsyms * sizeof(Elf64_Sym);
-    uint64_t rela_off = snx_align_up(dynstr_off + dynstr.size, 8);
-    uint64_t rodata_off = snx_align_up(rela_off + l.relative_count * sizeof(Elf64_Rela), l.kind_align[SNX_ELF_RODATA]);
-    uint64_t end_r = rodata_off + l.kind_size[SNX_ELF_RODATA];
-    uint64_t text_off = snx_align_up(end_r, l.page);
-    uint64_t data_off = snx_align_up(snx_align_up(text_off + l.kind_size[SNX_ELF_TEXT], l.page),
-                                     l.kind_align[SNX_ELF_DATA]);
-    uint64_t got_off = snx_align_up(data_off + l.kind_size[SNX_ELF_DATA], 8);
-    uint64_t dynamic_off = got_off + 8 * got_slots;
-    uint64_t end_data = dynamic_off + sizeof(dyn);
-    uint64_t bss_off = snx_align_up(end_data, l.kind_align[SNX_ELF_BSS]);
+    uint64_t hash_off, dynsym_off, dynstr_off, rela_off, head_end, rodata_off, end_r, text_off, data_off, got_off;
+    uint64_t dynamic_off, end_data, bss_off;
+    for (;;) { /* once with the text whole, and again with it cut where that leaves data out of the code's reach */
+        hash_off = snx_align_up(sizeof(Elf64_Ehdr) + nph * sizeof(Elf64_Phdr), 8);
+        dynsym_off = snx_align_up(hash_off + hw * (2 + nbucket + nsyms), 8);
+        dynstr_off = dynsym_off + nsyms * sizeof(Elf64_Sym);
+        rela_off = snx_align_up(dynstr_off + dynstr.size, 8);
+        head_end = rela_off + l.relative_count * sizeof(Elf64_Rela);
+        if (!l.text_cut) { /* the read-only data with the head, then the text */
+            rodata_off = snx_align_up(head_end, l.kind_align[SNX_ELF_RODATA]);
+            end_r = rodata_off + l.kind_size[SNX_ELF_RODATA];
+            text_off = snx_align_up(end_r, l.page);
+            data_off =
+                snx_align_up(snx_align_up(text_off + l.kind_size[SNX_ELF_TEXT], l.page), l.kind_align[SNX_ELF_DATA]);
+        } else { /* the text's first part and the hub, then the read-only data, in pages of its own */
+            text_off = snx_align_up(head_end, l.page);
+            l.hub = snx_align_up(text_off + l.text_cut, 16);
+            rodata_off = snx_align_up(snx_align_up(l.hub + hub_size, l.page), l.kind_align[SNX_ELF_RODATA]);
+            end_r = rodata_off + l.kind_size[SNX_ELF_RODATA];
+            data_off = snx_align_up(snx_align_up(end_r, l.page), l.kind_align[SNX_ELF_DATA]);
+        }
+        got_off = snx_align_up(data_off + l.kind_size[SNX_ELF_DATA], 8);
+        dynamic_off = got_off + 8 * got_slots;
+        end_data = dynamic_off + sizeof(dyn);
+        bss_off = snx_align_up(end_data, l.kind_align[SNX_ELF_BSS]);
+        if (l.text_cut) {
+            /* the second part from the page past the BSS, as far into its page as it was */
+            l.text_gap =
+                snx_align_up(bss_off + l.kind_size[SNX_ELF_BSS], l.page) - ((text_off + l.text_cut) & ~(l.page - 1));
+            break;
+        }
+        /* whole while the module's first loaded byte reaches its last: every reference in it reaches its target */
+        if (!near_reach(&l) || bss_off + l.kind_size[SNX_ELF_BSS] - rodata_off <= near_reach(&l)) break;
+        l.text_cut = text_half(&l, text);
+        if (!l.text_cut) break; /* nowhere to cut: the reference out of reach is refused below, with its distance */
+        nph = 6 + (l.kind_size[SNX_ELF_RODATA] != 0);
+        if (l.machine == EM_X86_64 && hub_scan(&l)) goto done;
+        hub_size = HUB_JUMP * (uint64_t)l.hub_count;
+    }
+    /* the end of the first part of the text, its hub with it, and of what the file holds of the loaded module, where
+       the symbol table follows: a multiple of 8, as .dynamic's end is */
+    const uint64_t text1_end = l.text_gap ? l.hub + hub_size : text_off + l.kind_size[SNX_ELF_TEXT];
+    const uint64_t end_file =
+        l.text_gap ? snx_align_up(text_off + l.kind_size[SNX_ELF_TEXT] + l.text_gap, 8) : end_data;
+    const uint64_t head_size = l.text_gap ? head_end : rodata_off;
     l.kind_address[SNX_ELF_RODATA] = rodata_off;
     l.kind_address[SNX_ELF_TEXT] = text_off;
     l.kind_address[SNX_ELF_DATA] = data_off;
@@ -426,17 +563,26 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     for (size_t i = 0; i < count; ++i)
         for (size_t j = 0; j < l.objs[i].eh->e_shnum; ++j)
             if (l.objs[i].kind[j] >= 0)
-                l.objs[i].address[j] = l.kind_address[l.objs[i].kind[j]] + l.objs[i].position[j];
+                l.objs[i].address[j] = l.objs[i].kind[j] == SNX_ELF_TEXT
+                                           ? text_at(&l, l.objs[i].position[j])
+                                           : l.kind_address[l.objs[i].kind[j]] + l.objs[i].position[j];
     if (sink) {
         kept = (Elf64_Sym**)calloc(count ? count : 1, sizeof *kept);
         if (!kept) {
             snprintf(error, error_size, "out of memory");
             goto done;
         }
-        snx_link_reserve(&out, rodata_off);
+        snx_link_reserve(&out, head_size);
         snx_link_reserve(&mid, end_data - got_off);
-    } else
-        snx_link_reserve(&out, end_data);
+        if (hub_size && !(hub = (unsigned char*)malloc(hub_size))) {
+            snprintf(error, error_size, "out of memory");
+            goto done;
+        }
+    } else {
+        snx_link_reserve(&out, end_file);
+        hub = out.data + l.hub;
+    }
+    if (hub_size) memset(hub, 0xCC, hub_size); /* int3 where no jump is written */
     /* section contents */
     for (size_t i = 0; !sink && i < count; ++i) {
         SnxElfObject* o = &l.objs[i];
@@ -560,22 +706,36 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
                 if (r[k].r_offset <= o->sh[s->sh_info].sh_size && base[s->sh_info]) {
                     unsigned char* p = base[s->sh_info] + r[k].r_offset;
                     /* the object's island: in the module, or for a file a buffer of its own */
-                    const uint64_t isle_at = l.kind_address[SNX_ELF_TEXT] + o->island;
+                    const uint64_t isle_at = text_at(&l, o->island);
                     unsigned char* const isle = sink ? island : out.data + isle_at;
                     written = snx_elf_relocate(l.machine, p, o->sh[s->sh_info].sh_size - r[k].r_offset, type, S, A, P,
                                                got, slot);
+                    if (!written && !weak && near_reference(l.machine, type) && !reaches(&l, S + (uint64_t)A, P))
+                        written = SNX_LINK_RANGE;
+                    if (written == SNX_LINK_RANGE && l.hub_count && type == R_X86_64_PLT32 && !weak) {
+                        /* through the target's hub jump: the call to it, and it to where the call went (the addend
+                           counts from the call's end, 4 bytes past its field) */
+                        hub_key(key, sizeof key, def_object, def_index, A);
+                        if (snx_link_find(&l.veneer, key, &found)) {
+                            const uint64_t at = l.hub + HUB_JUMP * (uint64_t)found, target = S + (uint64_t)A + 4;
+                            unsigned char* const jump = hub + HUB_JUMP * found;
+                            jump[0] = 0xE9;
+                            written = reaches(&l, target, at) && reaches(&l, at, P)
+                                          ? snx_link_rel32(jump + 1, target, at + 5)
+                                          : SNX_LINK_RANGE;
+                            if (!written) written = snx_link_rel32(p, at - 4, P);
+                        }
+                    }
                     if (written == SNX_LINK_RANGE && snx_elf_call_relocation(l.machine, type) && !weak) {
                         /* the caller's veneer, which it reaches, jumps there: PowerPC64's to the global entry, as
                            through a pointer */
                         snx_link_veneer_key(key, i, def_object, def_index);
                         if (snx_link_find(&l.veneer, key, &found)) {
                             if (l.machine == EM_PPC64) {
-                                uint64_t at = l.kind_address[SNX_ELF_TEXT] + o->island +
-                                     SNX_ELF_PPC_VENEER_SIZE * (uint64_t)found;
+                                uint64_t at = isle_at + SNX_ELF_PPC_VENEER_SIZE * (uint64_t)found;
                                 written = snx_elf_ppc_branch_veneer(p, P, isle + (at - isle_at), at, entry, l.toc);
                             } else {
-                                uint64_t at = l.kind_address[SNX_ELF_TEXT] + o->island
-                                    + SNX_ELF_VENEER_SIZE * (uint64_t)found;
+                                uint64_t at = isle_at + SNX_ELF_VENEER_SIZE * (uint64_t)found;
                                 written = snx_elf_branch_veneer(p, P, isle + (at - isle_at), at, S + (uint64_t)A, 0);
                             }
                         }
@@ -605,6 +765,19 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
                              : type == SNX_A64_JUMP26 ? "R_AARCH64_JUMP26"
                                                       : "R_PPC64_REL24",
                              (double)away / 1048576.0, l.machine == EM_AARCH64 ? 128u : 32u, (double)code / 1048576.0);
+                } else if (written == SNX_LINK_RANGE && near_reference(l.machine, type)) {
+                    /* code too far from what it names, the data in the middle of the code or not: how far, what it
+                       reaches and how much code the module is */
+                    const uint64_t target = S + (uint64_t)A, away = target > P ? target - P : P - target;
+                    snprintf(error, error_size,
+                             "%s: relocation %u (%s) out of range: the reference is %.1f MiB from its target and "
+                             "reaches %.1f MiB; the module's code is %.1f MiB",
+                             o->input->name, type,
+                             l.machine == EM_AARCH64  ? "R_AARCH64_ADR_PREL_PG_HI21"
+                             : type == R_X86_64_PLT32 ? "R_X86_64_PLT32"
+                                                      : "R_X86_64_PC32",
+                             (double)away / 1048576.0, (double)near_reach(&l) / 1048576.0,
+                             (double)l.kind_size[SNX_ELF_TEXT] / 1048576.0);
                 } else if (written == SNX_LINK_RANGE)
                     snprintf(error, error_size, "%s: relocation %u out of range (the module is too large)",
                              o->input->name, type);
@@ -622,8 +795,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
             /* the object's sections and its island to their place in the file */
             for (size_t j = 0; j < nbase; ++j)
                 if (base[j] && sink_put(sink, base[j], o->sh[j].sh_size, o->address[j], error, error_size)) goto done;
-            if (island && sink_put(sink, island, o->veneers * veneer_size, l.kind_address[SNX_ELF_TEXT] + o->island,
-                                   error, error_size))
+            if (island && sink_put(sink, island, o->veneers * veneer_size, text_at(&l, o->island), error, error_size))
                 goto done;
             /* x86-64's and AArch64's objects are named by later ones through their symbols alone, kept here: the
                input goes back now. Another machine's linker reads their sections too (PowerPC64's descriptors) */
@@ -679,7 +851,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
         s.st_name = (uint32_t)k;
         k += strlen(exports[i]) + 1;
         s.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
-        s.st_shndx = S_TEXT;
+        s.st_shndx = (uint16_t)text_section(&l, export_address[i]);
         s.st_value = export_address[i];
         memcpy(out.data + dynsym_off + (i + 1) * sizeof(Elf64_Sym), &s, sizeof(s));
     }
@@ -721,28 +893,51 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     memset(ph, 0, sizeof(ph));
     ph[0].p_type = PT_LOAD;
     ph[0].p_flags = PF_R;
-    ph[0].p_filesz = ph[0].p_memsz = end_r;
+    ph[0].p_filesz = ph[0].p_memsz = l.text_gap ? head_end : end_r;
     ph[0].p_align = l.page;
     ph[1].p_type = PT_LOAD;
     ph[1].p_flags = PF_R | PF_X;
     ph[1].p_offset = ph[1].p_vaddr = ph[1].p_paddr = text_off;
-    ph[1].p_filesz = ph[1].p_memsz = l.kind_size[SNX_ELF_TEXT];
+    ph[1].p_filesz = ph[1].p_memsz = text1_end - text_off;
     ph[1].p_align = l.page;
-    ph[2].p_type = PT_LOAD;
-    ph[2].p_flags = PF_R | PF_W;
-    ph[2].p_offset = ph[2].p_vaddr = ph[2].p_paddr = data_off;
-    ph[2].p_filesz = end_data - data_off;
-    ph[2].p_memsz = bss_off + l.kind_size[SNX_ELF_BSS] - data_off;
-    ph[2].p_align = l.page;
-    ph[3].p_type = PT_DYNAMIC;
-    ph[3].p_flags = PF_R | PF_W;
-    ph[3].p_offset = ph[3].p_vaddr = ph[3].p_paddr = dynamic_off;
-    ph[3].p_filesz = ph[3].p_memsz = sizeof(dyn);
-    ph[3].p_align = 8;
-    ph[4].p_type = PT_GNU_STACK; /* without it, the loader makes the stack executable */
-    ph[4].p_flags = PF_R | PF_W;
-    ph[4].p_align = 16;
-    memcpy(out.data + sizeof(Elf64_Ehdr), ph, sizeof(ph));
+    {
+        /* in the order of their addresses: a cut text's read-only data, the data, the text's second part; then the
+           two that load nothing */
+        Elf64_Phdr* p = &ph[2];
+        if (l.text_gap && l.kind_size[SNX_ELF_RODATA]) {
+            p->p_type = PT_LOAD;
+            p->p_flags = PF_R;
+            p->p_offset = p->p_vaddr = p->p_paddr = rodata_off;
+            p->p_filesz = p->p_memsz = l.kind_size[SNX_ELF_RODATA];
+            p->p_align = l.page;
+            ++p;
+        }
+        p->p_type = PT_LOAD;
+        p->p_flags = PF_R | PF_W;
+        p->p_offset = p->p_vaddr = p->p_paddr = data_off;
+        p->p_filesz = end_data - data_off;
+        p->p_memsz = bss_off + l.kind_size[SNX_ELF_BSS] - data_off;
+        p->p_align = l.page;
+        ++p;
+        if (l.text_gap) {
+            p->p_type = PT_LOAD;
+            p->p_flags = PF_R | PF_X;
+            p->p_offset = p->p_vaddr = p->p_paddr = text_at(&l, l.text_cut);
+            p->p_filesz = p->p_memsz = l.kind_size[SNX_ELF_TEXT] - l.text_cut;
+            p->p_align = l.page;
+            ++p;
+        }
+        p->p_type = PT_DYNAMIC;
+        p->p_flags = PF_R | PF_W;
+        p->p_offset = p->p_vaddr = p->p_paddr = dynamic_off;
+        p->p_filesz = p->p_memsz = sizeof(dyn);
+        p->p_align = 8;
+        ++p;
+        p->p_type = PT_GNU_STACK; /* without it, the loader makes the stack executable */
+        p->p_flags = PF_R | PF_W;
+        p->p_align = 16;
+    }
+    memcpy(out.data + sizeof(Elf64_Ehdr), ph, nph * sizeof(ph[0]));
     /* .symtab: every named function and object, for debuggers and crash reports (object_symbols); the exports last,
        global */
     size_t symbol_count = symtab.size / sizeof(Elf64_Sym);
@@ -751,7 +946,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
         memset(&s, 0, sizeof(s));
         s.st_name = (uint32_t)snx_link_append(&strtab, exports[i], strlen(exports[i]) + 1);
         s.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
-        s.st_shndx = S_TEXT;
+        s.st_shndx = (uint16_t)text_section(&l, export_address[i]);
         s.st_value = export_address[i];
         snx_link_append(&symtab, &s, sizeof(s));
     }
@@ -759,13 +954,14 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     memset(shdr, 0, sizeof(shdr));
     /* into the module itself, or for a file into a part of its own, which starts at the next multiple of 8 */
     SnxLinkBuffer* const tail = sink ? &trail : &out;
-    const uint64_t tail_at = sink ? snx_align_up(end_data, 8) : 0;
+    const uint64_t tail_at = sink ? snx_align_up(end_file, 8) : 0;
+    const size_t nsec = l.text_gap ? S_COUNT : S_TEXT2; /* the text's second part's only where it is cut */
     snx_link_align(tail, 8);
     shdr[S_SYMTAB].sh_offset = tail_at + snx_link_append(tail, symtab.data, symtab.size);
     shdr[S_STRTAB].sh_offset = tail_at + snx_link_append(tail, strtab.data, strtab.size);
     {
         SnxLinkBuffer names = {0};
-        for (size_t i = 0; i < S_COUNT; ++i)
+        for (size_t i = 0; i < nsec; ++i)
             shdr[i].sh_name = (uint32_t)snx_link_append(&names, section_names[i], strlen(section_names[i]) + 1);
         shdr[S_SHSTRTAB].sh_offset = tail_at + snx_link_append(tail, names.data, names.size);
         shdr[S_SHSTRTAB].sh_size = names.size;
@@ -791,7 +987,10 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     SECTION(S_RELA, SHT_RELA, SHF_ALLOC, rela_off, rela.size, S_DYNSYM, 0, 8, sizeof(Elf64_Rela));
     SECTION(S_RODATA, SHT_PROGBITS, SHF_ALLOC, rodata_off, l.kind_size[SNX_ELF_RODATA], 0, 0,
             l.kind_align[SNX_ELF_RODATA], 0);
-    SECTION(S_TEXT, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, text_off, l.kind_size[SNX_ELF_TEXT], 0, 0, 16, 0);
+    SECTION(S_TEXT, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, text_off, text1_end - text_off, 0, 0, 16, 0);
+    if (l.text_gap)
+        SECTION(S_TEXT2, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, text_at(&l, l.text_cut),
+                l.kind_size[SNX_ELF_TEXT] - l.text_cut, 0, 0, 16, 0);
     SECTION(S_DATA, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, data_off, l.kind_size[SNX_ELF_DATA], 0, 0,
             l.kind_align[SNX_ELF_DATA], 0);
     SECTION(S_GOT, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, got_off, 8 * got_slots, 0, 0, 8, 8);
@@ -823,15 +1022,16 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     eh.e_phoff = sizeof(Elf64_Ehdr);
     eh.e_ehsize = sizeof(Elf64_Ehdr);
     eh.e_phentsize = sizeof(Elf64_Phdr);
-    eh.e_phnum = sizeof(ph) / sizeof(ph[0]);
+    eh.e_phnum = (Elf64_Half)nph;
     eh.e_shentsize = sizeof(Elf64_Shdr);
-    eh.e_shnum = S_COUNT;
+    eh.e_shnum = (Elf64_Half)nsec;
     eh.e_shstrndx = S_SHSTRTAB;
-    eh.e_shoff = tail_at + snx_link_append(tail, shdr, sizeof(shdr));
+    eh.e_shoff = tail_at + snx_link_append(tail, shdr, nsec * sizeof(shdr[0]));
     memcpy(out.data, &eh, sizeof(eh));
     if (sink) {
         /* what the objects' sections lie between: the head up to the read-only data, the GOT and .dynamic, the tail */
-        if (sink_put(sink, out.data, rodata_off, 0, error, error_size) ||
+        if (sink_put(sink, out.data, head_size, 0, error, error_size) ||
+            (hub_size && sink_put(sink, hub, hub_size, l.hub, error, error_size)) ||
             sink_put(sink, mid.data, end_data - got_off, got_off, error, error_size) ||
             sink_put(sink, trail.data, trail.size, tail_at, error, error_size))
             goto done;
@@ -849,6 +1049,7 @@ done:
     for (size_t j = 0; copied && j < nbase; ++j)
         if (copied[j]) free(base[j]);
     free(base), free(copied), free(island);
+    if (sink) free(hub); /* the module's own bytes otherwise */
     for (size_t i = 0; kept && i < count; ++i) free(kept[i]);
     free(kept);
     free(mid.data);
@@ -872,13 +1073,12 @@ done:
 
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size) {
-    return link_elf(inputs, count, exports, export_count, soname, output, NULL, error, error_size);
+    return link_elf(inputs, count, exports, export_count, soname, 0, output, NULL, error, error_size);
 }
 
-int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
-                         const char* soname, const char* path, const unsigned char* owned,
-                         void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
-                         size_t error_size) {
+static int to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                   const char* soname, uint64_t reach, const char* path, const unsigned char* owned,
+                   void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error, size_t error_size) {
     Sink sink = {open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644), owned, release, arg};
     SnxLinkOutput written = {0};
     *size = 0;
@@ -886,12 +1086,29 @@ int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* c
         snprintf(error, error_size, "cannot create %s: %s", path, strerror(errno));
         return -1;
     }
-    int rc = link_elf(inputs, count, exports, export_count, soname, &written, &sink, error, error_size);
+    int rc = link_elf(inputs, count, exports, export_count, soname, reach, &written, &sink, error, error_size);
     if (close(sink.fd) && !rc) {
         snprintf(error, error_size, "cannot close %s: %s", path, strerror(errno));
         rc = -1;
     }
     *size = written.size;
     return rc;
+}
+
+int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                         const char* soname, const char* path, const unsigned char* owned,
+                         void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
+                         size_t error_size) {
+    return to_file(inputs, count, exports, export_count, soname, 0, path, owned, release, arg, size, error, error_size);
+}
+
+int snx_link_elf_reach(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                       const char* soname, uint64_t reach, const char* path, SnxLinkOutput* output, char* error,
+                       size_t error_size) {
+    *output = (SnxLinkOutput){0};
+    if (path)
+        return to_file(inputs, count, exports, export_count, soname, reach, path, NULL, NULL, NULL, &output->size,
+                       error, error_size);
+    return link_elf(inputs, count, exports, export_count, soname, reach, output, NULL, error, error_size);
 }
 #endif
