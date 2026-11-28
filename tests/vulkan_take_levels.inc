@@ -7,7 +7,7 @@
    first level's target went into memory that was not there, every pass down the chain read zeros and the frame it
    was added to came out white. Here texture_half_res is Always: a 512 by 512 texture of ten levels made over a drawn
    target is whole and holds the target's pixels; one made before its target is drawn has its level back when the
-   target's pixels go into it */
+   target's pixels go into it, and a trim's shed leaves it alone after that */
 #define TAKE_LEVELS_GVA 0xCC8000000ull
 #define TAKE_LEVELS_CPU (HEAP_BASE + 0x40400000)
 
@@ -65,6 +65,10 @@ static int check_take_levels(void) {
     const u32 floor = late->lod_floor;
     memset(px, 0, sizeof px);
     const int read_late = !read_pixel0(late, px);
+    /* and no shed takes a level of it after that: its pixels are nowhere else */
+    const int can = vk_tex_can_coarsen(late);
+    const u64 freed = vk_tex_coarser(late);
+    const u32 floor_after = late->lod_floor;
     vk_unlock();
     g_settings.texture_half_res = half;
     if (!same || floor || !read_late || memcmp(px, blue, 4))
@@ -73,7 +77,14 @@ static int check_take_levels(void) {
                 "%u (0 expected) and its first pixel is %02x%02x%02x%02x, not the target's 0000ffff\n",
                 same, floor, px[0], px[1], px[2], px[3]);
     CHECK(same && floor == 0 && read_late && !memcmp(px, blue, 4));
-    puts("texture levels from targets: made whole over a drawn target, and its level back for a target drawn later");
+    if (can || freed || floor_after)
+        fprintf(stderr,
+                "texture levels from targets: a shed took a level of a texture holding drawn pixels: can %d, %llu "
+                "bytes freed, sampled from level %u after (0, 0 and 0 expected)\n",
+                can, (unsigned long long)freed, floor_after);
+    CHECK(!can && !freed && floor_after == 0);
+    puts("texture levels from targets: made whole over a drawn target, its level back for a target drawn later, and "
+         "no shed after");
     free(ch);
     return 0;
 }

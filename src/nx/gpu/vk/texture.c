@@ -1039,6 +1039,8 @@ u64 vk_tex_coarser(Surf* t) {
 }
 int vk_tex_can_coarsen(const Surf* t) {
     if (!t->img || !g_vk.has_view_min_lod) return 0;
+    /* a level's pixels taken from drawn targets are nowhere else: memory has none to load it from again */
+    if (t->took_drawn) return 0;
     if (t->sparse) {
         const VkSparseShape* sh = vk_image_sparse_shape(t->img);
         if (t->shed && g_settings.texture_system_memory) return sh && t->sys_levels + 1u < sh->tail_first;

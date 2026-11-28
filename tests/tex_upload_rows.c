@@ -1958,6 +1958,10 @@ static void check_resident_floor(void) {
     /* another image short of memory (vk_tex_shed): a level coarser releases level 0's page, and there is no coarser
        level with bricks to go to after it */
     t.bytes = 4 * 0x10000;
+    /* not while it holds pixels taken from drawn targets, which memory has not */
+    t.took_drawn = 1;
+    CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0 && t.lod_floor == 0 && g_res.bound[1]);
+    t.took_drawn = 0;
     CHECK(vk_tex_coarser(&t) == 0x10000 && t.lod_floor == 1 && !g_res.bound[1] && g_res.bound[4]);
     CHECK(!vk_tex_can_coarsen(&t) && vk_tex_coarser(&t) == 0);
     g_vk.has_view_min_lod = 0;
