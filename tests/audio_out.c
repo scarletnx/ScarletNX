@@ -357,20 +357,23 @@ static void test_hwopus_decode(void) {
 #endif
 static void test_hwopus(void) {
     CPU* c = &cpu;
-    /* the console's work buffer sizes (Ryujinx's): the decoder state, then the stream and frame buffers */
-    CHECK(nncodec_hwopus_work_size(c, 48000, 2) == 0xd474 && nncodec_hwopus_work_size_option(c, 48000, 2, 0) == 0xd474);
-    CHECK(nncodec_hwopus_multi_work_size(c, 48000, 6, 4, 2) == 0x25750);
+    /* the console's work buffer sizes (Ryujinx's), as the session answers them: the decoder state, then the stream
+       and frame buffers; and as the SDK's functions give them, rounded up to a page */
+    CHECK(hwopus_work_size(48000, 2, 1, 0, 0, 0, 0) == 0xd474 && hwopus_work_size(48000, 6, 4, 2, 1, 0, 0) == 0x25750);
+    CHECK(nncodec_hwopus_work_size(c, 48000, 2) == 0xe000 && nncodec_hwopus_work_size_option(c, 48000, 2, 0) == 0xe000);
+    CHECK(nncodec_hwopus_multi_work_size(c, 48000, 6, 4, 2) == 0x26000);
     /* from SDK 16 the session decodes on the DSP: no decoder state. One game's sound init takes these two sizes, and
        fails with the state in them */
-    CHECK(nncodec_hwopus_multi_work_size_dsp(c, 48000, 2, 2, 0) == 0x1ac0);
-    CHECK(nncodec_hwopus_multi_work_size_option_dsp(c, 48000, 2, 1, 1, 0) == 0x1500);
-    CHECK(nncodec_hwopus_work_size_dsp(c, 48000, 2, 1) == 0x3300); /* the option's bit 0: frames of 120 ms */
-    CHECK(nncodec_hwopus_multi_work_size_option(c, 48000, 2, 1, 1, 1) == 0x15394);
+    CHECK(hwopus_work_size(48000, 2, 2, 0, 1, 0, 1) == 0x1ac0 && hwopus_work_size(48000, 2, 1, 0, 0, 1, 1) == 0x3300);
+    CHECK(nncodec_hwopus_multi_work_size_dsp(c, 48000, 2, 2, 0) == 0x2000);
+    CHECK(nncodec_hwopus_multi_work_size_option_dsp(c, 48000, 2, 1, 1, 0) == 0x2000);
+    CHECK(nncodec_hwopus_work_size_dsp(c, 48000, 2, 1) == 0x4000); /* the option's bit 0: frames of 120 ms */
+    CHECK(nncodec_hwopus_multi_work_size_option(c, 48000, 2, 1, 1, 1) == 0x16000);
     /* the class's, with the object first; from SDK 12 the multistream class keeps its option at 0x40 */
-    CHECK(nncodec_hwopus_class_work_size(c, T_DEC(0), 24000, 1) == 0x9f24); /* 24 kHz: half the frame */
-    CHECK(nncodec_hwopus_class_multi_work_size(c, T_DEC(0), 48000, 6, 4, 2) == 0x25750);
+    CHECK(nncodec_hwopus_class_work_size(c, T_DEC(0), 24000, 1) == 0xa000); /* 24 kHz: half the frame */
+    CHECK(nncodec_hwopus_class_multi_work_size(c, T_DEC(0), 48000, 6, 4, 2) == 0x26000);
     snx_st_le32(GP(T_DEC(0) + 0x40), 1);
-    CHECK(nncodec_hwopus_class_multi_work_size_option(c, T_DEC(0), 48000, 2, 1, 1) == 0x15394);
+    CHECK(nncodec_hwopus_class_multi_work_size_option(c, T_DEC(0), 48000, 2, 1, 1) == 0x16000);
     /* what the session refused has no size: more streams than channels, three channels in one stream, a rate Opus
        has no decoder for; the log names the numbers */
     test_last_log[0] = 0;
@@ -653,13 +656,14 @@ static void test_hwopus_table(void) {
         u32 versions[HOOK_KEYS] = {0};
         CHECK(hook_select(&hook_table, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", versions, &first) < 0);
     }
-    { /* through the adapters, as a game's calls: the work buffer's size from two ints, and a refused open's result */
+    { /* through the adapters, as a game's calls: the work buffer's size from two ints (0x3300 rounded up to a page),
+         and a refused open's result */
         u32 versions[HOOK_KEYS] = {0};
         versions[HOOK_SDK] = 0x140511;
         k = hook_select(&hook_table, N "36GetHardwareOpusDecoderWorkBufferSizeEiii", versions, &first);
         c->x[0] = 48000, c->x[1] = 2, c->x[2] = 1, c->x[30] = 0x1234, c->pc = 0;
         hook_fn[k](c, 0);
-        CHECK(c->x[0] == 0x3300 && c->pc == 0x1234);
+        CHECK(c->x[0] == 0x4000 && c->pc == 0x1234);
         k = hook_select(&hook_table, N "29InitializeHardwareOpusDecoderE" TYPE "iiPvmi", versions, &first);
         c->x[0] = T_DEC(0), c->x[1] = 44100, c->x[2] = 2, c->x[3] = 0x6000, c->x[4] = 0x1000, c->x[5] = 0;
         c->x[30] = 0x1234, c->pc = 0;
