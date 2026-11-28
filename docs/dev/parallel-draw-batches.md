@@ -34,6 +34,7 @@
   * [The design: journals applied at the join](#the-design-journals-applied-at-the-join)
   * [Split points with no dependency](#split-points-with-no-dependency)
   * [Build steps](#build-steps)
+  * [Where the build stands](#where-the-build-stands)
 
 Status: a design for review. Nothing here is built. The numbers come from one game's open world on Windows (RTX 4090,
 `gpu_split=2`, fps unlocked), from probes in the uncommitted work of `parallel-draw-prep.md` and `draw-fast-path.md`.
