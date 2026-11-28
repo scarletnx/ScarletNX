@@ -4162,10 +4162,11 @@ u8 vk_tic_query_hint(const u32* tic) {
     }
     return 1 + 1; /* a buffer: queried as 2D, as before */
 }
-/* what a header's texture is for: sampled by a draw, written as a storage image, or sampled by a program whose texels
-   are the guest's (TEX_GUEST: a scaled target comes as rt_guest's copy) */
-enum { TEX_SAMPLED, TEX_STORAGE, TEX_GUEST };
-static Surf* tex_from_tic(const u32* tic, int raw, int use) {
+/* what a header's texture is for: sampled by a draw, written as a storage image, sampled by a program whose texels
+   are the guest's (TEX_GUEST: a scaled target comes as rt_guest's copy), or sampled by a fragment program that reads a
+   corner of a target in place (TEX_CORNER: the target, with the corner's size in corner) */
+enum { TEX_SAMPLED, TEX_STORAGE, TEX_GUEST, TEX_CORNER };
+static Surf* tex_from_tic(const u32* tic, int raw, int use, u32 corner[2]) {
     int storage = use == TEX_STORAGE;
     TicFields tf;
     tic_decode(tic, &tf);
@@ -4317,6 +4318,14 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
             /* a hosted target padded past its level: its view is the level's, not the size the header samples */
             if (rt->w == w && rt->h == h && rt->host && vk_surf_view_w(rt) != rt->w && !vk_rt_own(rt))
                 goto texture_from_memory;
+            /* read in place, the corner's size beside the target: an image of its own (unhosted), unscaled and of
+               one level, whose view the program's coordinates normalize over */
+            if (use == TEX_CORNER && (rt->w != w || rt->h != h) && !rt->host && rt->levels == 1 && rt->sw == rt->w &&
+                rt->sh == rt->h) {
+                corner[0] = w;
+                corner[1] = h;
+                return rt;
+            }
             return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h, NULL);
         }
         LOG_LIMIT(1,
@@ -5401,18 +5410,39 @@ static void tex_tag(const Surf* t) {
     if ((int)vk_devmem_props()->memoryTypes[info.type].heapIndex != vk_mem_heap()) g_tex_tags |= 512;
 }
 Surf* vk_tex_from_tic(const u32* tic) {
-    Surf* t = tex_from_tic(tic, 0, TEX_SAMPLED);
+    Surf* t = tex_from_tic(tic, 0, TEX_SAMPLED, NULL);
+    tex_take_drawn(t);
+    tex_tag(t);
+    return t;
+}
+/* whether a sample through the sampler tsc of a target in place, its coordinates scaled to a corner and clamped to the
+   corner's last texel centre (shader_corner_coords), reads what a sample of the corner's copy does: the sampler
+   clamps x and y to the edge, filters one way for minification and magnification (a clamped coordinate's level of
+   detail can tip the choice at the edge), and reads no footprint that reaches past that centre (anisotropy, a min or
+   max reduction) nor compares */
+static int tsc_corner_exact(const u32* tsc) {
+    TscFields sf;
+    tsc_decode(tsc, &sf);
+    return wrap(sf.wrap_u) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+           wrap(sf.wrap_v) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE && (sf.mag == 2) == (sf.min == 2) &&
+           !sf.anisotropy && !sf.reduction && !sf.compare;
+}
+Surf* vk_tex_from_tic_corner(const u32* tic, const u32* tsc, u32 corner[2]) {
+    corner[0] = corner[1] = 0;
+    /* a header of normalized coordinates: an unnormalized one's are texels, which the program divides by the bound
+       size (ShaderInfo.tex_rect_mask) */
+    Surf* t = tex_from_tic(tic, 0, tsc_corner_exact(tsc) && (tic[5] >> 31) ? TEX_CORNER : TEX_SAMPLED, corner);
     tex_take_drawn(t);
     tex_tag(t);
     return t;
 }
 Surf* vk_tex_from_tic_storage(const u32* tic) {
-    Surf* t = tex_from_tic(tic, 0, TEX_STORAGE);
+    Surf* t = tex_from_tic(tic, 0, TEX_STORAGE, NULL);
     tex_take_drawn(t);
     return t;
 }
 Surf* vk_tex_from_tic_guest(const u32* tic, int raw) {
-    Surf* t = tex_from_tic(tic, raw, TEX_GUEST);
+    Surf* t = tex_from_tic(tic, raw, TEX_GUEST, NULL);
     tex_take_drawn(t);
     return t;
 }
@@ -5447,7 +5477,7 @@ Surf* vk_tex_recheck(Surf* t) {
     return t;
 }
 Surf* vk_tex_from_tic_raw(const u32* tic) {
-    Surf* t = tex_from_tic(tic, 1, TEX_SAMPLED);
+    Surf* t = tex_from_tic(tic, 1, TEX_SAMPLED, NULL);
     tex_take_drawn(t);
     return t;
 }

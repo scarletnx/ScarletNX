@@ -199,6 +199,40 @@ void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 size_t
         gy[k] = spv_emit_binary(&c->emit, SPV_OP_F_DIV, c->f32_type, gy[k], k ? fh : fw);
     }
 }
+/* component k of the vec4 at element of SNX_VKB_RS, the uniform scale_component reads at element 0 */
+static u32 rs_component(DirectCtx* c, u32 element, u32 k) {
+    return spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, c->zero,
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, element),
+                                      spv_emit_constant_u32(&c->emit, c->u32_type, k), c->f32_type);
+}
+/* where slot's corner values start in SNX_VKB_RS: 1 + 2k for the k-th of the corner slots (SH_CORNER_SHARE) */
+static u32 corner_element(u64 corner_slots, int slot) {
+    return 1 + 2 * (u32)snx_popcount64(corner_slots & ((1ull << slot) - 1));
+}
+/* The clamp is the sampler's clamp to edge at the corner's right and bottom edges, which the target's texels go on
+   past: the renderer reads a corner in place only through such a sampler, of one filter for both minification and
+   magnification and no anisotropy (vk_tex_from_tic_corner), so a sample there takes the last texel centre's texels
+   as the copy of the corner gives them. The left and top edges are the target's, which the sampler clamps itself */
+void shader_corner_coords(DirectCtx* c, u64 corner_slots, int slot, int clamp, u32* x, u32* y, u32* gx, u32* gy) {
+    const u32 at = corner_element(corner_slots, slot) + SH_CORNER_SHARE;
+    u32* v[2] = {x, y};
+    for (u32 k = 0; k < 2; k++) {
+        const u32 share = rs_component(c, at, k);
+        *v[k] = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, *v[k], share);
+        if (clamp)
+            *v[k] =
+                spv_emit_glsl_binary(&c->emit, c->f32_type, c->glsl, SPV_GLSL_F_MIN, *v[k], rs_component(c, at, 2 + k));
+        if (gx) {
+            gx[k] = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, gx[k], share);
+            gy[k] = spv_emit_binary(&c->emit, SPV_OP_F_MUL, c->f32_type, gy[k], share);
+        }
+    }
+}
+void shader_corner_size(DirectCtx* c, u64 corner_slots, int slot, u32* w, u32* h) {
+    const u32 at = corner_element(corner_slots, slot) + SH_CORNER_SIZE;
+    *w = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type, rs_component(c, at, 0));
+    *h = spv_emit_unary(&c->emit, SPV_OP_CONVERT_F_TO_U, c->u32_type, rs_component(c, at, 1));
+}
 /* x of a 1D texel fetch as the row and column of the 2D image a 1D texture is bound as (SH_TEXEL_ROW_SHIFT). A
    negative x lands in a negative row, out of the image as it is out of the texture */
 void shader_texel_row_coord(DirectCtx* c, u32 i32_type, u32* x, u32* y) {
@@ -784,6 +818,8 @@ void shader_tex_texs(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     if (rect_slots >> slot & 1)
         shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
                            i32_type, &x, &y, NULL, NULL);
+    if (slot < SH_MAXTEX && (t->corner_slots >> slot & 1))
+        shader_corner_coords(c, t->corner_slots, slot, 1, &x, &y, NULL, NULL);
     u32 uv = array       ? spv_emit_vec3_construct(&c->emit, vec3, x, y, shader_array_layer(c, a))
              : type >= 2 ? spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, b, c->f32_type))
                          : spv_emit_vec2_construct(&c->emit, vec2, x, y);
@@ -894,6 +930,8 @@ void shader_tex_tex(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
         if (rect_slots >> slot & 1)
             shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
                                i32_type, &x, &y, NULL, NULL);
+        if (slot < SH_MAXTEX && (t->corner_slots >> slot & 1))
+            shader_corner_coords(c, t->corner_slots, slot, 1, &x, &y, NULL, NULL);
         u32 coords =
             type == 3 && array ? spv_emit_vec4_construct(&c->emit, vec4,
                                                          (u32[4]){x, y, reg_read_as(c, coord + 2, c->f32_type),
@@ -1074,6 +1112,8 @@ void shader_tex_txd(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     if (rect_slots >> slot & 1)
         shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
                            i32_type, &values[0], &values[1], dx, dy);
+    if (slot < SH_MAXTEX && (t->corner_slots >> slot & 1))
+        shader_corner_coords(c, t->corner_slots, slot, 1, &values[0], &values[1], dx, dy);
     if (array) values[dims] = shader_array_layer(c, packed_reg);
     u32 coords = dims + array == 4   ? spv_emit_vec4_construct(&c->emit, vec4, values)
                  : dims + array == 3 ? spv_emit_vec3_construct(&c->emit, vec3, values[0], values[1], values[2])
@@ -1194,6 +1234,8 @@ void shader_tex_txq(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
                      third ? spv_emit_vec4_extract(&c->emit, c->u32_type, dimensions, 2) : shader_u32(c, 1),
                      spv_emit_image_query_levels(&c->emit, c->u32_type, c->sampled_type[slot], c->sampler[slot])};
     if (qtype == 1 && needs_texel_scale) shader_scaled_size(c, push, slot, &values[0], &values[1]);
+    if (qtype == 1 && !qarray && slot >= 0 && slot < SH_MAXTEX && (t->corner_slots >> slot & 1))
+        shader_corner_size(c, t->corner_slots, slot, &values[0], &values[1]);
     u32 dst = d;
     for (u32 k = 0; k < 4; k++)
         if (B(w, 31 + k, 1)) {
@@ -1234,6 +1276,9 @@ void shader_tex_tmml(const Tr* t, u32 i, u64 w, int op, u32 d, u32 a, u32 b) {
     if (rect_slots >> slot & 1)
         shader_rect_coords(c, push, stage == ST_FS, slot, shader_size_type(&textures[slot], vec2_u32, vec3_u32),
                            i32_type, &x, &y, NULL, NULL);
+    /* the level of detail comes of the coordinates' change across the quad, which a clamp would stop at the edge */
+    if (slot < SH_MAXTEX && (t->corner_slots >> slot & 1))
+        shader_corner_coords(c, t->corner_slots, slot, 0, &x, &y, NULL, NULL);
     u32 coords = type < 2
                      ? spv_emit_vec2_construct(&c->emit, vec2, x, y)
                      : spv_emit_vec3_construct(&c->emit, vec3, x, y, reg_read_as(c, a + array + 2, c->f32_type));

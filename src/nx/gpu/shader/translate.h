@@ -339,6 +339,12 @@ void shader_scaled_fetch(DirectCtx* c, u32 push, u32 fragcoord, u32 vec4, int sl
 void shader_scaled_size(DirectCtx* c, u32 push, int slot, u32* x, u32* y);
 void shader_rect_coords(DirectCtx* c, u32 push, int scaled, int slot, u32 size_type, u32 i32_type, u32* x, u32* y,
                         u32* gx, u32* gy);
+/* A corner slot's (ShaderInfo.corner_slots) normalized coordinates *x and *y on the target it is bound to, of those
+   the program has over the corner: times the corner's share of the target, and with clamp no further than the corner's
+   last texel centre. *gx and *gy, when not NULL, are gradients, scaled the same. shader_corner_size: its width *w and
+   height *h in place of the bound target's */
+void shader_corner_coords(DirectCtx* c, u64 corner_slots, int slot, int clamp, u32* x, u32* y, u32* gx, u32* gy);
+void shader_corner_size(DirectCtx* c, u64 corner_slots, int slot, u32* w, u32* h);
 void shader_texel_row_coord(DirectCtx* c, u32 i32_type, u32* x, u32* y);
 int shader_direct_image_slot(const ShaderInfo* info, u32 off, int bindless, u32 bank, int r32ui, int type);
 int shader_direct_query_slot(const ShTex* textures, int count, u32 off, int bindless, u32 bank, int handle_count,
@@ -623,6 +629,7 @@ typedef struct {
     int ngbuf;
     u32* gbuf_off;
     u64 rect_slots;
+    u64 corner_slots; /* ShaderInfo.corner_slots, which the program reads a corner of (shader_corner_coords) */
     DirectCtx* c;
     u32 i32_type;
     u32 i64_type;

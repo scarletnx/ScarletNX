@@ -8,6 +8,8 @@
    A draw reads the 3D engine's registers for its state. Signed viewport scales and coordinate swizzles map the
    guest's position. Window-origin bit 4 controls triangle facing independently of that mapping. */
 #include "common/utilities/bits.h"
+#include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1589,6 +1591,10 @@ typedef struct {
     Surf* t;
     u32 memo;
     u32 over; /* the memo keeps t over a render target: a draw into that target moves no stamp of the tables */
+    /* resolved for a slot that can read a corner of a target in place (vk_tex_from_tic_corner), and when t is a target
+       read so, the corner's width and height (0s else) */
+    int corner_ok;
+    u32 corner[2];
 } TexRes;
 /* A capture slice shares the original shader state but writes host-only scratch attachments. */
 static struct {
@@ -1968,11 +1974,14 @@ void vk_render_stats_log(void) {
         for (int i = 0; i < VK_POOL_N; i++) p[i] = (double)(n->pool[i] - w->pool[i]) / (double)presents;
         LOG("vulkan: texture slots a present by handle: %.1f plain, %.1f bl2, %.1f indexed, %.1f memory, %.1f other; "
             "%.1f TIC indices named; for a draw's own path %.1f feedback, %.1f a copy of a bound target, %.1f read-only "
-            "depth, %.1f color depth compares, %.1f min or max reductions, %.1f query hints; pool headers on pages the "
-            "CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f changed)\n",
+            "depth, %.1f color depth compares, %.1f min or max reductions, %.1f query hints; corners of a target %.1f "
+            "read in place (%.1f of them no corner at the bind, read whole), %.1f through their copy where the program "
+            "could read them in place; pool headers on pages the CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f "
+            "changed)\n",
             k[VK_SLOT_PLAIN], k[VK_SLOT_BL2], k[VK_SLOT_INDEXED], k[VK_SLOT_MEMORY], k[VK_SLOT_OTHER], k[VK_SLOT_TICS],
             k[VK_SLOT_FEEDBACK], k[VK_SLOT_TARGET_COPY], k[VK_SLOT_DEPTH_RO], k[VK_SLOT_DC_COLOR], k[VK_SLOT_MINMAX],
-            k[VK_SLOT_QUERY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
+            k[VK_SLOT_QUERY], k[VK_SLOT_CORNER] + k[VK_SLOT_CORNER_WHOLE], k[VK_SLOT_CORNER_WHOLE],
+            k[VK_SLOT_CORNER_COPY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
             p[VK_POOL_TSC_CHANGED]);
     }
     LOG("vulkan: texture memo checks a present: headers after an epoch %.1f kept by their generations, %.1f checked; "
@@ -2034,6 +2043,9 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
     int rt;   /* t is the render target itself, read whole */
+    /* the lookup's TexRes.corner_ok, which a way is found by besides the handle, and its corner */
+    int corner_ok;
+    u32 corner[2];
     /* t lies over the render target `over` without being it (a crop of it, or a texture loaded from memory with its
        drawn targets taken in), kept while that target holds the pixels it had (its write generation over_wgen), nothing
        GPU-side wrote t's memory since over_gw and the epoch is the same. copy: t is a copy of the target's pixels
@@ -2255,7 +2267,7 @@ void vk_tex_events_log(u64 presents) {
 }
 /* tex_resolve through the memo: what x is of it, 2 a way found, 1 a way kept for the next lookup, 4 and 3 the same of
    a texture over a target (TexMemo.over), -1 none but its headers as memory has them, 0 none */
-static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
+static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x, int corner) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
         /* samplers are taken by the handle's sampler index. Ryujinx reads this register as the sampler index mode,
@@ -2270,7 +2282,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     int same_handle = 0; /* a way holds the handle for another draw state or other pools */
     for (u32 w = 0; w < TEX_MEMO_WAYS && !m; w++) {
         if (set[w].t && set[w].handle == handle && set[w].ds == gpu_ds_canonical(ds) && set[w].tic_base == tic_base &&
-            set[w].tsc_base == tsc_base)
+            set[w].tsc_base == tsc_base && set[w].corner_ok == corner)
             m = &set[w];
         same_handle |= set[w].t && set[w].handle == handle;
     }
@@ -2282,6 +2294,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
     x->handle = handle;
     x->have = 1;
     x->memo = 0;
+    x->corner_ok = corner;
+    x->corner[0] = x->corner[1] = 0;
     /* an index past its pool's limit names no header: no texture, or the
        default sampler, as Eden's VisitImageView and the sampler table have it. One game's movie overlay hands
        texture indices 0x2000 past a 2048-entry pool, where shader code lies */
@@ -2341,7 +2355,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             u32 tic[8];
             const u32 crop_gen = m->copy ? m->t->crop_gen : 0;
             vk_gmem_words(tic_at, tic, 8);
-            Surf* full = vk_tex_from_tic(tic);
+            u32 corner_size[2];
+            Surf* full = corner ? vk_tex_from_tic_corner(tic, m->tsc, corner_size) : vk_tex_from_tic(tic);
             /* a kept copy the full lookup copied again (rt_copy: the target's pixels changed) was stale */
             if (full != x->t || memcmp(tic, m->tic, sizeof tic) || (m->copy && m->t->crop_gen != crop_gen)) {
                 g_memo_miss[MEMO_OVER_DIFFERS]++;
@@ -2369,6 +2384,8 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
             if (vk_surf_layout(m->t) != VK_IMAGE_LAYOUT_UNDEFINED) vk_rt_note_read(m->t);
             if (vk_surf_layout(m->t) != VK_IMAGE_LAYOUT_UNDEFINED) {
                 x->t = m->t;
+                x->corner[0] = m->corner[0];
+                x->corner[1] = m->corner[1];
                 g_stats.n.tex[VK_TEX_KEPT]++;
                 return 2;
             }
@@ -2398,7 +2415,7 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
        (draw_batches=2) may be one to what the lookup found, so the memo checks it again at its next use. Outside a
        split only the lookup's own change can come between, and the bucket's epoch already counts it */
     const u32 table = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
-    x->t = vk_tex_from_tic(x->tic);
+    x->t = corner ? vk_tex_from_tic_corner(x->tic, x->tsc, x->corner) : vk_tex_from_tic(x->tic);
     if (m) m->t = NULL; /* what it held is gone: kept again below if it can be */
     Surf* at = x->t ? vk_rt_find(x->t->gva) : NULL;
     /* one over a defined target, not the target itself (a copy of it is a target too), kept too (TexMemo.over) */
@@ -2429,6 +2446,9 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
         m->t = x->t;
+        m->corner_ok = corner;
+        m->corner[0] = x->corner[0];
+        m->corner[1] = x->corner[1];
         m->img_adds = 0;
         m->view.frame = m->smp.frame = 0;
         m->over = over;
@@ -2574,7 +2594,7 @@ static void tex_probe_log(void) {
     g_tex_probe.presents = g_tex_probe.sum_handles = g_tex_probe.sum_entries = g_tex_probe.sum_pools = 0;
     g_tex_probe.sum_resolves = g_tex_probe.max_handles = g_tex_probe.max_entries = 0;
 }
-static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
+static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x, int corner) {
     tex_probe(ds, handle);
     const DsBindings* b = &ds->bind;
     TexRecent* r = &g_tex_recent[t_rc][((u64)handle * VK_FIB_MULT) >> (64 - TEX_RECENT_BITS)];
@@ -2584,10 +2604,10 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
               img_adds = vk_gfx_image_adds();
     const u32 surf_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed), ww_epoch = vk_ww_epoch();
     const u64 take = vk_rt_take_gen();
-    if (r->kind && r->x.handle == handle && r->ds == gpu_ds_canonical(ds) && r->tic_base == b->tex_pool && r->tsc_base == b->smp_pool &&
-        r->tex_max == b->tex_max && r->smp_max == b->smp_max && r->gw == gw && r->adds == adds &&
-        r->img_adds == img_adds && r->surf_epoch == surf_epoch && r->ww_epoch == ww_epoch && !b->smp_mode &&
-        !state_check()) {
+    if (r->kind && r->x.handle == handle && r->x.corner_ok == corner && r->ds == gpu_ds_canonical(ds) &&
+        r->tic_base == b->tex_pool && r->tsc_base == b->smp_pool && r->tex_max == b->tex_max &&
+        r->smp_max == b->smp_max && r->gw == gw && r->adds == adds && r->img_adds == img_adds &&
+        r->surf_epoch == surf_epoch && r->ww_epoch == ww_epoch && !b->smp_mode && !state_check()) {
         Surf* t = r->x.t;
         if (r->kind == TEX_RECENT_HEADERS && gpu_spec()) {
             gpu_spec_fail("a texture to look up");
@@ -2596,7 +2616,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
         }
         if (r->kind == TEX_RECENT_HEADERS) {
             *x = r->x;
-            x->t = vk_tex_from_tic(x->tic);
+            x->t = corner ? vk_tex_from_tic_corner(x->tic, x->tsc, x->corner) : vk_tex_from_tic(x->tic);
             g_stats.n.tex[VK_TEX_RESOLVED]++;
             return;
         }
@@ -2635,7 +2655,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
     }
     r->kind = TEX_RECENT_NONE;
     /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
-    const int memo = tex_resolve_memo(ds, handle, x);
+    const int memo = tex_resolve_memo(ds, handle, x, corner);
     x->over = memo >= 3;
     if (!memo || ((memo == 1 || memo == 3) && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
     const TexOver over = memo >= 3 ? tex_over_of(x) : (TexOver){0};
@@ -2659,9 +2679,10 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
                              : x->t->is_rt ? TEX_RECENT_TARGET
                                            : TEX_RECENT_TEXTURE};
 }
-static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
+/* corner: x is for a fragment program's slot that can read a corner of a target in place (ShaderInfo.corner_slots) */
+static void tex_resolve(const DsState* ds, u32 handle, TexRes* x, int corner) {
     const u64 t0 = g_ph.in_sets ? ph_now() : 0;
-    tex_resolve_(ds, handle, x);
+    tex_resolve_(ds, handle, x, corner);
     if (t0) g_ph.lk[1] += ph_now() - t0;
 }
 
@@ -2828,6 +2849,7 @@ typedef struct {
     u32 prim;            /* the generics a mesh program writes per primitive (ShaderInfo.prim_mask), as fs0's key */
     u8 query[SH_MAXTEX]; /* the dimensions of the textures only a TXQ names (ShaderInfo.tex_query_hint) */
     int queried;         /* any of them */
+    u64 corner;          /* the slots that read a corner of their target in place (ShaderInfo.corner_slots) */
 } FsKey;
 /* the integer color targets (rm, signed rs) tg names, which key the fragment shader's outputs */
 static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
@@ -2898,7 +2920,7 @@ static void fs_key_check(const FsLast* kept, const TexRes* res, int nt, const Fs
     const FsKey* k = &kept->fk;
     int same = k->tm == fk->tm && k->ts == fk->ts && k->dm == fk->dm && k->rect == fk->rect && k->rm == fk->rm &&
                k->rs == fk->rs && k->df == fk->df && k->unfed == fk->unfed && k->minmax == fk->minmax &&
-               k->queried == fk->queried && !memcmp(k->query, fk->query, sizeof k->query);
+               k->queried == fk->queried && !memcmp(k->query, fk->query, sizeof k->query) && k->corner == fk->corner;
     for (int i = 0; i < nt && same; i++)
         same = kept->res[i].t == res[i].t && !memcmp(kept->res[i].tic, res[i].tic, sizeof res[i].tic) &&
                !memcmp(kept->res[i].tsc, res[i].tsc, sizeof res[i].tsc);
@@ -2959,7 +2981,10 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
     }
     for (int i = 0; i < nt; i++) {
         const ShTex* st = &s0->si.tex[i];
-        tex_resolve(ds, handles[i], &res[i]);
+        /* a slot that can read a corner of a target in place (ShaderInfo.tex_corner_mask): not where a texture only a
+           TXQ names may number the variant's slots otherwise (fs_slot_res) */
+        tex_resolve(ds, handles[i], &res[i], (s0->si.tex_corner_mask >> i & 1) && !s0->si.tex_query_mask);
+        if (res[i].corner[0]) fk->corner |= 1ull << i;
         if (!(st->flags & (SNX_TEX_INDEXED | 1)) && vk_tic_unnormalized(res[i].tic) == 1) fk->rect |= 1ull << i;
         /* a texture only a TXQ names: a 2D query until the header says what it is (a 3D query answers its depth,
            which a 2D slot can't bind) */
@@ -3046,11 +3071,11 @@ static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out,
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->rect && !fk->queried && !fk->advanced_blend &&
-        !fk->advanced_mask && !fk->config && !fk->minmax && !fk->predraw && !fk->early)
+        !fk->advanced_mask && !fk->config && !fk->minmax && !fk->predraw && !fk->early && !fk->corner)
         return s0;
     return vk_shader_get_ex(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, fk->prim, fk->dm, fk->df, fk->unfed,
                             fk->rect, NULL, fk->queried ? fk->query : NULL, fk->advanced_blend, fk->advanced_mask,
-                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax, fk->predraw, (int)fk->early);
+                            fk->rm >> 8, fk->rs >> 8, fk->config, fk->minmax, fk->predraw, (int)fk->early, fk->corner);
 }
 /* whether slots a and b read their handles from the same words (tex_handle) */
 static int tex_same_handle(const ShTex* a, const ShTex* b) {
@@ -3074,7 +3099,7 @@ static TexRes* fs_slot_res(const DsState* ds, const VkSh* s0, TexRes* res0, cons
         if (j < n0)
             out[i] = res0[j];
         else
-            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, &s->si, i), &out[i]);
+            tex_resolve(ds, tex_handle(ds, 4, ds->bind.tex_bank, &s->si, i), &out[i], 0);
     }
     return out;
 }
@@ -3797,6 +3822,35 @@ static void dw_buffer(DescWrites* d, VkDescriptorSet set, u32 binding, VkDescrip
                                           .descriptorType = type,
                                           .pBufferInfo = &d->bi[binding]};
 }
+/* the greatest normalized coordinate of a corner n texels long on an image of size texels (SH_CORNER_SHARE): its last
+   texel centre, n - 0.5 over size, as the float that times size is no less than it, so the sampler finds that texel
+   there and none past it */
+static float corner_edge(u32 n, u32 size) {
+    const double centre = n - 0.5;
+    float edge = (float)(centre / size);
+    if ((double)edge * size < centre) edge = nextafterf(edge, FLT_MAX);
+    return edge;
+}
+/* A fragment program that reads corners in place (ShaderInfo.corner_slots): its SNX_VKB_RS, the resolution scale's
+   vec4 as frame_consts has it, then the n corner slots' two vec4 each (SH_CORNER_SHARE), staged for this draw */
+static int corner_block(DescWrites* d, VkDescriptorSet set, const float values[][8], u32 n, u64 slots) {
+    if (n != snx_popcount64(slots)) {
+        LOG_LIMIT(4, "vulkan: a fragment program reads %u corners in place, and the draw bound %u: not drawn\n",
+                  snx_popcount64(slots), n);
+        return 0;
+    }
+    const u32 bytes = 16 + 32 * n;
+    VkBuffer b;
+    u64 o;
+    u8* p = vk_stage(bytes, vk_stage_align(), &b, &o);
+    if (!p) return 0;
+    const float rs[4] = {1 / g_vk_scale, 1 / g_vk_scale, g_vk_scale, 0};
+    memcpy(p, rs, 16);
+    for (u32 k = 0; k < n; k++) memcpy(p + 16 + 32 * k, values[k], 32);
+    snx_le32_array(p, bytes / 4); /* the device reads them little-endian */
+    dw_buffer(d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, bytes);
+    return 1;
+}
 
 /* The buffer images' views of the frame, for its later draws, whose sets then match (desc_set_cached) */
 #define BUFIMG_VIEWS 16
@@ -4067,7 +4121,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                 TexRes x = {0};
                 VkImageView view = VK_NULL_HANDLE;
                 if ((handle & 0xFFFFF) <= ds->bind.tex_max && ((handle >> 20) & 0xFFF) <= ds->bind.smp_max) {
-                    tex_resolve(ds, handle, &x);
+                    tex_resolve(ds, handle, &x, 0);
                     x.t = capture_sample(x.t);
                     if (x.t && !!(kind->flags & 2) == !!x.t->msaa && (!kind->shadow || !x.t->f.is_int)) {
                         if (is_target(x.t, rt, zt, n)) {
@@ -4508,7 +4562,8 @@ static u64 predraw_choose(const DsState* ds, const VkSh* fs0, const TexRes* fres
     int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
     for (int i = 0; i < nt; i++) {
         const Surf* t = fres[i].have ? fres[i].t : NULL;
-        if (!t || !(fs0->si.tex_predraw_mask >> i & 1) || t->msaa || t->layers != 1 ||
+        /* a corner read in place samples other pixels than the fragment's own */
+        if (!t || !(fs0->si.tex_predraw_mask >> i & 1) || fres[i].corner[0] || t->msaa || t->layers != 1 ||
             vk_surf_layout(t) == VK_IMAGE_LAYOUT_UNDEFINED)
             continue;
         if (!(fs0->si.tex_own_pixel_mask >> i & 1) && !((screen->slots >> i & 1) && screen_covers(&screen->vp, t)))
@@ -5088,7 +5143,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                       xfb->buf[b], xfb->off[b], xfb->size[b]);
     VkBuffer cb;
     u64 co;
-    if (stage == 4 && frame_consts(&cb, &co))
+    /* a program that reads corners in place takes its vec4 with their values after the slots (corner_block) */
+    if (stage == 4 && !s->si.corner_slots && frame_consts(&cb, &co))
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
     /* a task or mesh program's first group of an indirect draw (mesh_indirect), any 16 bytes for a direct one */
     if ((stage == DS_TASK || stage == DS_MESH) && (g_mesh_first[t_rc] || frame_consts(&cb, &co)))
@@ -5192,7 +5248,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                                      : tex_handle(ds, stage, tcb, &s->si, i);
     TexPart* const tp = (u32)stage < DS_GFX_STAGES ? &g_tex_part[t_rc][stage] : NULL;
     int part_keep = tp && nt && !g_predraw.phase && !g_predraw.probe && !g_capture_draw.images && !state_check() &&
-                    !gpu_spec() && g_settings.shadows && !g_settings.pool_map_shadow && !mapped;
+                    !gpu_spec() && g_settings.shadows && !g_settings.pool_map_shadow && !mapped && !s->si.corner_slots;
+    /* the corner slots' values (ShaderInfo.corner_slots), two vec4 each in slot order */
+    float corners[SH_MAXTEX][8];
+    u32 ncorners = 0;
     u64 part_key = 0;
     const u32 part_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     if (part_keep) {
@@ -5296,9 +5355,21 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes own, *x = predrawn ? &g_predraw.tex[predraw_k] : res ? &res[i] : NULL;
+        /* the corner read in place as fs_key asked for it, and the slots the variant reads so */
+        const int corner_ok = stage == ST_FS && (s->si.tex_corner_mask >> i & 1) && !s->si.tex_query_mask,
+                  corner = stage == ST_FS && (s->si.corner_slots >> i & 1);
         if (!predrawn && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
-            tex_resolve(ds, handle, x);
+            tex_resolve(ds, handle, x, corner_ok);
+        }
+        if (x->corner[0] && !corner) {
+            /* fs_key found no corner here, and the variant reads the slot whole: the corner's copy */
+            LOG_LIMIT(4,
+                      "vulkan: texture %d of a fragment program (handle %08x) became a %ux%u corner of a target after "
+                      "the program's variant was chosen without it: its copy is read\n",
+                      i, handle, x->corner[0], x->corner[1]);
+            x = &own;
+            tex_resolve(ds, handle, x, 0);
         }
         /* a header with unnormalized coordinates that the program's key doesn't divide (vk_tic_unnormalized: another
            type than 2D, or a stage without the key) is sampled as normalized: said, not hidden */
@@ -5351,7 +5422,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            only through the pre-draw capture (ShaderInfo.predraw_slots), and the others read a copy */
         u32 slots = 0;
         int plain_path = 0; /* the last path below: a part whose slots all take it is kept (TexPart) */
-        if (t && fb && g_vk.has_feedback && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED &&
+        /* a corner read in place samples other pixels than the fragment's own: its target, when the draw renders to
+           it, is read through a copy */
+        if (t && fb && !corner && g_vk.has_feedback && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED &&
             ((s->si.tex_own_pixel_mask >> i & 1) ||
              (screen && (screen->slots >> i & 1) && screen_covers(&screen->vp, t)))) {
             u32 written = 0;
@@ -5412,6 +5485,25 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             tp->bp[tp->nbp++] = t;
         }
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
+        if (corner) {
+            /* the corner's share of the image bound (the target, or its copy for a draw that renders to it), and its
+               last texel centre over the image's size, rounded up so that the sampler's texel there is that texel
+               (SH_CORNER_SHARE). A slot whose texture is no corner now is read whole */
+            const u32 iw = sampled ? vk_surf_view_w(sampled) : 1, ih = sampled ? vk_surf_view_h(sampled) : 1;
+            u32 cw = sampled ? iw : 0, ch = sampled ? ih : 0;
+            if (x->corner[0]) cw = x->corner[0], ch = x->corner[1];
+            float* v = corners[ncorners];
+            v[0] = x->corner[0] ? (float)((double)cw / iw) : 1.0f;
+            v[1] = x->corner[0] ? (float)((double)ch / ih) : 1.0f;
+            v[2] = x->corner[0] ? corner_edge(cw, iw) : FLT_MAX;
+            v[3] = x->corner[0] ? corner_edge(ch, ih) : FLT_MAX;
+            v[4] = (float)cw;
+            v[5] = (float)ch;
+            v[6] = v[7] = 0.0f;
+            ncorners++;
+            g_stats.n.slot[x->corner[0] ? VK_SLOT_CORNER : VK_SLOT_CORNER_WHOLE]++;
+        } else if (corner_ok && sampled && sampled->corner == VK_RT_COPY_CROP + 1)
+            g_stats.n.slot[VK_SLOT_CORNER_COPY]++;
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
             scaled[0] |= 1ull << i;
             if (part_keep) tp->scaled[0] |= 1ull << i;
@@ -5540,6 +5632,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         tp->key = part_key;
         tp->surf_epoch = part_epoch;
     }
+    if (stage == ST_FS && s->si.corner_slots && !corner_block(&d, set, corners, ncorners, s->si.corner_slots))
+        return VK_NULL_HANDLE;
 tex_part_done:
     if (rec_n && !table_words(&d, set, shader_vk_set(s->stage), rec, rec_n)) return VK_NULL_HANDLE;
     SNX_ZONE_END(ztex);
@@ -6553,7 +6647,7 @@ static VkSh* vs_position_copy(const DsState* ds, const VkSh* vs, u32 slot) {
     return vk_shader_get_ex(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, vs->mask[0] | (u64)vs->mask[1] << 32,
                             vs->mask[2] | (u64)vs->mask[3] << 32, vs->mask[4], vs->mask[5], vs->mask[6], 0, vs->mask[9],
                             vs->mask[10], vs->mask[12] | (u64)vs->mask[13] << 32, NULL, queried ? query : NULL, 0, 0,
-                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0, 0, 0);
+                            vs->mask[24] & 255, vs->mask[25], 1 + slot, 0, 0, 0, 0);
 }
 /* stream s's address and bytes (to its limit, 0 when the limit is below) */
 static u64 stream_start(const DsVertexBuffers* b, u32 s) { return b->addr[s]; }
@@ -8702,7 +8796,7 @@ retry:
     FsKey fk = {0};
     if (sh.fs0) {
         if (texture) {
-            tex_resolve(ds, texture->handle, &fres[0]);
+            tex_resolve(ds, texture->handle, &fres[0], 0);
             int num = vk_tex_num(fres[0].tic, fres[0].t);
             fk = (FsKey){.tm = num != 0, .ts = num == 2, .rm = sh.rt_int, .rs = sh.rt_sint};
         } else {
@@ -10403,7 +10497,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* texture) {
     if (!(texture->w > 0 && texture->h > 0)) return;
     TexRes source;
-    tex_resolve(ds, texture->handle, &source);
+    tex_resolve(ds, texture->handle, &source, 0);
     Surf *targets[8], *depth;
     u32 count;
     read_targets(ds, targets, &depth, &count);

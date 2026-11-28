@@ -287,6 +287,15 @@ typedef struct {
        word 5 bit 31 clear, NVN's rectangle textures, 2D): their sample coordinates are texels, divided here by the
        size, as Ryujinx's TexturePass and Eden's texture_pass do */
     u64 tex_rect_mask;
+    /* FS: the slots whose reads a corner read in place serves (corner_slots): plain 2D textures of one sample,
+       not raw, indexed, compared or from memory, never gathered nor sampled with an offset */
+    u64 tex_corner_mask;
+    /* FS key: the slots bound to a render target that the slot's header shows the top left corner of (dynamic
+       resolution draws the frame into a target of the full size and samples the frame's size). The target is bound
+       whole, and the program reads the corner of it: each sample's normalized coordinates times the corner's share
+       of the target, clamped to the corner's last texel centre, and TXQ answers the corner's size. The values are
+       the k-th corner slot's two vec4 at 1 + 2k and 2 + 2k of SNX_VKB_RS (SH_CORNER_*) */
+    u64 corner_slots;
     /* key (fragment, vertex and compute programs): the dimension of the texture slots only a TXQ names (tex_query_mask, set by the
        translation: no TEX or TLD of the program reads the same handle, so TXQ, which doesn't say, is translated as a
        2D query; a bound query's texture may be read bindlessly in the same program). Each the header's: 1 + its
@@ -425,8 +434,15 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 }
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 #define SH_MINMAX_SLOTS    15 /* slots a fragment program's key has room for in tex_minmax_mask (vk/pipeline.c) */
-/* the words of a shader's key (vk_shader_get's mask). A fragment program's words 26 and 27 are its predraw_slots */
-#define SH_KEY_WORDS       28
+/* the words of a shader's key (vk_shader_get's mask). A fragment program's words 26 and 27 are its predraw_slots, 28
+   and 29 its corner_slots */
+#define SH_KEY_WORDS            30
+/* a corner slot's values in SNX_VKB_RS (ShaderInfo.corner_slots), two vec4 for the k-th: at 1 + 2k the corner's share
+   of the bound target's size in x and y, then the coordinates' greatest x and y (the corner's last texel centre over
+   the target's size, rounded up); at 2 + 2k the corner's width and height. The fragment stage's SNX_VKB_RS holds them
+   after the resolution scale's vec4 at 0 */
+#define SH_CORNER_SHARE         0
+#define SH_CORNER_SIZE          1
 /* the slots a pre-draw capture serves at most (ShaderInfo.predraw_slots): its stamp image and a side image for each,
    in the fragment stage's storage image bindings after the program's own */
 #define SH_PREDRAW_MAX     7

@@ -318,6 +318,18 @@ static u64 predraw_capable(const ShTex* textures, int count, const ShaderInfo* s
             slots |= 1ull << k;
     return slots;
 }
+/* the texture slots a corner read in place serves (ShaderInfo.tex_corner_mask): plain 2D textures of one sample, not
+   raw, indexed, from memory, compared or reduced, and none of unfit (gathered, sampled with an offset, or by a handle
+   chosen as the program runs) */
+static u64 corner_capable(const ShTex* textures, int count, const ShaderInfo* si, u64 unfit) {
+    u64 slots = 0;
+    for (int k = 0; k < count && k < SH_MAXTEX; k++)
+        if (textures[k].type == 1 && !textures[k].array && !textures[k].shadow &&
+            !(textures[k].flags & (1 | 2 | SNX_TEX_INDEXED | SNX_TEX_MEMORY)) && !(si->tex_dc_color_mask >> k & 1) &&
+            !(si->tex_minmax_mask >> k & 1) && !(unfit >> k & 1))
+            slots |= 1ull << k;
+    return slots;
+}
 /* A fragment program's plain 2D sample (no offset, depth reference or level other than 0) at a perspective generic's
    (x / w, y / w), or at those mapped onto [0, 1] as clip space maps (ShaderInfo.screen_ndc), the same generic and
    mapping as the program's other such samples (*screen_in, -1 before the first, and *ndc): it reads the fragment's own
@@ -452,6 +464,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     si->memh_why[0] = 0;
     u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     u64 tex_asked = 0;                   /* slots TXQ or TMML name: their size, levels or level of detail asked */
+    u64 tex_corner_unfit = 0;            /* slots gathered, sampled with an offset or by a handle chosen as it runs */
     u64 tex_screen = 0; /* slots sampled at the own pixel's centre, if the draw agrees (screen_sample) */
     int screen_in = -1, screen_ndc = 0;
     u64 tex_uv = 0; /* slots sampled at a generic's (x, y), the own pixel's centre if the draw agrees (uv_sample) */
@@ -1415,6 +1428,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
                 if (read_slot < 0) return snx_reject(si, "texture descriptor count");
                 tex_read |= 1ull << read_slot;
                 if (!handle_count && bindless && memory_slot < 0) tex_elsewhere |= 1ull << read_slot;
+                if (offset_enabled || (!handle_count && bindless && memory_slot < 0))
+                    tex_corner_unfit |= 1ull << read_slot;
             }
             u32 coordinate = a + (array || clamp), dimensions = type == 0 ? 1 : type >= 2 ? 3 : 2;
             int plain = type == 1 && !array && !shadow && !offset_enabled && !clamp && mode <= 1;
@@ -1494,6 +1509,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
             u32 coord = a + (u32)bindless, aoffi = B(insn[i], 35, 1);
+            if (aoffi) tex_corner_unfit |= 1ull << read_slot;
             for (u32 k = 0; k < count + (array || aoffi); k++)
                 if (a + k + (u32)bindless < 255) used[coord + k] = 1;
             if (bindless && a < 255) used[a] = 1;
@@ -1583,6 +1599,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
             if (read_slot < 0) return snx_reject(si, "texture descriptor count");
             tex_read |= 1ull << read_slot;
             tex_elsewhere |= 1ull << read_slot;
+            tex_corner_unfit |= 1ull << read_slot;
             if (a < 255) used[a] = 1;
             if (op->id == O_TLD4S) {
                 if (b < 255) used[b] = 1;
@@ -1949,6 +1966,12 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         }
         indexed_table[k_indexed] = table;
     }
+    /* the slots the key reads a corner of their target in place (shader_corner_coords): each one this program can read
+       so, or the renderer would bind the whole target where the program reads it whole */
+    const u64 corner_slots = stage == ST_FS ? si->corner_slots : 0;
+    if (corner_slots & ~corner_capable(textures, texture_count, si, tex_corner_unfit))
+        return snx_reject_buffers(si, "a corner read in place of a slot the program can't read so", pop_targets, gb_at);
+    if (corner_slots) needs_glsl = 1; /* the clamp's FMin */
     /* the 2D slots the key marks rectangle textures, whose samples normalize their coordinates (shader_rect_coords) */
     u64 rect_slots = 0;
     for (int k = 0; k < texture_count; k++)
@@ -2610,9 +2633,10 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         spv_emit_decorate(&c->emit, blend_image, SPV_DECORATION_COHERENT, NULL, 0);
         interfaces[count++] = blend_image;
     }
-    if (needs_scale || needs_texel_scale) {
-        c->scale_buffer =
-            spv_emit_uniform_vec4_array(&c->emit, vec4, c->f32_type, c->u32_type, 1, SNX_VKB_RS, 1, &c->scale_pointer);
+    if (needs_scale || needs_texel_scale || corner_slots) {
+        /* the resolution scale's vec4, then two for each corner slot (SH_CORNER_SHARE) */
+        c->scale_buffer = spv_emit_uniform_vec4_array(&c->emit, vec4, c->f32_type, c->u32_type, 1, SNX_VKB_RS,
+                                                      1 + 2 * (u32)snx_popcount64(corner_slots), &c->scale_pointer);
         interfaces[count++] = c->scale_buffer;
     }
     for (u32 i = 0; i < 18; i++) {
@@ -3103,6 +3127,7 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
         .ngbuf = ngbuf,
         .gbuf_off = gbuf_off,
         .rect_slots = rect_slots,
+        .corner_slots = corner_slots,
         .c = c,
         .i32_type = i32_type,
         .i64_type = i64_type,
@@ -3404,6 +3429,8 @@ static u32* translate(const u8* code, const u64* insn, u32 max_bytes, int stage,
     next.tex_unread_mask = tex_asked & ~tex_read;
     next.tex_predraw_mask = (next.tex_own_pixel_mask | next.tex_screen_mask | next.tex_uv_mask) &
                             predraw_capable(textures, texture_count, si);
+    next.tex_corner_mask = stage == ST_FS ? corner_capable(textures, texture_count, si, tex_corner_unfit) : 0;
+    next.corner_slots = corner_slots;
     if (stage == ST_VS) next.screen_out_mask = shader_direct_screen_out(flow, &next.screen_out_yneg_mask);
     if (stage == ST_VS) next.uv_out_mask = shader_direct_uv_out(flow, &next.uv_out_yneg_mask);
     if (stage == ST_VS) next.pos_out_mask = shader_direct_position_out(flow);
