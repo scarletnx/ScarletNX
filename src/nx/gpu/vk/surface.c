@@ -3541,6 +3541,7 @@ void vk_rt_drawn_full(Surf* s) {
     mem_baseline(s);
 }
 int vk_rt_drawn_fresh(Surf* s) { return vk_rt_drawn_fresh_in(s, 0, rt_bytes(s)); }
+u64 vk_rt_bytes(const Surf* s) { return rt_bytes(s); }
 void vk_surf_stored(Surf* s) {
     if (s->gva >> 63) return;
     vk_rt_drawn_full(s); /* the publish wrote every byte: the baseline is from now, after its stamp */

@@ -3071,9 +3071,10 @@ Surf* vk_rt_snapshot(Surf* rt, int pixels) {
 }
 /* every write of the draw that sampled it (a color attachment, then its programmable blend): a write outside any draw
    (a clear: g_vk_drawing 0), or another draw's, is not */
-void vk_rt_copy_drawn(Surf* rt) {
-    if (rt->fb_snap && rt->fb_draw && rt->fb_draw == g_vk_drawing) rt->fb_snap->fb_gen = rt->wgen;
+void vk_rt_copy_drawn_by(Surf* rt, u64 draw) {
+    if (rt->fb_snap && rt->fb_draw && rt->fb_draw == draw) rt->fb_snap->fb_gen = rt->wgen;
 }
+void vk_rt_copy_drawn(Surf* rt) { vk_rt_copy_drawn_by(rt, g_vk_drawing); }
 
 /* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the
    format and size of the 2D color target rt, which the first draw writes with the values of rt from before the

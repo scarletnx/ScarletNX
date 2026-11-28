@@ -575,8 +575,72 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     g_rp[t_rc].open = 1;
     return 1;
 }
+/* The worker's target writes in a split run (draw_batches=2, docs/dev/parallel-draw-batches.md): kept in order, with
+   the draw that made each, and applied by the renderer thread at the join, after its own half's writes. The write
+   sequence numbers (wseq) then follow the GPU's order, the renderer thread's half first, and the worker takes no share
+   lock for them. Taken at each draw, they put a later draw of the renderer thread's before an earlier one of the
+   worker's, and the comparisons of wseq could pick older pixels.
+
+   Until then the worker's own lookups don't see those writes (the take count, a target's wgen, the drawn list). A
+   surface the worker is about to use whose bytes meet a target of the journal (jn_meets: a draw that samples what an
+   earlier draw of its half drew) applies the journal first, under the share lock (jn_flush), as the draws made it.
+   The worker writes the journal during its run, and the renderer thread reads it after the join's wait */
+#define JN_MAX     512
+#define JN_TARGETS 16
+static struct {
+    struct {
+        Surf* s;
+        u64 draw; /* g_vk_drawing when it wrote: the draw a copy of the target is for (vk_rt_copy_drawn_by) */
+    } e[JN_MAX];
+    u32 n, nt;
+    struct {
+        Surf* s;
+        u64 lo, hi;
+    } t[JN_TARGETS]; /* the journal's targets, each once, and their bytes */
+    u64 entries, flushes; /* for the stats line */
+} g_jn;
+static _Thread_local int t_jn; /* this thread keeps its target writes in the journal: the worker of a split run */
+static void jn_apply(void) {
+    for (u32 i = 0; i < g_jn.n; i++) {
+        Surf* s = g_jn.e[i].s;
+        vk_surf_wrote(s);
+        vk_rt_drawn(s);
+        vk_rt_copy_drawn_by(s, g_jn.e[i].draw);
+    }
+    g_jn.entries += g_jn.n;
+    g_jn.n = g_jn.nt = 0;
+}
+static void jn_flush(void) {
+    if (!g_jn.n) return;
+    vk_share_lock();
+    jn_apply();
+    vk_share_unlock();
+    g_jn.flushes++;
+}
+static void jn_add(Surf* s) {
+    u32 k = 0;
+    while (k < g_jn.nt && g_jn.t[k].s != s) k++;
+    if (g_jn.n == JN_MAX || (k == g_jn.nt && k == JN_TARGETS)) { /* full: what it holds goes now */
+        jn_flush();
+        k = 0;
+    }
+    if (k == g_jn.nt) g_jn.t[g_jn.nt++] = (typeof(g_jn.t[0])){s, s->gva, s->gva + vk_rt_bytes(s)};
+    g_jn.e[g_jn.n++] = (typeof(g_jn.e[0])){s, g_vk_drawing};
+}
+/* t's bytes meet a target of this thread's journal */
+static int jn_meets(const Surf* t) {
+    if (!t_jn || !g_jn.nt || !t) return 0;
+    const u64 lo = t->gva, hi = lo + (t->is_rt ? vk_rt_bytes(t) : t->size);
+    for (u32 k = 0; k < g_jn.nt; k++)
+        if (g_jn.t[k].lo < hi && lo < g_jn.t[k].hi) return 1;
+    return 0;
+}
 static void target_written(Surf* s) {
     if (g_draw_depth) bp_wrote(s);
+    if (t_jn) {
+        jn_add(s);
+        return;
+    }
     vk_share_lock(); /* one take for the three (draw_batches=2) */
     vk_surf_wrote(s);
     vk_rt_drawn(s);
@@ -2644,6 +2708,10 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const u64 t0 = g_ph.in_sets ? ph_now() : 0;
     tex_resolve_(ds, handle, x);
+    if (jn_meets(x->t)) { /* over a target this half drew: its writes first, then the lookup again */
+        jn_flush();
+        tex_resolve_(ds, handle, x);
+    }
     if (t0) g_ph.lk[1] += ph_now() - t0;
 }
 
@@ -2857,6 +2925,10 @@ static int fs_last_holds(const TexRes* res, const TexOver* over, int nt, u32 ww_
     for (int i = 0; i < nt; i++) {
         const Surf* t = res[i].t;
         if (!t) continue;
+        if (jn_meets(t)) { /* over a target this half drew: its writes first, and the textures looked up again */
+            jn_flush();
+            return 0;
+        }
         if (t->is_rt ? vk_surf_layout(t) == VK_IMAGE_LAYOUT_UNDEFINED : !tex_quiet_now(t, ww_epoch)) return 0;
         if (over[i].rt && !tex_over_holds(&over[i])) return 0;
     }
@@ -7874,6 +7946,11 @@ static void split_log(void) {
         g_vin_read[1] = v[1];
         LOG("vulkan: draw_batches=2: vertex and index lookups a present %.0f, %.0f of them kept without the share lock\n",
             (double)vn / 600.0, (double)vh / 600.0);
+        /* read between splits, on the renderer thread: the worker writes them only during its run */
+        LOG("vulkan: draw_batches=2: the worker's target writes a present %.0f, applied at the join; %.1f times a "
+            "present before it, for a draw that samples what its half drew\n",
+            (double)g_jn.entries / 600.0, (double)g_jn.flushes / 600.0);
+        g_jn.entries = g_jn.flushes = 0;
         LOG("vulkan: draw_batches=2: the renderer thread's steps of the splits, ms a present: the peeks %.3f (%.0f a "
             "present), the copies %.3f, the hold and command buffers %.3f, the kicks %.3f, the joins %.3f\n",
             (double)g_split.t_peek * per, (double)g_split.peeks / 600.0, (double)g_split.t_snap * per,
@@ -7919,6 +7996,8 @@ static void render_split_run(void) {
     g_rp[t_rc] = (typeof(g_rp[0])){.rate_want = RATE_KEEP}; /* no pass: the first draw begins its own */
     vk_rec_list_begin(g_split.list);
     vk_rec_list_parallel(1);
+    g_jn.n = g_jn.nt = 0; /* the join applied the last run's */
+    t_jn = 1;
     for (u32 i = 0; i < g_split.apply; i++)
         if (!g_split.defer[i]) gpu_ds_batch_apply(g_split.recs[i]);
     for (u32 i = g_split.apply; i < g_split.apply + g_split.n; i++) {
@@ -7934,6 +8013,7 @@ static void render_split_run(void) {
         render_draw(ds, &dc, own, NULL, NULL);
         g_vk.has_descriptor_heaps = heaps;
     }
+    t_jn = 0;
     vk_rec_list_parallel(0);
     g_split.ok = vk_rec_list_end();
     vk_surf_view_reset();
@@ -7969,6 +8049,7 @@ static void render_split_join(void) {
     if (vk_submit_number() != g_split.submit && !g_split.serial) g_split.submitted++; /* the splice renames */
     g_split.serial = 0;
     vk_rec_list_splice(g_split.list);
+    jn_apply(); /* the worker's target writes, after the renderer thread's half's */
     vk_vrs_forget(); /* the worker's binds are the command buffer's now */
     /* each stage's last set: the worker's, where it drew the stage, is the one the next draws are like */
     for (u32 st = 0; st < 2 * DS_GFX_STAGES; st++) {
