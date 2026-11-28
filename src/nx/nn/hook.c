@@ -131,7 +131,7 @@ static void unread_note(u32 family, u32 module, u32 sdk) {
 
 void hook_unread_text(char* out, size_t n) {
     const HostHook* h = &g_host.hook;
-    char sdk[32], read[32], families[384];
+    char sdk[32], read[96], families[384];
     size_t used = 0;
     u32 i;
     if (n) out[0] = 0;
@@ -145,14 +145,21 @@ void hook_unread_text(char* out, size_t n) {
         if (wrote < 0 || (size_t)wrote >= sizeof families - used) break; /* cut: the log has every function */
         used += (size_t)wrote;
     }
+    static const u32 read_sdks[] = HOOK_A32_READ_SDKS;
+    size_t nread = sizeof read_sdks / sizeof *read_sdks, at = 0;
     hook_version_text(sdk, sizeof sdk, HOOK_SDK, h->unread_sdk);
-    hook_version_text(read, sizeof read, HOOK_SDK, HOOK_A32_READ_SDK);
+    for (size_t k = 0; k < nread && at < sizeof read; k++) { /* "0.12.16 and 4.4.0", "a, b and c" */
+        char v[32];
+        hook_version_text(v, sizeof v, HOOK_SDK, read_sdks[k]);
+        at += (size_t)snprintf(read + at, sizeof read - at, "%s%s", k == 0 ? "" : k + 1 == nread ? " and " : ", ", v);
+    }
     snprintf(out, n,
              "This 32-bit game's SDK is %s (module %s) and the runtime's declarations for a 32-bit game were read in "
-             "SDK %s alone, so %u of its SDK functions run their own code (%s), which needs services the runtime "
+             "SDK%s %s alone, so %u of its SDK functions run their own code (%s), which needs services the runtime "
              "answers only natively. A 64-bit update of the game, if it has one, plays; for this version, an SDK of "
              "%s has to be read (issue #2242)",
-             sdk, g_arm_mod->mods[h->unread_module].name, read, (unsigned)h->unread_total, families, sdk);
+             sdk, g_arm_mod->mods[h->unread_module].name, nread > 1 ? "s" : "", read, (unsigned)h->unread_total,
+             families, sdk);
 }
 
 /* the index slot where the search for addr starts: its hash, Fibonacci's of the address in instructions */

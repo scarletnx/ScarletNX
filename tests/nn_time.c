@@ -3,10 +3,11 @@
 /* The native nn::time (src/nx/nn/time.c), its handlers called as the hooks call them, on a stand-in CPU over a guest
    buffer: Initialize's count and mode, the results before Initialize, the clocks against the host's time, calendar
    times in a fixed-offset zone, the snapshots and the spans between them, and the calls the SDK stops the game on.
-   Then a 32-bit game's table (time.hook's a32): the functions its SDK has, now() through a pointer and an argument
-   from the stack. The guest clock, the lock and the log are stand-ins here */
+   Then a 32-bit game's table (time.hook's a32): the functions each 32-bit SDK read has (0.12.16, 4.4.0), now() and
+   the difference by user through a pointer and an argument from the stack. The guest clock, the lock and the log are stand-ins here */
 #include "nx/nn/time.c"
-#include "nn/hooks.hook.inc" /* time.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc"     /* time.hook's table, and a 32-bit game's */
+#include "support/hook32_read.h" /* the 32-bit SDKs read, a group each */
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -201,17 +202,19 @@ int main(void) {
     CHECK_STOPS(nntime_set_automatic_correction_enabled(c, 0));
     CHECK(nntime_is_automatic_correction_enabled(c) && nntime_is_accuracy_sufficient(c) && nntime_initial_year(c) == 2019);
 
-    /* a 32-bit game: the 28 functions its SDK has, and none of a later SDK's */
+    /* a 32-bit game: the 28 functions SDK 0.12.16 has, and the 48 of 4.4.0, each SDK read a group of its own; the
+       adjustable and ephemeral clocks and the snapshots in 4.4.0's alone, and no timespec (a long is 4 bytes there) */
     {
         static SnxArmCPU a;
         a.mem = mem, a.mem_size = sizeof mem;
-        CHECK(HOOK32_COUNT == 28);
-        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
-        for (int i = 0; i < HOOK32_COUNT; i++)
-            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
-        for (int i = 0; i < HOOK32_COUNT; i++)
-            CHECK(!strstr(hook32_symbol[i], "Adjustable") && !strstr(hook32_symbol[i], "Snapshot") &&
-                  !strstr(hook32_symbol[i], "Ephemeral") && !strstr(hook32_symbol[i], "timespec"));
+        CHECK(HOOK32_COUNT == 76 && hook32_read_count(1) == 28 && hook32_read_count(2) == 48);
+        for (int i = 0; i < HOOK32_COUNT; i++) {
+            const char* s = hook32_symbol[i];
+            CHECK(hook32_read_group(i) && !strstr(s, "timespec"));
+            if (strstr(s, "Adjustable") || strstr(s, "Snapshot") || strstr(s, "Ephemeral"))
+                CHECK(hook32_read_group(i) == 2);
+            if (hook32_read_group(i) == 1) CHECK(hook32_read_entry(s, 2) >= 0); /* every one of 0.12.16's in 4.4.0 */
+        }
         /* now(): the time point through the pointer in r0, the same on both clocks, and r1 as it was */
         CHECK(nntime_user_get_current_time(c, 0x100) == 0);
         memset(mem + 0xa00, 0xee, 0x30);
@@ -238,6 +241,22 @@ int main(void) {
         a.r[0] = 0x810, a.r[1] = 0x820, a.r[2] = 2, a.r[3] = 0x800, a.r[13] = 0xb00, a.r[14] = 0x5000;
         a32("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE")(&a);
         CHECK(a.r[0] == 0 && snx_ld_le32(mem + 0x810) == 1 && rd64(0x820) == 1709219045);
+        /* 4.4.0's adjustable now(): the time point through the pointer in r0 too */
+        a.r[0] = 0xa30, a.r[1] = 0x1234, a.r[14] = 0x5000;
+        hook32_fn[hook32_read_entry("_ZN2nn4time25AdjustableUserSystemClock3nowEv", 2)](&a);
+        CHECK(rd64(0xa30) == nntime_adjustable_user_now(c) && a.r[1] == 0x1234 && a.r[15] == 0x5000);
+        a.r[0] = 0xa38;
+        hook32_fn[hook32_read_entry("_ZN2nn4time28AdjustableNetworkSystemClock3nowEv", 2)](&a);
+        CHECK(rd64(0xa38) == nntime_adjustable_network_now(c));
+        /* its difference by user: the TimeSpan through the pointer in r0, the two snapshots in r1 and r2 */
+        nntime_snapshot_create_standard(c, 0x3000);
+        nntime_snapshot_create_standard(c, 0x3100);
+        snx_st_le64(mem + 0x3100 + 0x40, (u64)rd64(0x3000 + 0x40) + 90); /* the second's user time 90 s on */
+        memset(mem + 0xa40, 0xee, 0x10);
+        a.r[0] = 0xa40, a.r[1] = 0x3000, a.r[2] = 0x3100, a.r[14] = 0x5000;
+        hook32_fn[hook32_read_entry(
+            "_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_", 2)](&a);
+        CHECK(rd64(0xa40) == nntime_user_difference(c, 0x3000, 0x3100) && mem[0xa48] == 0xee && a.r[15] == 0x5000);
     }
 
     /* after Finalize to zero: the clocks answer 0x74 again, the adjustable ones stop the game */

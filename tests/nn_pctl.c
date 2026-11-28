@@ -5,6 +5,7 @@
    rest zero, which a game reads as no timer and not as TimesUp */
 #include "nx/nn/pctl.c"
 #include "nn/hooks.hook.inc" /* pctl.hook's table, and its adapters for a 32-bit game */
+#include "support/hook32_read.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -39,10 +40,10 @@ int main(void) {
        SDK's own GetPlayTimerRemainingTime stores it, and r1 is left */
     {
         static SnxArmCPU a;
-        CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 19);
-        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+        /* each for the 32-bit SDKs read, 0.12.16 and 4.4.0, a group each: a 32-bit game of another has no hook here */
+        CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 38 && hook32_read_count(1) == 19 && hook32_read_count(2) == 19);
         for (int i = 0; i < HOOK32_COUNT; i++)
-            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
+            CHECK(hook32_read_entry(hook32_symbol[i], 1) >= 0 && hook32_read_entry(hook32_symbol[i], 2) >= 0);
         for (int i = 0; i < HOOK32_COUNT; i++) {
             CHECK(!strstr(hook32_symbol[i], "DisplayInfo"));
             if (!strcmp(hook32_symbol[i], "_ZN2nn4pctl10InitializeEv")) {

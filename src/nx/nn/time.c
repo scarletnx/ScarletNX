@@ -507,6 +507,10 @@ i64 nntime_user_difference(CPU* c, u64 a, u64 b) {
     need_initialized("CalculateStandardUserSystemClockDifferenceByUser");
     return user_difference(hook_host(c, a), hook_host(c, b));
 }
+/* a 32-bit game's: the TimeSpan through the pointer in r0, where AAPCS32 returns a class of 8 bytes */
+void nntime_user_difference_out(CPU* c, u64 out, u64 a, u64 b) {
+    snx_st_le64(hook_host(c, out), (u64)nntime_user_difference(c, a, b));
+}
 int nntime_span_between(CPU* c, u64 out, u64 a, u64 b) {
     need_initialized("CalculateSpanBetween");
     i64 span;
@@ -592,6 +596,13 @@ i64 nntime_adjustable_network_now(CPU* c) {
     need_initialized("AdjustableNetworkSystemClock::now");
     TimeContext ctx = adjustable_network();
     return adjusted_now(&ctx);
+}
+/* a 32-bit game's now() of the adjustable clocks: the time point through the pointer in r0 */
+void nntime_adjustable_user_now_out(CPU* c, u64 out) {
+    snx_st_le64(hook_host(c, out), (u64)nntime_adjustable_user_now(c));
+}
+void nntime_adjustable_network_now_out(CPU* c, u64 out) {
+    snx_st_le64(hook_host(c, out), (u64)nntime_adjustable_network_now(c));
 }
 
 /* ---- the ephemeral network clock, and the clocks an application may not set (time:u has no write permission) */

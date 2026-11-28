@@ -61,6 +61,14 @@ static void word_put(const CPU* c, u64 addr, u64 value) {
     else
         snx_st_le64(hook_host(c, addr), value);
 }
+/* the game's stack pointer: sp, a 32-bit game's r13 */
+static u64 stack_at(CPU* c) { return g_arm_mod ? arm_cpu(c)->r[13] : c->x[31]; }
+static void stack_put(CPU* c, u64 sp) {
+    if (g_arm_mod)
+        arm_cpu(c)->r[13] = (u32)sp;
+    else
+        c->x[31] = sp;
+}
 
 /* the parameters as the session takes them (AudioRendererParameterInternal), which audren_state_new reads as bytes */
 typedef struct {
@@ -209,6 +217,17 @@ u32 nnaudio_open_renderer_event(CPU* c, const HookLayout_nn_audio_AudioRendererP
 }
 u32 nnaudio_open_renderer(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 param, u64 work,
                           u64 size) {
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, 0, param, 2);
+}
+/* a 32-bit game's of SDK 3 on, the handle two words of 4 bytes and the size a size_t */
+u32 nnaudio_open_renderer_event32(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 event,
+                                  u64 param, u64 work, u64 size) {
+    (void)work, (void)size;
+    return open_renderer(c, L, handle, event, param, 2);
+}
+u32 nnaudio_open_renderer32(CPU* c, const HookLayout_nn_audio_AudioRendererParameter* L, u64 handle, u64 param,
+                            u64 work, u64 size) {
     (void)work, (void)size;
     return open_renderer(c, L, handle, 0, param, 2);
 }
@@ -433,7 +452,7 @@ static u64 method(CPU* c, u64 config, int m, u64 a1, u64 a2, u64 a3) {
 static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 out, u64 out_size, u32 frames,
                           u32 differences) {
     int one = !(differences & UPDATE_VOICE_SPLIT); /* the voices' sizes come back through two words of the stack */
-    u64 at, sp = c->x[31], slots = 0;
+    u64 at, sp = stack_at(c), slots = 0;
     u8* header;
     u32 total = REN_HEADER, n, rc;
     int m;
@@ -452,8 +471,8 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
     /* two words of the game's stack for UpdateVoiceRelatedParameters' sizes, below the handler's caller's frame and
        above the frames of the functions run from here */
     if (one) {
-        c->x[31] = sp - 0x20;
-        slots = c->x[31];
+        stack_put(c, sp - 0x20);
+        slots = sp - 0x20;
     }
     header = hook_host(c, in);
     memset(header, 0, REN_HEADER);
@@ -471,14 +490,15 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
             total += n;
             at += n;
             n = (u32)method(c, config, M_VOICE_INFO_IN, at, 0, 0);
-        } else if (m == M_VOICE_IN) {
-            snx_st_le64(hook_host(c, slots), 0);
-            snx_st_le64(hook_host(c, slots + 8), 0);
-            method(c, config, m, at, slots, slots + 8);
-            n = (u32)snx_ld_le64(hook_host(c, slots));
-            snx_st_le32(header + HEADER_VOICE_RESOURCE, (u32)snx_ld_le64(hook_host(c, slots + 8)));
-            total += (u32)snx_ld_le64(hook_host(c, slots + 8));
-            at += snx_ld_le64(hook_host(c, slots + 8));
+        } else if (m == M_VOICE_IN) { /* two size_t, a word each */
+            u64 second = slots + word_size();
+            word_put(c, slots, 0);
+            word_put(c, second, 0);
+            method(c, config, m, at, slots, second);
+            n = (u32)word_at(c, slots);
+            snx_st_le32(header + HEADER_VOICE_RESOURCE, (u32)word_at(c, second));
+            total += (u32)word_at(c, second);
+            at += word_at(c, second);
         } else
             n = (u32)method(c, config, m, at, 0, 0);
         snx_st_le32(header + g_methods[m].header, n);
@@ -490,7 +510,7 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
 #endif
     snx_st_le32(header + HEADER_TOTAL, total);
     if (total > in_size) {
-        if (one) c->x[31] = sp;
+        if (one) stack_put(c, sp);
         SNX_ZONE_T(z_update_too_big, "audio update failed", "%u > %llu bytes", total,
                    (unsigned long long)in_size); /* a rare decision */
         WARN_LIMIT(4, "audren: an update of %u bytes in a buffer of %llu: InvalidUpdateInfo\n", total,
@@ -532,7 +552,7 @@ static u32 request_update(CPU* c, u64 id, u64 config, u64 in, u64 in_size, u64 o
             rc = (u32)method(c, config, M_CHECK_ERRORS, 0, 0, 0);
     } else if (rc == SNX_RC_AUDIO_INVALID_UPDATE_INFO)
         method(c, config, M_CHECK_ERRORS, 0, 0, 0); /* the SDK reads the renderer's errors, then gives the result */
-    if (one) c->x[31] = sp;
+    if (one) stack_put(c, sp);
     return rc;
 }
 /* the config's buffers, where an SDK's layout has them */
@@ -562,4 +582,11 @@ u32 nnaudio_request_update_first32(CPU* c, const HookLayout_nn_audio_AudioRender
     return request_update(c, id, config, hook_get_u32(c, L->in, config), hook_get_u32(c, L->in_size, config),
                           hook_get_u32(c, L->out, config), hook_get_u32(c, L->out_size, config), 0,
                           UPDATE_VOICE_SPLIT | UPDATE_NO_SPLITTER);
+}
+/* a 32-bit game's of SDK 3 to 5's update, its handle two words */
+u32 nnaudio_request_update32(CPU* c, const HookLayout_nn_audio_AudioRendererConfig32* L, u64 id, u64 context,
+                             u64 config) {
+    (void)context;
+    return request_update(c, id, config, hook_get_u32(c, L->in, config), hook_get_u32(c, L->in_size, config),
+                          hook_get_u32(c, L->out, config), hook_get_u32(c, L->out_size, config), 0, 0);
 }

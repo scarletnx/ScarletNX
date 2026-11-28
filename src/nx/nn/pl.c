@@ -215,12 +215,20 @@ u64 nnpl_get_shared_font_address(CPU* c, i32 type) {
 /* every font, in the order of their types whatever the language, as Eden does. The count is all of them, the
    entries as many as max allows. Each entry: its type, its address and its size, by the SDK's three arrays (an
    address and a size of word bytes each: 8, or a 32-bit game's 4) or its SharedFontData (0x18 bytes: the type at 0,
-   the address at 8, the size at 0x10, the padding left) */
+   the address at 8, the size at 0x10, the padding left; a 32-bit game's 12 bytes, the address at 4 and the size at 8,
+   as its SDK 4.4.0 fills it) */
 static void in_order(CPU* c, u64 count, i32 max, u64 types, u64 addresses, u64 sizes, u64 data, u32 word) {
     snx_st_le32(hook_host(c, count), PL_FONTS);
     u64 base = fonts_base();
     for (i32 i = 0; i < max && i < PL_FONTS; i++) {
         u64 address = base + g_hle.pl.font_off[i], size = g_hle.pl.font_size[i];
+        if (data && word == 4) {
+            u8* d = hook_host(c, data + (u64)i * 12);
+            snx_st_le32(d, (u32)i);
+            snx_st_le32(d + 4, (u32)address);
+            snx_st_le32(d + 8, (u32)size);
+            continue;
+        }
         if (data) {
             u8* d = hook_host(c, data + (u64)i * 0x18);
             snx_st_le32(d, (u32)i);
@@ -260,6 +268,12 @@ int nnpl_get_shared_font_in_order_of_priority_for_system(CPU* c, u64 count, u64 
 int nnpl_get_shared_font(CPU* c, u64 count, u64 data, i32 max, u64 language) {
     (void)language;
     in_order(c, count, max, 0, 0, 0, data, 8);
+    return 1;
+}
+/* a 32-bit game's: its SharedFontData's 12 bytes */
+int nnpl_get_shared_font_a32(CPU* c, u64 count, u64 data, i32 max, u32 language, u32 language_end) {
+    (void)language, (void)language_end;
+    in_order(c, count, max, 0, 0, 0, data, 4);
     return 1;
 }
 
