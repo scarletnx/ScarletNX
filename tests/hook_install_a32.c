@@ -7,14 +7,15 @@
    hooks_off names keep their slots. A versioned hook takes the slot of a function whose module's SDK label holds
    its version, and none in a module with no label; one declared a32 for some versions is in the table for any and
    in a 32-bit program's for those, and in a game of another SDK its function keeps its own code, which
-   hook_missed_text says with the SDK, and hook_unread_text with the SDK it was read in, the functions of each family
-   and what a player can do. The two tables: a symbol declared again for a 32-bit program
+   hook_missed_text says with the SDK, and hook_unread_text with the SDKs read, the functions of each family and what
+   a player can do; a game whose SDK is inside a range but not read is said once in the log. The two tables: a symbol declared again for a 32-bit program
    alone has each program's handler in its table, and one only a 32-bit program has is in no other. And a handler
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
    and the adapter still returns there; and one that calls another function of the game, with its four words in r0
    to r3, and is back at its own function after it */
 #include "nx/nn/hook.c"
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 /* ---- the handlers */
@@ -123,7 +124,20 @@ Settings g_settings;
 const SnxRoutes* g_routes;
 static u8 mem32[0x100];
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return &((Thread32*)(void*)((char*)arm - offsetof(Thread32, arm)))->cpu; }
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* what hook.c logged since the last clear */
+static char logged[16384];
+static size_t logged_at;
+void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
+    int wrote;
+    (void)lvl;
+    if (logged_at >= sizeof logged) return;
+    va_start(ap, fmt);
+    wrote = vsnprintf(logged + logged_at, sizeof logged - logged_at, fmt, ap);
+    va_end(ap);
+    if (wrote > 0) logged_at += (size_t)wrote;
+}
+static void log_clear(void) { logged[0] = 0, logged_at = 0; }
 /* hook.c takes its invalidation lock only when a hooked function's code changed */
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -192,10 +206,12 @@ int main(void) {
     assert(hook32_key[entry(&hook32_table, "ranged", 0x10203)] == HOOK_SDK);
     assert(hook32_lo[entry(&hook32_table, "ranged", 0x10203)] == 0);
     assert(hook32_hi[entry(&hook32_table, "ranged", 0x10203)] == 0x20000);
-    /* its second group, one version, an entry of its own; and those of a declaration for a 32-bit program alone */
-    assert(hook32_lo[entry(&hook32_table, "ranged", 0x40400)] == 0x40400);
-    assert(hook32_hi[entry(&hook32_table, "ranged", 0x40400)] == 0x40401);
-    assert(entry(&hook32_table, "ranged", 0x40401) == -2 && entry(&hook32_table, "ranged", 0x403ff) == -2);
+    /* its second group, a range with both ends, an entry of its own; and those of a declaration for a 32-bit program
+       alone */
+    assert(hook32_lo[entry(&hook32_table, "ranged", 0x40400)] == 0x40000);
+    assert(hook32_hi[entry(&hook32_table, "ranged", 0x40400)] == 0x50000);
+    assert(entry(&hook32_table, "ranged", 0x40000) == entry(&hook32_table, "ranged", 0x4ffff));
+    assert(entry(&hook32_table, "ranged", 0x50000) == -2 && entry(&hook32_table, "ranged", 0x3ffff) == -2);
     assert(entry(&hook32_table, "grouped", 0x10203) >= 0 && entry(&hook32_table, "grouped", 0x40400) >= 0);
     assert(entry(&hook32_table, "grouped", 0x10203) != entry(&hook32_table, "grouped", 0x40400));
     assert(entry(&hook32_table, "grouped", 0x30001) == -2 && entry(&hook_table, "grouped", 0) == -1);
@@ -206,6 +222,7 @@ int main(void) {
     strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-1_2_3-Release");
     g_settings.native_hooks = 1;
     snprintf(g_settings.hook_families_off, sizeof g_settings.hook_families_off, "switched_off");
+    log_clear();
     hook_install();
     assert(a32_slots[0] == hook32_fn[answer]);  /* an A32 function */
     assert(thumb_slots[0] == hook32_fn[thumb]); /* a Thumb one, by its address without bit 0 */
@@ -227,6 +244,12 @@ int main(void) {
     /* every declaration holds for the module with the label, and the other module's SDK is not known to be another */
     hook_unread_text(text, sizeof text);
     assert(!*text);
+    /* 1.2.3 is inside the ranges but no SDK read: said once, for the module with the label, with the SDKs read and
+       how many of its hooks hold by inference; nothing for the module with none */
+    assert(strstr(logged, "hooks: SDK 1.2.3 of a 32-bit game (module sdk) is inside the ranges read at 0.12.16, 4.4.0 "
+                          "and 10.6.0: not read itself, so its 4 versioned hooks hold by inference"));
+    assert(!strstr(strstr(logged, "not read itself") + 1, "not read itself")); /* once */
+    assert(!strstr(logged, "(module main) is inside"));
 
     /* the adapter: r0 and r1 to the handler, its answer in r0, back to lr */
     thread.cpu.mem = mem32;
@@ -291,7 +314,8 @@ int main(void) {
     assert(a32_slots[0] == hook32_fn[answer] && a32_slots[20] == hook32_fn[entry(&hook32_table, "save_j", 0x20000)]);
     hook_missed_text(text, sizeof text);
     assert(!strncmp(text, "4 of the SDK functions", 22));
-    assert(strstr(text, "the first is ranged in sdk, of version 3.0.1, declared for sdk < 2.0.0; sdk == 4.4.0"));
+    assert(
+        strstr(text, "the first is ranged in sdk, of version 3.0.1, declared for sdk < 2.0.0; sdk >= 4.0.0, < 5.0.0"));
     hook_missed_text(text, 30); /* cut to the buffer */
     assert(strlen(text) == 29 && !strncmp(text, "4 of the SDK functions", 22));
     /* why, in the words the stop says it in: the SDK, where it is, the SDK read, the functions left out by family and
@@ -299,24 +323,34 @@ int main(void) {
     hook_unread_text(text, sizeof text);
     assert(!strcmp(
         text, "This 32-bit game's SDK is 3.0.1 (module sdk) and the runtime's declarations for a 32-bit game were "
-              "read in SDKs 0.12.16, 4.4.0 and 10.6.0 alone, so 3 of its SDK functions run their own code (marked 2, "
-              "second "
-              "1), which "
+              "read in SDKs 0.12.16, 4.4.0 and 10.6.0, each family's holding for the versions around them that its "
+              "services did not change in, none for this one, so 3 of its SDK functions run their own code (marked 2, "
+              "second 1), which "
               "needs services the runtime answers only natively. A 64-bit update of the game, if it has one, "
               "plays; for this version, an SDK of 3.0.1 has to be read (issue #2242)"));
     hook_unread_text(text, 30); /* cut to the buffer */
     assert(strlen(text) == 29 && !strncmp(text, "This 32-bit game's SDK is 3.0", 29));
     /* a game of the second 32-bit SDK read, 4.4.0: each declaration's second group, and nothing left to say for the
-       module with the label */
+       module with the label; read, so no line of inference */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
     memset(&g_host.hook, 0, sizeof g_host.hook);
     strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-4_4_0-Release");
+    log_clear();
     hook_install();
     assert(a32_slots[32] == hook32_fn[entry(&hook32_table, "ranged", 0x40400)]);
     assert(a32_slots[40] == hook32_fn[entry(&hook32_table, "grouped", 0x40400)]);
     assert(a32_slots[36] == own_block); /* ranged_too, one group: not that SDK's */
     hook_unread_text(text, sizeof text);
     assert(strstr(text, "This 32-bit game's SDK is 4.4.0") && strstr(text, "so 1 of its SDK functions"));
+    assert(!strstr(logged, "not read itself"));
+    /* 4.9.0, in the same range and not read: the same hooks, and the line */
+    for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;
+    memset(&g_host.hook, 0, sizeof g_host.hook);
+    strcpy((char*)guest + 0x1810, "SDK MW+Vendor+VendorSdk_nnSdk-4_9_0-Release");
+    log_clear();
+    hook_install();
+    assert(a32_slots[32] == hook32_fn[entry(&hook32_table, "ranged", 0x40400)]);
+    assert(strstr(logged, "hooks: SDK 4.9.0 of a 32-bit game (module sdk) is inside the ranges read at"));
 
     /* hooks=0 takes nothing, and leaves nothing to say */
     for (unsigned i = 0; i < 0x40; i++) a32_slots[i] = thumb_slots[i] = own_block;

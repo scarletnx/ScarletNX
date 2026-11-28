@@ -779,7 +779,7 @@ static void test_table(void) {
 }
 
 /* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions SDK 0.12.16 has, those and six
-   more in 4.4.0, and 4.4.0's and the out's volume in 10.6.0, each SDK read a group of its own. The AudioOut and the
+   more in 4.4.0, and 4.4.0's and the out's volume in 10.6.0, each below 11.0.0. The AudioOut and the
    AudioOutBuffer are laid out as a 64-bit game's; a buffer comes back as its address in r0, a volume is a float in s0,
    and the samples played (4.4.0's) a count of 8 bytes in r0 and r1 */
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
@@ -800,14 +800,9 @@ static void test_a32(void) {
     u32 bits;
     AudOut* q;
     arm.mem = g_mem, arm.mem_size = 0x10000;
-    CHECK(HOOK32_COUNT == 71 && hook32_read_count(1) == 19 && hook32_read_count(2) == 25 && hook32_read_count(3) == 27);
-    for (int i = 0; i < HOOK32_COUNT; i++) {
-        const char* s = hook32_symbol[i];
-        CHECK(hook32_read_group(i) && (hook32_read_group(i) >= 2 || hook32_read_entry(s, 2) >= 0));
-        /* every one of 4.4.0's in 10.6.0, and the out's volume in 10.6.0 alone */
-        CHECK(hook32_read_group(i) != 2 || hook32_read_entry(s, 3) >= 0);
-        CHECK(!strstr(s, "AudioOutVolume") || hook32_read_group(i) == 3);
-    }
+    /* each below 11.0.0, the SDKs read and the versions between them; none past 10.x */
+    CHECK(HOOK32_COUNT == 27 && hook32_all_below(HOOK32_SDK_11) && hook32_count_at(0x060000) == 27 &&
+          hook32_count_at(HOOK32_SDK_11) == 0);
     parameter(48000, 2);
     memset(GP(T_OUT), 0xCC, 0x120);
     CHECK(call32("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", T_OUT, PARAMS) == 0);

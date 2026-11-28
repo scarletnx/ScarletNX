@@ -354,8 +354,8 @@ hook _ZN2nn2gs3sdk17ReadUserImageNv12EPvmmS2_mmRKNS_3gsv22CpuUserImageDescriptor
 # nn::codec's hardware Opus decoder of the Ounce's SDK (nn/codec.c's hwacod section), which its SDK runs on the audio
 # DSP through nn::codec::hwacod: decoded here with the service's FFmpeg decoder (audio.c), each packet as it is enqueued.
 # FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder are hwopus's symbols too, and their handlers hand a decoder
-# that isn't hwacod's to codec.hook's section: they hold for a 32-bit game of SDK 10.6.0 too (a32 @version), as that
-# section's functions do there
+# that isn't hwacod's to codec.hook's section: they hold for a 32-bit game from 6.0.0 below 11.0.0 too (a32
+# @version), as that section's functions do there
 family codec
 hook _ZN2nn5codec43GetHardwareOpusDecoderManagerWorkBufferSizeEiiNS_8TimeSpanEii(i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers) -> u64 = codec_manager_work_size
 hook _ZN2nn5codec36InitializeHardwareOpusDecoderManagerEPNS0_30HardwareOpusDecoderManagerTypeEPNS_2os15SystemEventTypeEiiNS_8TimeSpanEiiPvm(addr manager, addr event, i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers, addr work) -> u32 = codec_manager_init
@@ -363,8 +363,8 @@ hook _ZN2nn5codec34FinalizeHardwareOpusDecoderManagerEPNS0_30HardwareOpusDecoder
 hook _ZN2nn5codec34ExecuteHardwareOpusDecoderDecodingEPNS0_30HardwareOpusDecoderManagerTypeE(addr manager) -> u32 = codec_manager_execute
 hook _ZN2nn5codec46GetHardwareOpusDecoderManagerFreeIoBufferCountEPKNS0_30HardwareOpusDecoderManagerTypeE(addr manager) -> i32 = codec_manager_free_buffers
 hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiNS_8TimeSpanEPNS0_30HardwareOpusDecoderManagerTypeE(addr decoder, i32 rate, i32 channels, i64 frame, addr manager) -> u32 = codec_decoder_init
-hook _ZN2nn5codec27FinalizeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_finalize a32 @version(== 10.6.0)
-hook _ZN2nn5codec24ResetHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_reset a32 @version(== 10.6.0)
+hook _ZN2nn5codec27FinalizeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_finalize a32 @version(>= 6.0.0, < 11.0.0)
+hook _ZN2nn5codec24ResetHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_reset a32 @version(>= 6.0.0, < 11.0.0)
 hook _ZN2nn5codec36EnqueueOpusDataToHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEPmPKvm(addr decoder, addr consumed, addr data, u64 size) -> u32 = codec_decoder_enqueue
 hook _ZN2nn5codec48DequeuePcmInterleavedDataFromHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEPiPsm(addr decoder, addr samples, addr out, u64 size) -> u32 = codec_decoder_dequeue
 hook _ZN2nn5codec47GetHardwareOpusDecoderWaitingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_waiting

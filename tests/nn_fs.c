@@ -696,24 +696,16 @@ int main(int argc, char** argv) {
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    /* each for the 32-bit SDKs read, a group each: the 44 of 0.12.16; those and 11 more in 4.4.0, the two with an
-       int64_t of their own under its 32-bit symbol (x); and 4.4.0's and 20 more in 10.6.0, five of them under their
-       32-bit symbol (j and x) and the cache storage list's two with its handle of 4 bytes */
-    int only_1060 = 0;
-    CHECK(HOOK32_COUNT == 174 && hook32_read_count(1) == 44 && hook32_read_count(2) == 55 &&
-          hook32_read_count(3) == 75);
-    for (int i = 0; i < HOOK32_COUNT; i++) {
-        CHECK(hook32_read_group(i) && (hook32_read_group(i) >= 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
-        CHECK(hook32_read_group(i) != 2 || hook32_read_entry(hook32_symbol[i], 3) >= 0); /* every one of 4.4.0's */
-        if (hook32_read_group(i) == 3 && hook32_read_entry(hook32_symbol[i], 2) < 0) only_1060++;
-    }
-    CHECK(only_1060 == 20);
-    CHECK(hook32_read_entry("_ZN2nn2fs8MountRomEPKciPvj", 3) >= 0 &&
-          hook32_read_entry("_ZN2nn2fs18CreateCacheStorageEixx", 3) >= 0 &&
-          hook32_read_entry("_ZN2nn2fs8MountRomEPKciPvm", 3) == -1);
-    CHECK(hook32_read_entry("_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidExx", 2) >= 0 &&
-          hook32_read_entry("_ZN2nn2fs15GetSaveDataSizeEPxS1_RKNS_7account3UidE", 2) >= 0 &&
-          hook32_read_entry("_ZN2nn2fs17MountCacheStorageEPKc", 1) == -1);
+    /* each below 11.0.0: the 44 of 0.12.16, those and 11 more of 4.4.0 (the two with an int64_t of their own under
+       its 32-bit symbol, x) and 20 more of 10.6.0 (five under their 32-bit symbol, j and x, and the cache storage
+       list's two with its handle of 4 bytes), and the versions between them by inference; none past 10.x */
+    CHECK(HOOK32_COUNT == 75 && hook32_all_below(HOOK32_SDK_11) && hook32_count_at(0x070000) == 75 &&
+          hook32_count_at(HOOK32_SDK_11) == 0);
+    CHECK(hook32_entry_at("_ZN2nn2fs8MountRomEPKciPvj", HOOK32_SDK_10) >= 0 &&
+          hook32_entry_at("_ZN2nn2fs18CreateCacheStorageEixx", HOOK32_SDK_10) >= 0 &&
+          hook32_entry_at("_ZN2nn2fs8MountRomEPKciPvm", HOOK32_SDK_10) == -1);
+    CHECK(hook32_entry_at("_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidExx", HOOK32_SDK_4) >= 0 &&
+          hook32_entry_at("_ZN2nn2fs15GetSaveDataSizeEPxS1_RKNS_7account3UidE", HOOK32_SDK_4) >= 0);
     /* 4.4.0's access log mask: the mask in r0, the answer in r0, as the handler gives it */
     CHECK(call32("_ZN2nn2fs6detail18IsEnabledAccessLogEj", 3, 0, 0, 0, 0, 0, 0) ==
           (u32)nnfs_is_enabled_access_log_mask(&cpu, 3));

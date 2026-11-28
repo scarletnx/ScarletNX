@@ -11,6 +11,7 @@
    was */
 #include "nx/nn/prepo.c"
 #include "nn/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
+#include "support/hook32_read.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -176,9 +177,10 @@ int main(void) {
                           &first) >= 0);
     }
 
-    /* a 32-bit game: the six hooks hold for the 32-bit SDKs read (0.12.16, 4.4.0 and 10.6.0), and none for a module
-       of another SDK, one between them or an unknown one. Save there: the report's fields are 4 bytes each, at 0x20,
-       0x24 and 0x28, and 10.6.0's has the limit */
+    /* a 32-bit game: the six hooks hold below 11.0.0, the 32-bit SDKs read (0.12.16, 4.4.0 and 10.6.0) and the versions
+       between them by inference, and none past them or for an unknown version; Save without the limit below 9.0.0
+       and with it from 9.0.0, AddSessionId from 9.0.0. Save there: the report's fields are 4 bytes each, at 0x20,
+       0x24 and 0x28 */
     {
         static const char* const all[6] = {save[0],
                                            save[1],
@@ -190,16 +192,25 @@ int main(void) {
         u32 versions[HOOK_KEYS] = {0};
         a.mem = mem, a.mem_size = sizeof mem;
         test_arm = &a;
-        CHECK(HOOK32_COUNT == 19);
+        CHECK(HOOK32_COUNT == 9 && hook32_count_at(0x080000) == 6 && hook32_count_at(0x090300) == 7 &&
+              hook32_count_at(HOOK32_SDK_11) == 0);
+        for (int user = 0; user < 2; user++) { /* the limit's side by version */
+            versions[HOOK_SDK] = 0x08ffff;
+            CHECK(!strcmp(hook32_handler[hook_select(&hook32_table, save[user], versions, &first)],
+                          user ? "nnprepo_save_user32" : "nnprepo_save32"));
+            versions[HOOK_SDK] = 0x090000;
+            CHECK(!strcmp(hook32_handler[hook_select(&hook32_table, save[user], versions, &first)],
+                          user ? "nnprepo_save_user_limited32" : "nnprepo_save_limited32"));
+        }
         for (int i = 0; i < 6; i++) {
             versions[HOOK_SDK] = 0;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = HOOK32_SDK_11;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
             versions[HOOK_SDK] = 0x010000;
-            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
-            versions[HOOK_SDK] = 0x040300;
-            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x090300;
-            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x0a0600;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x040400;
@@ -282,7 +293,7 @@ int main(void) {
             CHECK(added.a[2] == 0x7f0 && added.sp == 0x7f0 && added.id == 0 && mem[0x7f8] == 0xee &&
                   mem[0x7ef] == 0xee);
             CHECK(a.r[0] == 0x2a81 && a.r[13] == 0x804 && a.r[15] == 0x1234);
-            versions[HOOK_SDK] = 0x040400; /* none in 4.4.0, which has no AddSessionId */
+            versions[HOOK_SDK] = 0x08ffff; /* none before 9.0.0, which has no AddSessionId */
             CHECK(hook_select(&hook32_table, "_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc", versions, &first) ==
                   -2);
             g_arm_mod = NULL;
