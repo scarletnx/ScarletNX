@@ -5082,6 +5082,22 @@ void vk_tex_take_log(void) {
    sampled several frames later. Targets are never block compressed, but a compressed texture takes a target whose
    texels are as many bytes as its blocks, a texel for a block: a game compressing on the GPU draws the blocks so (one
    game's text labels, BC5 drawn as RGBA32UI) */
+/* The level a drawn target's pixels go into gets its memory back, where the texture samples from a coarser one (made
+   at half its resolution, or shed since): 1 when the level has memory. No trim inside it, as the search holds the
+   targets it found. A level between it and the floor it had has memory and no texels then: the texture loads again at
+   its next use, and takes its targets again */
+static int take_level_back(Surf* t, u32 level) {
+    if (!t->sparse) return 0;
+    const u32 had = t->lod_floor;
+    g_bind_no_trim = 1;
+    t->lod_floor = level;
+    const int r = tex_bind_at(t, 0);
+    g_bind_no_trim = 0;
+    if (r < 0) t->lod_floor = had; /* nothing was bound */
+    if (t->lod_floor > level) return 0;
+    if (had > level + 1) t->upload_valid = 0;
+    return 1;
+}
 static void tex_take_drawn(Surf* t) {
     /* a storage surface its texture hosts: what it takes is its host's to take, into the host's image */
     if (t && t->host) {
@@ -5260,6 +5276,7 @@ static void tex_take_drawn(Surf* t) {
             g_takes.stale++;
             continue;
         }
+        if (at.l < t->lod_floor) take_level_back(t, at.l);
         if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
             mark_copied(s, t);
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its

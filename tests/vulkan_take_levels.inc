@@ -6,7 +6,8 @@
    through one texture header over them: made so while its targets were being made again each frame, the copy of the
    first level's target went into memory that was not there, every pass down the chain read zeros and the frame it
    was added to came out white. Here texture_half_res is Always: a 512 by 512 texture of ten levels made over a drawn
-   target is whole and holds the target's pixels */
+   target is whole and holds the target's pixels; one made before its target is drawn has its level back when the
+   target's pixels go into it */
 #define TAKE_LEVELS_GVA 0xCC8000000ull
 #define TAKE_LEVELS_CPU (HEAP_BASE + 0x40400000)
 
@@ -20,7 +21,7 @@ static void take_levels_tic(u32* tic, u64 gva) {
 
 static int check_take_levels(void) {
     const u64 over = TAKE_LEVELS_GVA, before = TAKE_LEVELS_GVA + 0x400000;
-    static const u8 red[4] = {255, 0, 0, 255};
+    static const u8 red[4] = {255, 0, 0, 255}, blue[4] = {0, 0, 255, 255};
     const int half = g_settings.texture_half_res;
     u32 tic_over[8], tic_before[8];
     u8 px[4] = {0};
@@ -57,8 +58,22 @@ static int check_take_levels(void) {
                 "%u (0 and 0 expected) and its first pixel is %02x%02x%02x%02x, not the target's ff0000ff\n",
                 t ? t->shed : -1, t ? t->lod_floor : 99, px[0], px[1], px[2], px[3]);
     CHECK(whole && read && !memcmp(px, red, 4));
+    /* the one made before: its target drawn now, its level comes back for the target's pixels */
+    rt_clear(ch, before, 512, 512, 4, 1);
+    vk_lock();
+    const int same = vk_tex_from_tic(tic_before) == late;
+    const u32 floor = late->lod_floor;
+    memset(px, 0, sizeof px);
+    const int read_late = !read_pixel0(late, px);
+    vk_unlock();
     g_settings.texture_half_res = half;
-    puts("texture levels from targets: made whole over a drawn target");
+    if (!same || floor || !read_late || memcmp(px, blue, 4))
+        fprintf(stderr,
+                "texture levels from targets: the texture made before its target (the same one %d) samples from level "
+                "%u (0 expected) and its first pixel is %02x%02x%02x%02x, not the target's 0000ffff\n",
+                same, floor, px[0], px[1], px[2], px[3]);
+    CHECK(same && floor == 0 && read_late && !memcmp(px, blue, 4));
+    puts("texture levels from targets: made whole over a drawn target, and its level back for a target drawn later");
     free(ch);
     return 0;
 }

@@ -1318,6 +1318,22 @@ static void check_take_skip(void) {
     tex_take_drawn(&t);
     tex_take_drawn(&t);
     CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
+    /* a texture sampled from level 1 on (made at half its resolution): its level 0 gets its memory back for the
+       target drawn for it, which is copied into it, and the texture samples from level 0 again */
+    Surf half = tex(64, 64, 1, 2, 4, 2, 0, 1);
+    half.sparse = half.shed = 1;
+    half.lod_floor = 1;
+    half.wgen = 9;
+    g_sparse.on = 1;
+    g_sparse.bound = 2; /* level 1 alone */
+    g_drawn_target = &s;
+    g_drawn_fresh = 1;
+    s.wgen++;
+    g_take_gen_now++;
+    g_image_copies = 0;
+    tex_take_drawn(&half);
+    CHECK(g_image_copies == 1 && half.lod_floor == 0 && g_sparse.bound == 3);
+    g_sparse.on = 0;
     g_drawn_target = NULL;
     g_drawn_fresh = 0;
     vkCmdCopyImage = NULL;
