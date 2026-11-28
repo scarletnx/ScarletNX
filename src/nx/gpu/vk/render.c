@@ -585,6 +585,53 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
    surface the worker is about to use whose bytes meet a target of the journal (jn_meets: a draw that samples what an
    earlier draw of its half drew) applies the journal first, under the share lock (jn_flush), as the draws made it.
    The worker writes the journal during its run, and the renderer thread reads it after the join's wait */
+/* What the renderer thread's half of a split run writes, for the worker (draw_batches=2): the bytes of the targets of
+   its draws, at most as a target there can cover (rdep_add). The worker's half comes after it on the GPU, so a worker
+   draw that samples them must see the renderer thread's half whole: it waits for that half's end (the join's
+   g_split.waiting, rdep_wait), as its own lookups would otherwise take a target's state part-way through. Taken by the
+   renderer thread for its running draw before the kick, and by the worker for the records it applies before its half.
+   The worker's alone from the kick to the join */
+#define RDEP_MAX 32
+static struct {
+    struct {
+        u64 lo, hi;
+    } r[RDEP_MAX];
+    u32 n;
+    int all;  /* more targets than r holds: every surface the worker reads waits */
+    u64 waits; /* the worker's waits, for the stats line */
+} g_rdep;
+static _Thread_local int t_rdep; /* the worker of a split run, before it waited for the renderer thread's half */
+/* the bytes a target the guest lays out as t can cover, rounded up: pitch-linear rows of its pitch, else block-linear
+   rows of 64 bytes and the tallest block (128 rows), its layers (a volume's slices to 32) or their stride */
+static void rdep_add(const DsSurf* t, int depth) {
+    if (!t->gva || !t->width || !t->height) return;
+    if (g_rdep.n == RDEP_MAX) {
+        g_rdep.all = 1;
+        return;
+    }
+    const u32 bpp0 = depth ? vk_zt_format(t->format).bpp : vk_rt_format(t->format).bpp, bpp = bpp0 ? bpp0 : 16;
+    const int linear = !depth && (t->mem >> 12 & 1), volume = !depth && (t->mem >> 16 & 1);
+    const u64 rows = linear ? t->height : ((u64)t->height + 127) & ~127ull;
+    const u64 pitch = linear ? t->width : (((u64)t->width * bpp) + 63) & ~63ull;
+    const u64 layer = pitch * rows;
+    const u64 layers = t->layers ? t->layers : 1, n = volume ? (layers + 31) & ~31ull : layers;
+    const u64 stride = t->layer_stride > layer ? t->layer_stride : layer;
+    g_rdep.r[g_rdep.n].lo = t->gva;
+    g_rdep.r[g_rdep.n++].hi = t->gva + stride * n;
+}
+static void rdep_add_targets(const DsTargets* tg) {
+    for (u32 i = 0; i < tg->count && i < DS_TARGETS_MAX; i++) rdep_add(&tg->color[i], 0);
+    rdep_add(&tg->depth, 1);
+}
+static int rdep_meets(const Surf* t) {
+    if (!t_rdep || !t) return 0;
+    if (g_rdep.all) return 1;
+    const u64 lo = t->gva, hi = lo + (t->is_rt ? vk_rt_bytes(t) : t->size);
+    for (u32 k = 0; k < g_rdep.n; k++)
+        if (g_rdep.r[k].lo < hi && lo < g_rdep.r[k].hi) return 1;
+    return 0;
+}
+static void rdep_wait(void);
 #define JN_MAX     512
 #define JN_TARGETS 16
 static struct {
@@ -2708,6 +2755,10 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const u64 t0 = g_ph.in_sets ? ph_now() : 0;
     tex_resolve_(ds, handle, x);
+    if (rdep_meets(x->t)) { /* over a target the renderer thread's half writes: that half whole first */
+        rdep_wait();
+        tex_resolve_(ds, handle, x);
+    }
     if (jn_meets(x->t)) { /* over a target this half drew: its writes first, then the lookup again */
         jn_flush();
         tex_resolve_(ds, handle, x);
@@ -2922,6 +2973,10 @@ static int fs_last_holds(const TexRes* res, const TexOver* over, int nt, u32 ww_
     for (int i = 0; i < nt; i++) {
         const Surf* t = res[i].t;
         if (!t) continue;
+        if (rdep_meets(t)) { /* over a target the renderer thread's half writes: that half whole first */
+            rdep_wait();
+            return 0;
+        }
         if (jn_meets(t)) { /* over a target this half drew: its writes first, and the textures looked up again */
             jn_flush();
             return 0;
@@ -7949,6 +8004,10 @@ static void split_log(void) {
             "present before it, for a draw that samples what its half drew\n",
             (double)g_jn.entries / 600.0, (double)g_jn.flushes / 600.0);
         g_jn.entries = g_jn.flushes = 0;
+        LOG("vulkan: draw_batches=2: the worker waited for the renderer thread's half %.1f times a present, at a surface "
+            "that half writes\n",
+            (double)g_rdep.waits / 600.0);
+        g_rdep.waits = 0;
         LOG("vulkan: draw_batches=2: the renderer thread's steps of the splits, ms a present: the peeks %.3f (%.0f a "
             "present), the copies %.3f, the hold and command buffers %.3f, the kicks %.3f, the joins %.3f\n",
             (double)g_split.t_peek * per, (double)g_split.peeks / 600.0, (double)g_split.t_snap * per,
@@ -7976,6 +8035,20 @@ static void split_log(void) {
     g_split.splits = g_split.draws = g_split.submitted = g_split.serials = 0;
     g_split.t_peek = g_split.t_snap = g_split.t_cmd = g_split.t_kick = g_split.t_join = g_split.peeks = 0;
 }
+/* the worker, at a surface the renderer thread's half writes: it waits for that half's end (the join raises
+   g_split.waiting), with none of its takes of the share lock held, which that half needs. Then it reads the half's
+   writes whole, as the GPU will have them before its own draws */
+static void rdep_wait(void) {
+    const u32 held = vk_share_release_all();
+    for (u32 spins = 0; !atomic_load_explicit(&g_split.waiting, memory_order_acquire); spins++)
+        if (spins & 255)
+            plat_spin_hint();
+        else
+            plat_yield();
+    vk_share_retake(held);
+    t_rdep = 0;
+    g_rdep.waits++;
+}
 /* a record the worker left to the splice (a reset or a report of the samples-passed counter), run there by the
    renderer thread after the commands before it */
 static void split_record_run(const void* arg) {
@@ -7997,7 +8070,8 @@ static void render_split_run(void) {
     g_jn.n = g_jn.nt = 0; /* the join applied the last run's */
     t_jn = 1;
     for (u32 i = 0; i < g_split.apply; i++)
-        if (!g_split.defer[i]) gpu_ds_batch_apply(g_split.recs[i]);
+        if (!g_split.defer[i]) rdep_add_targets(&gpu_ds_batch_apply(g_split.recs[i])->tgt);
+    t_rdep = 1;
     for (u32 i = g_split.apply; i < g_split.apply + g_split.n; i++) {
         if (g_split.defer[i]) { /* run at the splice, in its place among the commands */
             vk_rec_defer(split_record_run, &g_split.recs[i], sizeof g_split.recs[i]);
@@ -8012,6 +8086,7 @@ static void render_split_run(void) {
         g_vk.has_descriptor_heaps = heaps;
     }
     t_jn = 0;
+    t_rdep = 0;
     vk_rec_list_parallel(0);
     g_split.ok = vk_rec_list_end();
     vk_surf_view_reset();
@@ -8070,7 +8145,7 @@ static void render_split_join(void) {
     g_split.t_join += ph_now() - tj;
 }
 /* the renderer thread, before it draws the running record */
-static void render_split(void) {
+static void render_split(const DsState* running) {
     if (g_settings.draw_batches != 2 || g_split.pending || g_draw_depth || !gpu_ds_running()) return;
     const u64 t0 = ph_now();
     const u32 n = gpu_ds_batch(g_split.recs, g_split.defer, BATCH_MAX);
@@ -8098,6 +8173,9 @@ static void render_split(void) {
        spliced after this thread's draws, its transition threw them away. One game's shadow map lost its first half
        of casters, and the town had no sunlight */
     if (g_rp[0].open && !g_rp[0].begun) rp_record();
+    g_rdep.n = 0; /* the running draw's targets: the renderer thread's half's first (the worker adds the rest) */
+    g_rdep.all = 0;
+    rdep_add_targets(&running->tgt);
     vk_share_active(1); /* before the worker's first call */
     const u64 t3 = ph_now();
     g_split.t_snap += t2 - t1;
@@ -8116,7 +8194,7 @@ static void render_split(void) {
 }
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE_V(z, "vk: draw", dc->count);
-    render_split();
+    render_split(ds);
     int heaps = g_vk.has_descriptor_heaps;
     static int prep_init;
     if (!prep_init) {
