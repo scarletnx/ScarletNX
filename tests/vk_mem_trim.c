@@ -617,6 +617,30 @@ static int copies_go_aside(void) {
     return counted && went;
 }
 
+/* A trim for headroom while the free space inside the heap's blocks is in pieces: the use the caches count
+   (vk_mem_use, without those pieces) is under the trim's start, while the heap's own use is at its budget. Without
+   running the trim's steps, a target with pixels memory lacks stayed until an allocation failed and forced a trim,
+   skipping draws meanwhile. 1 when the target went on the non-forced trim */
+static int headroom_in_pieces(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* s = target(0x72000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    CHECK(!lossless(s));
+    g_use = g_budget - 3 * trim_head(g_budget); /* under the trim's start and every step's mark */
+    g_heap_use = g_budget;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(0, 0);
+    const int went = targets_held() == 0 && g_deferred == 16 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "headroom_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    return went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -647,6 +671,8 @@ int main(void) {
     CHECK(forced_in_pieces());
     /* a target set aside lets its copies go, but its save copy */
     CHECK(copies_go_aside());
+    /* a trim for headroom with the heap's free space in pieces reaches the trim's steps */
+    CHECK(headroom_in_pieces());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "

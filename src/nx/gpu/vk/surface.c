@@ -3915,7 +3915,6 @@ static u64 trim_head(u64 budget) {
     return head > budget / 4 ? budget / 4 : head;
 }
 static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
-static u32 g_heap_swept; /* the present the heap's own use last freed the superseded targets (+1) */
 static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
 static u64 g_oom_bytes; /* the smallest size that found none in that present */
 static u32 g_oom_target; /* the same of render targets */
@@ -4100,6 +4099,7 @@ void vk_mem_trim(u64 extra, int force) {
     vk_mem_use(&usage, &budget);
     usage += extra;
     const u64 head = trim_head(budget);
+    int heap_full = 0;
     if (force) {
         /* An allocation found no memory: the heap is at its budget, or the free space inside its blocks is in pieces
            no run of the request's fits. The use the caches count leaves those pieces out (vk_mem_use), and in a
@@ -4113,20 +4113,12 @@ void vk_mem_trim(u64 extra, int force) {
     } else if (usage <= vk_mem_trim_start(budget)) {
         /* The caches count the free space inside the blocks as room, but a request takes only a run of its own kind
            and size, and the driver's heap can be at its budget while that space is in pieces no request takes. Then
-           the render targets later ones drew all over go after two presents, once a present, though the hold below
-           would keep them for a second: they are lossless. A game at a dynamic resolution that places its frame's
-           targets in one pool, at offsets that move each frame, made about 30 targets a frame at 30 frames a
-           second. A second of them held 5 to 8 GB of a 14.6 GB budget while the caches counted 3 GB of room in the
-           blocks, so no trim ran until an image found no memory, every second and a half: the forced trim then freed
-           5 to 8 GB of targets, too late for that image, and its draws went without it. The textures that took
-           targets' pixels where later targets drew all over go with them (tex_superseded) */
-        if (g_heap_swept != g_vk_present + 1 && vk_mem_heap_use() + extra > vk_mem_trim_start(budget)) {
-            g_heap_swept = g_vk_present + 1;
-            g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
-            g_trimmed += vk_tex_reclaim_superseded(vk_present_before(0, 2), ~0ull);
-            g_trimmed += rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
-        }
-        return;
+           the trim runs against the heap's own use, taking targets drawn over after two presents even where the
+           driver pages, before an allocation fails and skips draws */
+        const u64 heap = vk_mem_heap_use() + extra;
+        if (heap <= vk_mem_trim_start(budget)) return;
+        heap_full = 1;
+        usage = heap;
     }
     SNX_ZONE_V(z, "vk mem trim", force);
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
@@ -4152,8 +4144,8 @@ void vk_mem_trim(u64 extra, int force) {
        presents (21% in a quieter one) had the shape of one freed in the 120 presents before. Each was a new image
        and, for the large ones, memory of its own: a call to the driver of 0.64 ms where it moves memory, 0.29 ms
        where it doesn't. A trim for an allocation (force) still takes them after two presents */
-    const u32 superseded_before = g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8)
-                                                               : vk_present_before(0, 2);
+    const u32 superseded_before =
+        g_vk.has_pageable && !force && !heap_full ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
     /* the copies of targets no bind asked for lately go with them: made again from their targets */
     u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) +
                      rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
