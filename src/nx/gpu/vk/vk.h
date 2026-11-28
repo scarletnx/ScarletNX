@@ -568,8 +568,8 @@ enum {
 void vk_uma_refused(int why);
 void vk_uma_writes_commit(void);                         /* the draw or dispatch was recorded */
 /* the compute program whose writes vk_uma_writes_commit takes next, 0 for a draw's (compute.c sets it around the
-   commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, so its dispatches
-   go to the GPU at once */
+   commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, and one waited for
+   a write of it in the last 600 presents, so its dispatches go to the GPU at once */
 void vk_uma_writer(u64 prog);
 int vk_uma_read_soon(u64 prog);
 void vk_uma_writes_abort(void);                          /* it wasn't */

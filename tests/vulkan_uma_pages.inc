@@ -361,3 +361,73 @@ static int check_uma_pages_old(void) {
            "there waits for its barrier\n");
     return 0;
 }
+
+/* A program whose write in place a CPU reader waited for while it was still in the submission being recorded has its
+   dispatches go to the GPU at once (vk_uma_read_soon), each in a submission of its own, for as long as a reader waited
+   for one of its writes in the last 600 presents. Kept for good, a reader that came once, as in a game's loading,
+   kept a race's programs going at once after it, with no reader left. A reader of a write already submitted keeps
+   the program going at once */
+#define UPG_S  (HEAP_BASE + 0x2a800000)
+#define UPG_GS 0x5fb000000ull
+static int upg_soon_write(u64 prog, int submit) {
+    VkBuffer w;
+    u64 wo;
+    vk_lock();
+    vk_uma_writer(prog);
+    CHECK(vk_buf_copy_writable(UPG_GS + 0x100, 256, &w, &wo, 1));
+    const int inplace = !vk_buf_pending(UPG_GS + 0x100, 256);
+    CHECK(!owned_test_fill(w, wo, 256, 0x51));
+    vk_buf_writable_commit();
+    vk_uma_writer(0);
+    if (submit) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_unlock();
+    CHECK(inplace);
+    return 0;
+}
+static int check_uma_soon(void) {
+    const u64 prog = 0x5eedc0de5eedull;
+    const u32 present = g_vk_present;
+    u8 bytes[16];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int copies = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 1;
+    CHECK(mem_map(UPG_S, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UPG_GS, UPG_S, 0x200000);
+    memset(GP(UPG_S), 0x50, 0x1000);
+    g_renderer->mem_may_have_changed();
+    /* the reader waits for the write still in the submission being recorded */
+    const int before = vk_uma_read_soon(prog);
+    CHECK(!upg_soon_write(prog, 0));
+    CHECK(!gmem_read(UPG_GS + 0x100, bytes, sizeof bytes));
+    const int added = vk_uma_read_soon(prog) && bytes[0] == 0x51;
+    g_vk_present = present + 601;
+    const int expired = !vk_uma_read_soon(prog);
+    /* a reader of a submitted write, 500 presents on, keeps it 600 more */
+    g_vk_present = present + 500;
+    CHECK(!upg_soon_write(prog, 1));
+    CHECK(!gmem_read(UPG_GS + 0x100, bytes, sizeof bytes));
+    g_vk_present = present + 1100;
+    const int kept = vk_uma_read_soon(prog);
+    g_vk_present = present + 1101;
+    const int gone = !vk_uma_read_soon(prog);
+    g_vk_present = present;
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    CHECK(mem_unmap(UPG_S, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    g_settings.guest_buffers_copied = copies;
+    if (before || !added || !expired || !kept || !gone)
+        fprintf(stderr,
+                "dispatches at once: before any reader %d, after one waited %d, gone 601 presents later %d (1 "
+                "expected); a reader of a submitted write 500 presents on: still there 600 later %d, gone 601 "
+                "later %d\n",
+                before, added, expired, kept, gone);
+    CHECK(!before && added && expired && kept && gone);
+    printf("in place: a program's dispatches go at once while a CPU reader waited for its writes in the last 600 "
+           "presents\n");
+    return 0;
+}

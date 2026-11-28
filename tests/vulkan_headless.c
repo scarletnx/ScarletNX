@@ -9168,6 +9168,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "pages_counts") && ++ran) CHECK(!check_uma_pages_counts());
         if (!strcmp(name, "pages_partial") && ++ran) CHECK(!check_uma_pages_partial());
         if (!strcmp(name, "pages_old") && ++ran) CHECK(!check_uma_pages_old());
+        if (!strcmp(name, "soon") && ++ran) CHECK(!check_uma_soon());
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
 #if !defined(_WIN32)
@@ -9197,7 +9198,7 @@ static int run_headless(int argc, char** argv) {
                     "dispatch_open, "
                     "nvdec, prefetch, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
-                    "pages_producers, pages_counts, pages_partial, pages_old, "
+                    "pages_producers, pages_counts, pages_partial, pages_old, soon, "
                     "texture_region, dma_region, region_dmabuf_trap, "
                     "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
                     "region_watch_engine, region_table, region_stays, "
@@ -9247,6 +9248,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_pages_producers());
         CHECK(!check_uma_pages_partial());
         CHECK(!check_uma_pages_old());
+        CHECK(!check_uma_soon());
         CHECK(!check_uma_texture_region());
         CHECK(!check_uma_dma_region());
         CHECK(!check_uma_alias_in_place());
@@ -9542,6 +9544,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_pages_producers());
     CHECK(!check_uma_pages_partial());
     CHECK(!check_uma_pages_old());
+    CHECK(!check_uma_soon());
     CHECK(!check_uma_texture_region());
     CHECK(!check_uma_dma_region());
     CHECK(!check_uma_alias_in_place());
