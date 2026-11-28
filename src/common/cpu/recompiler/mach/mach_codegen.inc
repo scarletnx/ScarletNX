@@ -1396,10 +1396,19 @@ static int bitfield(Unit* u, SnxU32 word) {
     unsigned sf = word >> 31, opc = word >> 29 & 3, n = word >> 22 & 1, immr = word >> 16 & 63, imms = word >> 10 & 63;
     unsigned rn = word >> 5 & 31, rd = word & 31, d = sf ? 64 : 32;
     SgD v, r;
-    if ((word >> 23 & 0x3F) != 0x26 || (opc != 0 && opc != 2) || n != sf || (!sf && (immr > 31 || imms > 31))) return 0;
+    if ((word >> 23 & 0x3F) != 0x26 || opc == 3 || n != sf || (!sf && (immr > 31 || imms > 31))) return 0;
     v = xzr_or(g, rn);
     if (!sf) v = sg_d_slice(g, v, 31, 0);
-    if (opc == 2) {
+    if (opc == 1) {
+        /* BFM: Rd with one field of it Rn's bits, one mask and not the Sail's two (wmask, then tmask) */
+        if (rd == 31) return 1;
+        r = sg_GPR_read(g, rd);
+        if (!sf) r = sg_d_slice(g, r, 31, 0);
+        if (imms >= immr)
+            sg_d_set_slice(g, &r, imms - immr, 0, sg_d_slice(g, v, imms, immr)); /* BFXIL */
+        else
+            sg_d_set_slice(g, &r, d - immr + imms, d - immr, sg_d_slice(g, v, imms, 0)); /* BFI, BFC */
+    } else if (opc == 2) {
         if (imms == d - 1) r = sg_d_lsr(g, v, immr);                   /* LSR */
         else if (imms + 1 == immr) r = sg_d_lsl(g, v, d - 1 - imms);   /* LSL */
         else if (imms >= immr) r = sg_d_zext(g, sg_d_slice(g, v, imms, immr), d); /* UBFX, UXTB, UXTH */
@@ -1424,14 +1433,35 @@ static int reverse(Unit* u, SnxU32 word) {
     if (!sf) v = sg_d_slice(g, v, 31, 0);
     if (!opc)
         r = MG_RBIT(u, v);
-    else if (opc == 1 && sf) { /* REV16's halves of X: each byte with its neighbour */
-        SgD m = sgx_const(64, 0x00FF00FF00FF00FFull);
-        r = sg_d_or(g, sg_d_and(g, sg_d_lsr(g, v, 8), m), sg_d_lsl(g, sg_d_and(g, v, m), 8));
+    else if (opc == 1 && sf) {
+        /* REV16's halves of X: each byte with its neighbour. The odd bytes are v less its even ones, so the mask is
+           one constant in a register and not two */
+        SgD even = sg_d_and(g, v, sgx_const(64, 0x00FF00FF00FF00FFull));
+        r = sg_d_or(g, sg_d_lsl(g, even, 8), sg_d_lsr(g, sg_d_xor(g, v, even), 8));
     } else {
         sgx_flat(sgx(g), &v);
         r = SGX_OP(sgx(g), rev, w, v);
-        if (opc != 2 + sf) r = sg_d_or(g, sg_d_lsl(g, r, w / 2), sg_d_lsr(g, r, w / 2)); /* the halves back in order */
+        if (opc != 2 + sf) r = sg_d_ror(g, r, w / 2); /* the halves back in order */
     }
+    if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
+    return 1;
+}
+
+/* EXTR: the w bits from lsb up of Rn:Rm, by shifts of w bits and not the Sail's concatenation of 2w; a rotation where
+   the two are one register (ROR's alias) */
+static int extract(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned sf = word >> 31, lsb = word >> 10 & 63, rm = word >> 16 & 31, rn = word >> 5 & 31, rd = word & 31;
+    unsigned w = sf ? 64 : 32;
+    if ((word & 0x7FA00000u) != 0x13800000u || (word >> 22 & 1) != sf || lsb >= w) return 0;
+    SgD lo = xzr_or(g, rm), hi = xzr_or(g, rn), r;
+    if (!sf) lo = sg_d_slice(g, lo, 31, 0), hi = sg_d_slice(g, hi, 31, 0);
+    if (!lsb)
+        r = lo;
+    else if (rn == rm)
+        r = sg_d_ror(g, lo, lsb);
+    else
+        r = sg_d_or(g, sg_d_lsr(g, lo, lsb), sg_d_lsl(g, hi, w - lsb));
     if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
     return 1;
 }
@@ -1956,8 +1986,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (!k) return 0;
             break;
         }
-        if (bitfield(u, word) || reverse(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) ||
-            simd_scalar_cvt(u, word) || simd_copy(u, word))
+        if (bitfield(u, word) || reverse(u, word) || extract(u, word) || fp_ldst(u, word, address) ||
+            simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word))
             break;
         {
             int v = struct_ldst(u, word);

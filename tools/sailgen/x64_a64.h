@@ -490,18 +490,24 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
 
 enum { SG_MBReqTypes_Reads, SG_MBReqTypes_Writes, SG_MBReqTypes_All };
 /* x86's ordering (Vol. 3A, 10.2.2) is all Arm's barriers ask but that a store waits for no later load: a barrier of
-   loads alone or of stores alone is nothing, a full one MFENCE */
+   loads alone or of stores alone is nothing. A full one is a locked instruction, which no load or store is reordered
+   with (the same section) as with MFENCE, at a fraction of MFENCE's time: LOCK OR of 0 into the stack's top word,
+   which stays as it was. It writes the flags, so the conditions still on them are made first */
+static inline void sgx_fence(SgCtx* g) {
+    sgx_flags_clobbered(sgx(g));
+    sgx_simple(g, SGX_M_FENCE);
+}
 static inline void sg_DataMemoryBarrier(SgCtx* g, long long domain, long long types) {
     (void)domain;
-    if (types == SG_MBReqTypes_All) sgx_simple(g, SGX_M_FENCE);
+    if (types == SG_MBReqTypes_All) sgx_fence(g);
 }
 static inline void sg_DataSynchronizationBarrier(SgCtx* g, long long domain, long long types, long long nxs) {
     (void)domain, (void)nxs;
-    if (types == SG_MBReqTypes_All) sgx_simple(g, SGX_M_FENCE);
+    if (types == SG_MBReqTypes_All) sgx_fence(g);
 }
-static inline void sg_SpeculativeStoreBypassBarrierToVA(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
-static inline void sg_SpeculativeStoreBypassBarrierToPA(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
-static inline void sg_InstructionSynchronizationBarrier(SgCtx* g) { sgx_simple(g, SGX_M_FENCE); }
+static inline void sg_SpeculativeStoreBypassBarrierToVA(SgCtx* g) { sgx_fence(g); }
+static inline void sg_SpeculativeStoreBypassBarrierToPA(SgCtx* g) { sgx_fence(g); }
+static inline void sg_InstructionSynchronizationBarrier(SgCtx* g) { sgx_fence(g); }
 static inline void sg_ConsumptionOfSpeculativeDataBarrier(SgCtx* g) { (void)g; }
 static inline void sg_SynchronizeErrors(SgCtx* g) { (void)g; }
 static inline void sg_TakeUnmaskedSErrorInterrupts(SgCtx* g) { (void)g; }
@@ -539,7 +545,7 @@ static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long siz
    store-release orders it with a later load-acquire, which x86's store buffer alone would not) */
 static inline void sgx_acquire(SgCtx* g) { (void)g; }
 static inline void sgx_release(SgCtx* g, int after) {
-    if (after) sgx_simple(g, SGX_M_FENCE);
+    if (after) sgx_fence(g);
 }
 
 /* ---- the ABI ----
@@ -829,9 +835,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
     case SGX_K_MACHINE:
         switch (i->op) {
         case SGX_M_FENCE:
-            sgx_byte(b, 0x0F); /* mfence */
-            sgx_byte(b, 0xAE);
-            sgx_byte(b, 0xF0);
+            sgx_bytes(b, "F0 83 0C 24 00"); /* lock or dword ptr [rsp], 0 */
             return;
         case SGX_M_PAUSE:
             sgx_byte(b, 0xF3); /* pause */

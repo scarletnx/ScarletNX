@@ -61,6 +61,20 @@
 #define STALE_TEST    "80 3D ?? ?? ?? ?? 00"
 #define ENTRY_COMPARE "48 81 FE 00 00 01 00"
 
+/* RORX r, r/m, imm8 (VEX.LZ.F2.0F3A F0, three-byte VEX) and ROR r/m, imm8 (C1 /1 with a register: C8 to CF) */
+#define RORX        "C4 ?? 7B F0|C4 ?? FB F0"
+#define ROR_IMM     "C1 C8|C1 C9|C1 CA|C1 CB|C1 CC|C1 CD|C1 CE|C1 CF"
+/* IMUL r64, r/m64 (REX.W 0F AF) */
+#define IMUL_64     "48 0F AF|49 0F AF|4C 0F AF|4D 0F AF"
+/* LOCK OR dword [rsp], 0, the full barrier, and MFENCE */
+#define LOCK_OR_RSP "F0 83 0C 24 00"
+#define MFENCE      "0F AE F0"
+
+/* MOV r64, [rbx + disp8] (REX.W 8B, mod 01, r/m rbx) and MOV [rbx], r64 (REX.W 89, mod 00, r/m rbx): a load of X1
+   to X15 and a store of X0 */
+#define MOV_LOAD_RBX8 "48 8B 43|48 8B 4B|48 8B 53|48 8B 73|48 8B 7B|4C 8B 43|4C 8B 4B"
+#define MOV_STORE_RBX "48 89 03|48 89 0B|48 89 13|48 89 33|48 89 3B|4C 89 03|4C 89 0B"
+
 typedef struct {
     const char* what;
     unsigned needs, without; /* the host's features (and WITH_STALE); those it goes without */
@@ -94,6 +108,33 @@ static const Row k_rows[] = {
     {"rev x0, x1", 0, NEEDS_GFNI, 192, -1, NULL, "DAC00C20"},
     {"rev16 x0, x1", 0, NEEDS_GFNI, 240, -1, NULL, "DAC00420"},
     {"rev16 w0, w1", 0, NEEDS_GFNI, 208, -1, NULL, "5AC00420"},
+    {"rev32 x0, x1 (BSWAP and one rotation)", 0, 0, 44, -1, NULL, "DAC00820"},
+    {"rev16 w0, w1 (BSWAP and one rotation)", 0, 0, 43, -1, NULL, "5AC00420"},
+    /* a bit field moved into a register by one mask of it, not the Sail's two: no rotation (RORX, or ROR by an
+       immediate) before the masks */
+    {"bfi x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B37C1C20"},
+    {"bfxil x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B3442C20"},
+    {"bfi w0, w1, #4, #8", 0, 0, 55, -1, "!" RORX "|" ROR_IMM, "331C1C20"},
+    /* EXTR of W registers by shifts of 32 bits, a rotation where the two are one register */
+    {"extr w0, w1, w2, #12", 0, 0, 47, -1, NULL, "13823020"},
+    {"ror w0, w1, #12", 0, 0, 41, -1, RORX "|" ROR_IMM, "13813020"},
+    /* W registers' products and their sums of 32 bits: no IMUL of 64 */
+    {"mul w0, w1, w2", 0, 0, 42, -1, "!" IMUL_64, "1B027C20"},
+    {"madd w0, w1, w2, w3", 0, 0, 50, -1, "!" IMUL_64, "1B020C20"},
+    {"msub w0, w1, w2, w3", 0, 0, 49, -1, "!" IMUL_64, "1B028C20"},
+    /* a shift by a W register takes the amount as it is */
+    {"lslv w0, w1, w2", 0, 0, 44, -1, NULL, "1AC22020"},
+    {"rorv w0, w1, w2", 0, 0, 44, -1, NULL, "1AC22C20"},
+    /* a full barrier is a locked OR into the stack, once, and no MFENCE */
+    {"dmb ish: the locked OR", 0, 0, 33, -1, "=1 " LOCK_OR_RSP, "D5033BBF"},
+    {"dmb ish: no MFENCE", 0, 0, 33, -1, "!" MFENCE, "D5033BBF"},
+    {"stlr x0, [x1]: the locked OR after its store", 0, 0, 51, -1, "=1 " LOCK_OR_RSP, "C89FFC20"},
+    /* a register of the state as an operand where it is: read by ADD r64, r/m64 (one load, not two), changed by an
+       XOR, an ADD of a constant or a shift of memory (no load, and no MOV to X0's place, [rbx]) */
+    {"add x0, x1, x2 (an operand in the state)", 0, 0, 39, -1, "=1 " MOV_LOAD_RBX8, "8B020020"},
+    {"eor x0, x0, x1 (X0 changed where it is)", 0, 0, 35, -1, "!" MOV_STORE_RBX, "CA010000"},
+    {"add x0, x0, #1 (X0 changed where it is)", 0, 0, 32, -1, "48 83 03 01", "91000400"},
+    {"lsl x0, x0, #3 (X0 changed where it is)", 0, 0, 32, -1, "48 C1 23 03", "D37DF000"},
     {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
     {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
     {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},

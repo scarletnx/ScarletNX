@@ -424,7 +424,11 @@ dropped (a flag two instructions of the block set, a register written twice), co
 nothing reads fold into one (`ADD #1; ADD #2; SUB #3` is nothing; an ADDS's carry is the last addition's, so not
 there), a sum of 0 is its operand where its register is as zero extended as the sum's was, what nothing reads is
 dropped, and an instruction whose result nothing reads but whose flags something does becomes its flags-only
-candidate (SUBS to the zero register: CMP). `sgx_assemble` then gives the
+candidate (SUBS to the zero register: CMP). Last, a general register of the state the region reads once is the
+memory operand of the form that reads it (`ADD r64, [state]`), and one a form tied to it changes and stores back is
+changed where it is (`XOR [state], r64`, `ADD [state], imm`), by the primitive's candidate that takes r/m there; an
+addition that became LEA is ADD again for it unless flags an earlier instruction made are read after it
+(`sgx_fold_state`). `sgx_assemble` then gives the
 virtual registers host ones in one pass (RAX, RCX, RDX, RSI, RDI and R8 to R11; RBX holds the state's address), moving
 a value into the fixed register a form needs (CL, RAX and RDX), out of one it writes, and copying an input a two-operand
 form overwrites where it is read after, and writes each instruction by its encoder; the r/m operand of the same MOV and
@@ -448,7 +452,9 @@ saturating doubling multiplications, the shifts by a register that round or satu
 of a guest's is left to another back end. Guest memory is `CPU.mem` plus the address, a memory operand
 `[M + address + disp]` of the same MOV and MOVZX forms (a byte's and a halfword's store MOV r/m8 and r/m16, the 16-bit
 forms taking the operand-size prefix the opcode column leaves out); an x86 load is already an acquire one, a release
-store is MFENCE after it, a barrier of all accesses MFENCE and one of loads or stores alone nothing (x86's ordering,
+store is a locked OR of 0 into the stack's top word after it (a full barrier at a fraction of MFENCE's time; it
+writes the flags, so conditions still on them are made first), a barrier of all accesses the same and one of loads or
+stores alone nothing (x86's ordering,
 Vol. 3A 10.2.2). The exclusive monitor, the LSE atomics, CAS and CASP, CRC32 and CRC32C call
 `src/common/cpu/recompiler/x64/x64_helpers.c` (cpu.h's ldx, stx, ldxp, stxp and C11 atomics), which the runtime
 library links, through a relocation in an object and at its address in the test; a call spills every value to its
