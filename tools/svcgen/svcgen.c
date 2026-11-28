@@ -396,16 +396,11 @@ static int svc_returns(const Svc* s) {
     return strcmp(s->name, "ExitThread") && strcmp(s->name, "ExitProcess") && strcmp(s->name, "Break") &&
            strcmp(s->name, "ReturnFromException");
 }
-/* Waits can last the rest of the run, so they get no zone. */
-static int svc_zones(const Svc* s) {
-    static const char* const blocking[] = {"SleepThread", "WaitSynchronization", "ArbitrateLock",
-                                           "WaitProcessWideKeyAtomic", "WaitForAddress"};
-    size_t i;
-    if (!svc_returns(s)) return 0;
-    for (i = 0; i < sizeof blocking / sizeof blocking[0]; i++)
-        if (!strcmp(s->name, blocking[i])) return 0;
-    return 1;
-}
+/* Every SVC that returns gets a zone, the waits too (SleepThread, WaitSynchronization, ArbitrateLock,
+   WaitProcessWideKeyAtomic, WaitForAddress): they show where a guest thread blocks and for how long, and that a thread
+   which runs little does not block in the guest's kernel. A wait still open when a capture ends shows as one to its
+   end */
+static int svc_zones(const Svc* s) { return svc_returns(s); }
 
 static void wrapper(const Svc* s, int abi) {
     const char* w = abi == A64 ? "x" : "r";
