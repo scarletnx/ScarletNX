@@ -473,6 +473,94 @@ static void test_hwopus(void) {
 }
 
 /* codec.hook: each function by the handler its SDK's version takes, and none for an SDK that was not read */
+/* A 32-bit game of SDK 10.6.0, the one 32-bit SDK of this API read, through codec.hook's a32 table: its struct holds a
+   word of the session at 0, the rate at 0xc, the channels at 0x10, the time at 0x18 and the reset flag at 0x20 (the
+   multistream one the stream counts at 0x14 and 0x18, the time at 0x20, the flag at 0x28); a decode gives the bytes it
+   used in 4 bytes and takes its output's size, the input and its size from the stack; Finalize clears the first five
+   words (seven); no hook for a 32-bit SDK between the ones read */
+static const SnxArmModule test_arm_module;
+const SnxArmModule* g_arm_mod;
+CPU* hook_a32_cpu(SnxArmCPU* a) { return (void)a, &cpu; }
+static SnxArmCPU arm32;
+#define T_STACK32 0x7f00u
+static u32 call32(u32 sdk, const char* symbol, u32 r0, u32 r1, u32 r2, u32 r3, u32 s0, u32 s1, u32 s2) {
+    u32 versions[HOOK_KEYS] = {0};
+    int first, k;
+    versions[HOOK_SDK] = sdk;
+    k = hook_select(&hook32_table, symbol, versions, &first);
+    if (k < 0) return 0xffffffffu;
+    arm32.mem = g_mem, arm32.mem_size = 0x10000;
+    arm32.r[0] = r0, arm32.r[1] = r1, arm32.r[2] = r2, arm32.r[3] = r3, arm32.r[13] = T_STACK32, arm32.r[14] = 0x8000;
+    snx_st_le32(GP(T_STACK32), s0), snx_st_le32(GP(T_STACK32 + 4), s1), snx_st_le32(GP(T_STACK32 + 8), s2);
+    hook32_fn[k](&arm32);
+    CHECK(arm32.r[15] == 0x8000 && arm32.r[13] == T_STACK32);
+    return arm32.r[0];
+}
+#ifndef SNX_NO_H264
+static void test_hwopus_a32(void) {
+    static const char init[] = "_ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiPvji",
+                      decode[] =
+                          "_ZN2nn5codec33DecodeOpusInterleavedWithHardwareEPNS0_23HardwareOpusDecoderTypeEPjPiPsjPKvj",
+                      multi[] = "_ZN2nn5codec40InitializeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStream"
+                                "DecoderTypeEiiiiPKhPvji",
+                      mfinal[] = "_ZN2nn5codec38FinalizeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStream"
+                                 "DecoderTypeE",
+                      size[] = "_ZN2nn5codec36GetHardwareOpusDecoderWorkBufferSizeEii",
+                      cfinal[] = "_ZN2nn5codec19HardwareOpusDecoder8FinalizeEv";
+    static const u8 mapping[6] = {0, 4, 1, 2, 3, 5};
+    CPU* c = &cpu;
+    HwOpus ref;
+    i16 want[320];
+    u32 consumed, samples, first = 8 + opus_tone[3];
+    g_arm_mod = &test_arm_module;
+    CHECK(call32(0x0a0600, size, 48000, 2, 0, 0, 0, 0, 0) == (u32)nncodec_hwopus_work_size(c, 48000, 2));
+    /* the open: a word that isn't zero at 0 and nothing at 4 or 8, the rate and the channels, the time and the flag
+       zeroed, and nothing past the flag */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(call32(0x0a0600, init, T_DEC(0), 16000, 1, 0x6000, 0x1000, 0, 0) == 0 && live_decoders() == 1);
+    CHECK(snx_ld_le32(GP(T_DEC(0))) != 0 && snx_ld_le32(GP(T_DEC(0) + 4)) == 0xCCCCCCCCu);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0xc)) == 16000 && snx_ld_le32(GP(T_DEC(0) + 0x10)) == 1);
+    CHECK(snx_ld_le64(GP(T_DEC(0) + 0x18)) == 0 && GP(T_DEC(0))[0x20] == 0 && GP(T_DEC(0))[0x21] == 0xCC);
+    /* a decode: the output's size, the input and its size on the stack; the bytes used in 4 bytes, the samples in 4 */
+    memset(&ref, 0, sizeof ref);
+    CHECK(hwopus_open(&ref, 16000, 1, 1, 0, NULL));
+    memcpy(GP(T_IN), opus_tone, first);
+    memset(GP(T_CONSUMED), 0xEE, 16);
+    test_now += 250000;
+    CHECK(call32(0x0a0600, decode, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 640, T_IN, first) == 0);
+    CHECK(hwopus_decode(&ref, opus_tone, first, want, sizeof want, 0, &consumed, &samples) == 0);
+    CHECK(snx_ld_le32(GP(T_CONSUMED)) == first && GP(T_CONSUMED)[4] == 0xEE && snx_ld_le32(GP(T_SAMPLES)) == 320);
+    CHECK(!memcmp(GP(T_OUT), want, sizeof want));
+    hwopus_free(&ref);
+    /* the SDK's own ResetHardwareOpusDecoder sets the flag at 0x20 (hooks.hook's codec family hands it here) */
+    nncodec_hwopus_reset(c, T_DEC(0));
+    CHECK(GP(T_DEC(0))[0x20] == 1 && GP(T_DEC(0))[0x28] == 0xCC);
+    CHECK(call32(0x0a0600, decode, T_DEC(0), T_CONSUMED, T_SAMPLES, T_OUT, 638, T_IN, first) == 7);
+    /* Finalize clears the five words up to the channels, the time and past it left */
+    snx_st_le64(GP(T_DEC(0) + 0x18), 0x1234);
+    nncodec_hwopus_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0 && snx_ld_le32(GP(T_DEC(0) + 0x10)) == 0 && snx_ld_le32(GP(T_DEC(0) + 4)) == 0);
+    CHECK(snx_ld_le64(GP(T_DEC(0) + 0x18)) == 0x1234);
+    /* the class keeps the struct at 8: its Finalize closes that one's decoder */
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(call32(0x0a0600, init, T_DEC(0) + 8, 16000, 1, 0x6000, 0x1000, 0, 0) == 0 && live_decoders() == 1);
+    call32(0x0a0600, cfinal, T_DEC(0), 0, 0, 0, 0, 0, 0);
+    CHECK(live_decoders() == 0 && snx_ld_le32(GP(T_DEC(0) + 8)) == 0 && GP(T_DEC(0))[0] == 0xCC);
+    /* multistream: the stream counts at 0x14 and 0x18, the time at 0x20 and the flag at 0x28; Finalize's seven words */
+    memcpy(GP(T_MAP), mapping, sizeof mapping);
+    memset(GP(T_DEC(0)), 0xCC, 0x40);
+    CHECK(call32(0x0a0600, multi, T_DEC(0), 48000, 6, 4, 2, T_MAP, 0x6000) == 0);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x10)) == 6 && snx_ld_le32(GP(T_DEC(0) + 0x14)) == 4);
+    CHECK(snx_ld_le32(GP(T_DEC(0) + 0x18)) == 2 && snx_ld_le64(GP(T_DEC(0) + 0x20)) == 0 && GP(T_DEC(0))[0x28] == 0);
+    CHECK(GP(T_DEC(0))[0x29] == 0xCC);
+    call32(0x0a0600, mfinal, T_DEC(0), 0, 0, 0, 0, 0, 0);
+    CHECK(live_decoders() == 0 && snx_ld_le32(GP(T_DEC(0) + 0x18)) == 0 && GP(T_DEC(0))[0x28] == 0);
+    /* a 32-bit SDK between: no hook */
+    CHECK(call32(0x090300, init, T_DEC(0), 16000, 1, 0, 0, 0, 0) == 0xffffffffu && live_decoders() == 0);
+    g_arm_mod = NULL;
+}
+#endif
+
 static void test_hwopus_table(void) {
 #define N     "_ZN2nn5codec"
 #define K     "_ZNK2nn5codec"
@@ -641,6 +729,9 @@ int main(void) {
     CHECK(test_out_drops == 1 && test_out_rebuilds == 1);
     cpu.mem = g_mem;
     test_hwopus();
+#ifndef SNX_NO_H264
+    test_hwopus_a32();
+#endif
     test_hwopus_table();
     test_hwacod();
     CHECK(test_objects == 0 && test_events == 0);
