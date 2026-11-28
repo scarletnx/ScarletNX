@@ -10,7 +10,8 @@
    later; the runtime's own work left out, also where a command buffer's end cuts it; a submission the GPU began
    before the one before it ended counted once; values that rise and stay at the guest's clock or a step past it; a
    burst of reports that fills the pool; the submission a report waits for; a counter of 36 valid bits that wraps; a
-   reset, and a clock that went back without one; and a queue without timestamps. */
+   reset, and a clock that went back without one; a queue without timestamps; and the count of the runtime's stretches,
+   with the ones a full pool leaves unmarked said. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +33,11 @@ static int failed, checks;
 
 VkState g_vk;
 u32 g_vk_present;
-void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+static u32 g_said; /* the lines logged */
+void logf_(int lvl, const char* fmt, ...) {
+    (void)lvl, (void)fmt;
+    g_said++;
+}
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     return (void)what, (void)file, (void)line, r == VK_SUCCESS;
 }
@@ -324,10 +329,79 @@ static void timeline(u32 bits) {
           "after the clock went back to 4 ms: %llu and %llu ns", LL(value(a)), LL(value(b)));
 }
 
+/* The runtime's stretches are counted, a nested one with the one around it, with the GPU time left out for them. One
+   that finds every timestamp waiting for its submission has no mark: it is counted apart and said, and its time stays
+   in the span */
+static void stretches(void) {
+    u64 marks, lost, ns;
+    device(64);
+    /* the first report starts the timeline, and its command buffer has no timestamps: a stretch in it has no mark */
+    begin(1, MS, MS);
+    report(0, MS);
+    u32 said = g_said;
+    vk_stamp_runtime_begin();
+    vk_stamp_runtime_end();
+    submit(2 * MS);
+    finish(3 * MS);
+    vk_stamp_runtime_stats(&marks, &lost, &ns);
+    CHECK(marks == 0 && lost == 1 && ns == 0 && g_said == said + 1,
+          "a stretch in a command buffer without timestamps: %llu marked, %llu lost, %llu ns, %u lines said", LL(marks),
+          LL(lost), LL(ns), g_said - said);
+    /* one that begins with no command buffer being recorded needs no mark: the next one begins inside it */
+    m.gpu = 5 * MS;
+    vk_stamp_runtime_begin();
+    begin(1, 5 * MS, 5 * MS);
+    m.gpu = 7 * MS;
+    vk_stamp_runtime_end();
+    const u64 c = report(0, 8 * MS);
+    submit(8 * MS);
+    finish(9 * MS);
+    vk_stamp_runtime_stats(&marks, &lost, &ns);
+    CHECK(marks == 1 && lost == 1 && ns == 2 * MS && value(c),
+          "a stretch begun before its command buffer: %llu marked, %llu lost, %llu ns", LL(marks), LL(lost), LL(ns));
+    begin(2, 10 * MS, 10 * MS);
+    const u64 a = report(1, 10 * MS);
+    m.gpu = 11 * MS;
+    vk_stamp_runtime_begin();
+    vk_stamp_runtime_begin(); /* inside the first: the same stretch */
+    m.gpu = 13 * MS;
+    vk_stamp_runtime_end();
+    m.gpu = 15 * MS;
+    vk_stamp_runtime_end();
+    const u64 b = report(0, 16 * MS);
+    submit(16 * MS);
+    finish(20 * MS);
+    vk_stamp_runtime_stats(&marks, &lost, &ns);
+    CHECK(marks == 2 && lost == 1 && ns == 6 * MS,
+          "one stretch of 4 ms with another inside it: %llu marked, %llu lost, %llu ns", LL(marks), LL(lost), LL(ns));
+    CHECK(value(b) - value(a) == 2 * MS, "2 ms of work around a stretch of 4 ms: a span of %llu ns",
+          LL(value(b) - value(a)));
+    /* the pool full of reports: the stretch after them has no mark, and the report after it none either */
+    begin(3, 30 * MS, 30 * MS);
+    u64 last = 0;
+    for (u32 i = 0; i < STAMP_N; i++) {
+        const u64 n = report(0, 30 * MS + i);
+        if (n) last = n;
+    }
+    said = g_said;
+    m.gpu = 40 * MS;
+    vk_stamp_runtime_begin();
+    m.gpu = 50 * MS;
+    vk_stamp_runtime_end();
+    submit(51 * MS);
+    finish(60 * MS);
+    vk_stamp_runtime_stats(&marks, &lost, &ns);
+    CHECK(marks == 2 && lost == 2 && ns == 6 * MS && g_said == said + 1,
+          "a stretch after a full pool: %llu marked, %llu lost, %llu ns, %u lines said", LL(marks), LL(lost), LL(ns),
+          g_said - said);
+    CHECK(value(last), "the last report of the full pool has no value");
+}
+
 int main(void) {
     timeline(64);
     /* a counter of 36 valid bits wraps every 68 s at 1 ns a tick: the spans are the same across a wrap */
     timeline(36);
+    stretches();
     /* without timestamps on the graphics queue, or without host query reset, no report has one and no pool is made */
     for (u32 i = 0; i < 2; i++) {
         device(64);
