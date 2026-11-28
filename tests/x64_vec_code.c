@@ -36,6 +36,9 @@
 /* MOVMSKPS and MOVMSKPD r32, xmm (0F 50, 66 0F 50): a lane mask the hot code tests */
 #define MOVMSKPS      "0F 50"
 #define MOVMSKPD      "66 0F 50"
+/* TEST dword [rbx + disp32], 0x02000000 (F7 83): the warm path's test of FPCR.DN, before it takes a quiet NaN's lanes
+   (x64_asm.h's sgx_cold_vqnan) */
+#define TEST_DN       "F7 83 ?? ?? ?? ?? 00 00 00 02"
 /* SETNE r/m8 (0F 95): a condition made a value */
 #define SETNE         "0F 95"
 /* JP rel32 (0F 8A); PUSH qword [rsp + disp32] (FF B4 24) and its POPFQ (9D) */
@@ -141,6 +144,15 @@ static const Row k_rows[] = {
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
     {"fmul v0.4s, v1.4s, v2.4s (the hot test with no SETNE)", 0, 0, 832, -1, "!" SETNE, "6E22DC20"},
+    /* the warm path takes the lanes of a quiet NaN of FADD, FSUB, FMUL and FDIV (one test of FPCR.DN), not FMULX's,
+       FABD's or FMLA's */
+    {"fadd v0.4s, v1.4s, v2.4s (the warm path's quiet NaNs)", 0, 0, 816, -1, "=1 " TEST_DN, "4E22D420"},
+    {"fsub v0.2d, v1.2d, v2.2d (the warm path's quiet NaNs)", 0, 0, 864, -1, "=1 " TEST_DN, "4EE2D420"},
+    {"fmul v0.4s, v1.4s, v2.4s (the warm path's quiet NaNs)", 0, 0, 832, -1, "=1 " TEST_DN, "6E22DC20"},
+    {"fdiv v0.2d, v1.2d, v2.2d (the warm path's quiet NaNs)", 0, 0, 864, -1, "=1 " TEST_DN, "6E62FC20"},
+    {"fmulx v0.4s, v1.4s, v2.4s (no warm path of quiet NaNs)", 0, 0, 880, -1, "!" TEST_DN, "4E22DC20"},
+    {"fabd v0.4s, v1.4s, v2.4s (no warm path of quiet NaNs)", 0, 0, 880, -1, "!" TEST_DN, "6EA2D420"},
+    {"fmla v0.4s, v1.4s, v2.4s (no warm path of quiet NaNs)", NEEDS_FMA, 0, 928, -1, "!" TEST_DN, "4E22CC20"},
     {"fcmp s1, s2 (NZCV off UCOMISS's flags: JP out where unordered)", 0, 0, 448, -1, JP_REL32, "1E222020"},
     {"fcmpe d1, d2 (its cold path's flags back by PUSH and POPFQ)", 0, 0, 400, -1, PUSH_RSP_POPFQ, "1E622030"},
     {"frecps v0.4s, v1.4s, v2.4s (the warm path: its hot test with no SETNE)", 0, 0, 768, -1, "!" SETNE, "4E22FC20"},

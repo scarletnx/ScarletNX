@@ -457,7 +457,8 @@ static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) 
 #define FDESC(kind, sz, n) ((SnxU32)(kind) | (SnxU32)(sz ? 8 : 4) << 4 | (SnxU32)(n) << 8)
 /* the guards in two steps: the hot code tests FPCR's mode and FZ and FPSR's IXC (once a region) and
    that every lane of r is a normal number (nr: fnot_roomy's); the cold path tests the rest before its call
-   (x64_asm.h's sgx_cold_vwarm: zacc's bits), back to r where it holds: exact zeros, FZ with no denormal argument */
+   (x64_asm.h's sgx_cold_vwarm: zacc's bits), back to r where it holds: exact zeros, FZ with no denormal argument,
+   quiet NaNs FADD, FSUB, FMUL and FDIV pass on */
 static int fwarm(SgCtx* g, int r, int nr, unsigned sz, int n, int a, int b, int d, SnxU32 desc, unsigned zacc) {
     /* one test of nr's lane bits ORed with the state's bits, once a region: no condition made of each */
     SgD lanes = sgx_val(32, sgx_v1(X, k_fmask[sz], nr, 0));
@@ -493,6 +494,9 @@ static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
     unsigned zacc = op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD ? 1
                     : op == SNX_FP_MUL || op == SNX_FP_MULX                  ? 2
                                                                              : 3;
+    /* a quiet NaN of a or b (neither signalling, FPCR.DN clear): the first one, the host's and FPProcessNaNs' alike
+       (sgx_cold_vqnan). FABD and FMULX keep the call for them */
+    if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_MUL || op == SNX_FP_DIV) zacc |= 0x100;
     r = fwarm(g, r, fnot_roomy(g, sz, r), sz, n, a, b, 0, FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12,
               zacc | 2u << 3);
     if (op == SNX_FP_ABD) r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), r);

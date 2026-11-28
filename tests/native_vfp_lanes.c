@@ -7,7 +7,8 @@
    normal range's ends) in one vector, which the fast paths must leave to the helpers or get exactly right; FPCR and
    FPSR are drawn too (round to nearest or not, FZ, DN, IXC set or clear). With the host's extensions and in the
    portable form, which has no FMA on x86. The instructions whose fast paths don't take the host's rounding (the
-   FRINTs and FCVTs to integers, the estimates) run in each of the host's rounding modes too */
+   FRINTs and FCVTs to integers, the estimates) run in each of the host's rounding modes too. FADD to FDIV run again
+   with lanes of quiet NaNs, which the x86-64 back end's warm path takes (quiet_nans) */
 #include "steps.h"
 #include <fenv.h>
 #include <stdio.h>
@@ -331,6 +332,94 @@ static unsigned bfcvts(int portable) {
     return checks;
 }
 
+/* a lane for quiet_nans: a quiet NaN of either sign and any payload two times in five, else a normal value or
+   lane_value's (a signalling NaN, a denormal, a zero, an infinity among them) */
+static u64 nan_lane(u64* s, int width) {
+    u64 r = next(s), sign = (r >> 63) << (width - 1);
+    int fbits = width == 32 ? 23 : 52;
+    u64 quiet = (u64)(width == 32 ? 0x7FC00000u : 0x7FF8000000000000ull), payload = ((u64)1 << (fbits - 1)) - 1;
+    switch (r % 10) {
+        case 0:
+        case 1:
+        case 2:
+        case 3: return sign | quiet | (next(s) & payload & (r & 16 ? ~0ull : 0));
+        case 4:
+        case 5:
+        case 6: return sign | (u64)(width == 32 ? 0x3F800000u : 0x3FF0000000000000ull) | (next(s) & payload);
+        default: return lane_value(s, width);
+    }
+}
+
+/* FADD, FSUB, FMUL and FDIV by lanes whose arguments are quiet NaNs in one or both, which the x86-64 back end's warm
+   path gives as the host's ADDPx to DIVPx do where FPCR.DN is clear and no argument is a signalling NaN (Arm ARM
+   FPProcessNaNs: the first quiet NaN as it is, no flag): every lane's bits and FPSR against the soft-float helper,
+   with FZ (a denormal in the other argument raises IDC), DN, IXC set or clear and the other rounding modes, a
+   signalling NaN (the first one wins, quieted, and IOC) and an invalid operation in another lane. FMULX and FABD,
+   whose quiet NaNs keep the call, too */
+static unsigned quiet_nans(int portable) {
+    static const struct {
+        const char* name;
+        u32 word;
+        int op;
+    } insns[] = {{"FADD", 0x4E22D420u, SNX_FP_ADD},   {"FSUB", 0x4EA2D420u, SNX_FP_SUB},
+                 {"FMUL", 0x6E22DC20u, SNX_FP_MUL},   {"FDIV", 0x6E22FC20u, SNX_FP_DIV},
+                 {"FMULX", 0x4E22DC20u, SNX_FP_MULX}, {"FABD", 0x6EA2D420u, SNX_FP_ABD}};
+    enum { N = sizeof insns / sizeof *insns };
+    Steps steps;
+    char error[1024];
+    unsigned checks = 0, k, i;
+    u64 seed = 0x94D049BB133111EBull;
+    if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < N; k++)
+        for (unsigned dbl = 0; dbl < 2; dbl++) steps_add(&steps, insns[k].word | dbl << 22, 0x1000, 0);
+    if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < N; k++)
+        for (unsigned dbl = 0; dbl < 2; dbl++) {
+            int width = dbl ? 64 : 32, lanes = 128 / width;
+            Step step = steps_at(&steps, k * 2 + dbl);
+            for (i = 0; i < 40000; i++) {
+                CPU c, ref;
+                RtAPI rt = {.cas128 = snx_runtime_cas128};
+                u64 r = next(&seed), want[4];
+                /* FZ (as games run) or not, DN one time in four, another mode one time in eight; IXC set mostly */
+                u32 fpcr = (r & 1 ? 1u << 24 : 0) | (r % 4 == 2 ? 1u << 25 : 0) | (r % 8 == 5 ? (u32)(r >> 8 & 3) << 22 : 0);
+                u32 fpsr = r & 64 ? 0 : 0x10u;
+                int lane;
+                memset(&c, 0, sizeof c);
+                c.rt = &rt;
+                for (lane = 0; lane < lanes; lane++) {
+                    set_lane(&c.v[1], width, lane, nan_lane(&seed, width));
+                    set_lane(&c.v[2], width, lane, nan_lane(&seed, width));
+                }
+                c.v[0].d[0] = next(&seed);
+                c.v[0].d[1] = next(&seed);
+                c.fpcr = fpcr;
+                c.fpsr = fpsr;
+                ref = c;
+                for (lane = 0; lane < lanes; lane++)
+                    want[lane] = snx_fp_binary_c(&ref, get_lane(&c.v[1], width, lane), get_lane(&c.v[2], width, lane),
+                                                 width, insns[k].op);
+                step_run(step, &c);
+                checks++;
+                for (lane = 0; lane < lanes; lane++)
+                    if (get_lane(&c.v[0], width, lane) != (width == 32 ? (u32)want[lane] : want[lane])) break;
+                if ((lane < lanes || c.fpsr != ref.fpsr) && failures++ < 8) {
+                    fprintf(stderr, "%s %s.%s of quiet NaNs, FPCR %08x, FPSR %08x:", portable ? "the portable" : "the host's",
+                            insns[k].name, dbl ? "2D" : "4S", fpcr, fpsr);
+                    for (lane = 0; lane < lanes; lane++)
+                        fprintf(stderr, " [%llx %llx: %llx, expected %llx]",
+                                (unsigned long long)get_lane(&ref.v[1], width, lane),
+                                (unsigned long long)get_lane(&ref.v[2], width, lane),
+                                (unsigned long long)get_lane(&c.v[0], width, lane),
+                                (unsigned long long)(width == 32 ? (u32)want[lane] : want[lane]));
+                    fprintf(stderr, " FPSR %08x, expected %08x\n", c.fpsr, ref.fpsr);
+                }
+            }
+        }
+    steps_end(&steps);
+    return checks;
+}
+
 int main(void) {
     STEPS_REQUIRE();
     const char* forms[2] = {"the host's", "the portable"};
@@ -516,6 +605,7 @@ int main(void) {
         checks += estimates(portable);
         checks += round_ints(portable);
         checks += bfcvts(portable);
+        checks += quiet_nans(portable);
     }
     printf("Vector FP fast paths through the %s steps: %u checks, %d failed\n", steps_name(), checks, failures);
     return failures != 0;
