@@ -520,7 +520,7 @@ static void flush_to(Unit* u, SnxU64 target) {
 }
 
 /* the machine's instructions of a function's region */
-enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK, SGX_FN_JTAB };
+enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK, SGX_FN_JTAB, SGX_FN_CALL };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
@@ -542,6 +542,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 #ifdef MG_JTAB
     case SGX_FN_JTAB: jtab_jump(u, (int)i->imm); break; /* the target in SGX_FN_TARGET (in[0]) */
 #endif
+    case SGX_FN_CALL: call_target(u, (SnxU64)i->imm, i->disp); break; /* the guest address imm; disp: a tail call */
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -555,6 +556,18 @@ static void machine_target(Unit* u, int op, SgD target) {
     i->in[0] = v;
     i->fixed[0] = SGX_FN_TARGET;
     i->calls = 1;
+}
+
+/* a call of the guest address target (tail: then return) as the region's last instruction, and the region assembled:
+   call_target's code where the region's bytes end, as it was when written after them */
+static void region_call(Unit* u, SnxU64 target, int tail) {
+    SgXIns* i;
+    qc_pay(u); /* FPSR.QC as the region leaves it, before the call: flush would put it after the region's last */
+    i = sgx_append(&u->g->x, SGX_K_MACHINE);
+    i->op = SGX_FN_CALL;
+    i->imm = (long long)target;
+    i->disp = tail;
+    flush(u);
 }
 
 /* a branch's condition at the region's end: JCC to label on its condition code */
@@ -1377,11 +1390,11 @@ static int call_stub(Unit* u, SnxU64 stub, const SnxU32* w, SnxU64 bound, int gu
     sg_GPR_write(g, 16, sgx_const(64, page + (w[2] >> 10 & 0xFFF)));
     flush(u);
     if (guard) mg_if_x_not(u, 17, bound, other);
-    call_target(u, bound, tail);
+    region_call(u, bound, tail);
     if (!tail) jmp(u, join);
     if (other >= 0) {
         bind(u, other);
-        call_target(u, stub, tail);
+        region_call(u, stub, tail);
     }
     if (!tail) bind(u, join);
     return 1;
@@ -1394,12 +1407,12 @@ static int call_or_stub(Unit* u, SnxU64 target, int tail) {
     int guard = 0;
     SnxU64 bound = stub_function(u, target, w, &guard);
     if (bound) return call_stub(u, target, w, bound, guard, tail);
-    call_target(u, target, tail);
+    region_call(u, target, tail);
     return 1;
 }
 #else
 static int call_or_stub(Unit* u, SnxU64 target, int tail) {
-    call_target(u, target, tail);
+    region_call(u, target, tail);
     return 1;
 }
 #endif
@@ -2011,7 +2024,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (bound) {
                 int other = new_label(u);
                 mg_if_pc_not(u, bound, other);
-                call_target(u, bound, 1);
+                region_call(u, bound, 1);
                 bind(u, other);
             }
             if (!u->dispatch) {
@@ -2058,10 +2071,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     }
     /* off the end, or the next instruction not the function's (its addresses are sorted: next is the following
        index's where the function has it) */
-    if (!terminal && !(index + 1 < f->count && snx_function_address(f, index + 1) == next)) {
-        flush(u);
-        call_target(u, next, 1);
-    }
+    if (!terminal && !(index + 1 < f->count && snx_function_address(f, index + 1) == next)) { region_call(u, next, 1); }
     return 1;
 }
 
