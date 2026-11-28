@@ -77,10 +77,10 @@ static int check_alpha_coverage(void) {
                     state->gen[DS_RASTER_KEY] = state->gen[DS_BLEND] = state->gen[DS_DYNAMIC] = ds_generation_next();
                     DrawCall call = {.topology = 4, .count = 3, .instances = 1,
                                      .multisample_flags = coverage == 2 ? DS_MS_A2C_DITHER : 0};
-                    u64 before = g_vk_drawn;
+                    u64 before = vk_drawn();
                     vk_render_draw(state, &call, &channel->owner);
                     vk_render_end();
-                    CHECK(g_vk_drawn == before + 1);
+                    CHECK(vk_drawn() == before + 1);
                     Surf* surface = vk_rt_find(target);
                     CHECK(surface && (u32)vk_surf_samples(surface) == samples);
                     u8 actual[256];

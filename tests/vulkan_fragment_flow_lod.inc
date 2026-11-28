@@ -99,13 +99,13 @@ static int flow_lod_pass(GpuChannel* channel, u64 gpu, u32 offset, int loop, VkS
     int device_reconverges = g_spirv_translate.maximal_reconvergence;
     g_vk_subgroup_stages = stages;
     g_spirv_translate.maximal_reconvergence = reconverges;
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(state, &draw, &channel->owner);
     vk_render_end();
     g_vk_subgroup_stages = device_stages;
     g_spirv_translate.maximal_reconvergence = device_reconverges;
-    int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
+    int drew = vk_drawn() == drawn + 1 && g_vk_skipped == skipped;
     if (!drew) fprintf(stderr, "fragment flow lod, %s, %s: the draw was skipped\n", loop ? "loop" : "branch", what);
     CHECK(drew);
     Surf* surface = vk_rt_find(target);

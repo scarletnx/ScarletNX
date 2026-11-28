@@ -134,9 +134,9 @@ static int check_nvn_subroutine_calls(void) {
             DrawClear clear = {.color_mask = 15, .color = {0, 0, 0x3f800000, 0x3f800000}};
             vk_render_clear(state, &clear, &channel->owner);
             DrawCall call = {.topology = 0, .count = 1, .instances = 1};
-            u64 drawn = g_vk_drawn;
+            u64 drawn = vk_drawn();
             vk_render_draw(state, &call, &channel->owner);
-            CHECK(g_vk_drawn == drawn + 1);
+            CHECK(vk_drawn() == drawn + 1);
             vk_render_end();
             Surf* surface = vk_rt_find(target);
             VkBuffer buffer;

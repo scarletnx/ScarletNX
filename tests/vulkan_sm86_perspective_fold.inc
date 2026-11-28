@@ -84,7 +84,7 @@ static int pf86_draw(GpuChannel* channel, u64 target, u64 vertices, const float 
     u32* r = channel->r3d;
     r[0x7c0] = (u32)((vertices + sizeof bytes - 1) >> 32);
     r[0x7c1] = (u32)(vertices + sizeof bytes - 1);
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     const u32 size = PF86_W * PF86_H * 16;
     int sm86 = g_shader_sm86;
     g_shader_sm86 = 1;
@@ -94,7 +94,7 @@ static int pf86_draw(GpuChannel* channel, u64 target, u64 vertices, const float 
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     g_shader_sm86 = sm86;
     Surf* surface = vk_rt_find(target);

@@ -52,13 +52,13 @@ static int ms_indexed_fetch(GpuChannel* ch, u64 base, const u32 tic[8], const u8
         CHECK(index_program(code, ops, sizeof ops / sizeof *ops, 1));
         r[0x851] = (u32)(code - base);
         DrawCall call = {.topology = 4, .first = 3, .count = 3, .instances = 1};
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_lock();
         ch->r3d_dirty = ~0u;
         mx_draw_state_sync(ch);
         vk_render_draw(&ch->ds, &call, &ch->owner);
         vk_render_end();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         Surf* output = vk_rt_find(target);
         CHECK(output && !output->msaa && !ms_read_pixels(output, 4, 4, pixels));
         vk_unlock();

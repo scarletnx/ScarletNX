@@ -874,7 +874,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 was_reads = g_vk_cs_cpu_reads;
             }
 #endif
-            SNX_PLOT("draws", (double)(g_vk_drawn - was_drawn));
+            SNX_PLOT("draws", (double)(vk_drawn() - was_drawn));
             SNX_PLOT("shaders", (double)(is[4] - was[4]));
             SNX_PLOT("pipelines", (double)(is[0] - was[0]));
             SNX_PLOT("pipeline cache hits", (double)(is[1] - was[1]));
@@ -893,7 +893,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             for (u32 k = 0; k < VK_WAIT_N; k++)
                 SNX_PLOT(wait_plot_name(k), (double)(is[12 + k] - was[12 + k]) / 1e6);
 #endif
-            was_drawn = g_vk_drawn;
+            was_drawn = vk_drawn();
             if (d > 50000000) {
                 slow_frames++;
 #if defined(SNX_TRACY)
@@ -1081,7 +1081,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 "%llu descriptor sets written, %llu reused (%u descriptor pools, %llu sets with texture arrays taken "
                 "from them); "
                 "%llu draws kept an earlier one's shaders and pipeline (%llu checked), %llu the last one's targets\n",
-                (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
+                (unsigned long long)vk_drawn(), (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_mesh_draws,
                 (unsigned long long)(g_vk_mesh_draws - g_vk_mesh_drawn), (unsigned long long)g_vk_mesh_task_compute,
                 (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
@@ -1097,7 +1097,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                 /* the GPU thread's cost of the work it replays, a measure that doesn't hang on how fast the scene
                    runs: its busy time a present, and that time over the draws and dispatches it set up */
                 static u64 busy_was, drawn_was, disp_was;
-                const u64 busy = gpu_thread_busy_ns() - busy_was, drawn = g_vk_drawn - drawn_was,
+                const u64 busy = gpu_thread_busy_ns() - busy_was, drawn = vk_drawn() - drawn_was,
                           disp = g_vk_dispatches - disp_was;
                 if (drawn + disp)
                     LOG("vulkan: the GPU thread over the last 600 presents: busy %.2f ms a present, %.2f us a draw "
@@ -1105,7 +1105,7 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (double)busy / 1e6 / 600, (double)busy / 1e3 / (double)(drawn + disp), (double)drawn / 600,
                         (double)disp / 600);
                 busy_was += busy;
-                drawn_was = g_vk_drawn;
+                drawn_was = vk_drawn();
                 disp_was = g_vk_dispatches;
             }
             vk_render_stats_log();

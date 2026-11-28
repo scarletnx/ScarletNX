@@ -3658,7 +3658,10 @@ int vk_memh_mem(void* user, u64 address, u32* words, u32 count);
 /* the access a storage image is moved to GENERAL with: image atomics read it as well as write it, and only the
    accesses a barrier names see the writes before it */
 #define VK_STORAGE_IMAGE_ACCESS (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)
-extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
+extern u64 g_vk_skipped; /* draws skipped (unsupported topology, failed shader) */
+/* the draws recorded, by every thread that sets up draws (render.c: each one counts its own, draw_batches=2) */
+u64 vk_drawn(void);
+void vk_drawn_one(void); /* a draw recorded, counted on this thread's own count */
 /* vertex streams restrided on the GPU for a draw so far (render.c's restride): a stride that isn't a multiple of its
    attributes' components, without VK_EXT_legacy_vertex_attributes */
 u64 vk_render_restrided(void);

@@ -161,10 +161,10 @@ static int late_shadow_bytes(const char* what, u32 coverage, u32 test, const u8*
 }
 static int late_shadow_drawn(const char* phase, u32 coverage, u32 test, const DrawCall* call,
                               u64 drawn, u64 skipped) {
-    if (g_vk_drawn == drawn + 1 && g_vk_skipped == skipped) return 1;
+    if (vk_drawn() == drawn + 1 && g_vk_skipped == skipped) return 1;
     fprintf(stderr, "late shadow %s coverage%u case%u: draw delta%llu skip delta%llu topology%u indexed%u "
                     "indirect%llx count%u records%u\n", phase, coverage, test,
-            (unsigned long long)(g_vk_drawn - drawn), (unsigned long long)(g_vk_skipped - skipped),
+            (unsigned long long)(vk_drawn() - drawn), (unsigned long long)(g_vk_skipped - skipped),
             call->topology, call->indexed, (unsigned long long)call->indirect, call->count, call->draw_count);
     return 0;
 }
@@ -324,7 +324,7 @@ static int check_late_depth_shadow(void) {
             CHECK(vk_depth_shadow_range_aliases(depth_surface, UINT64_MAX - 1, 4));
             CHECK(!vk_depth_shadow_range_aliases(depth_surface, target, 256));
         }
-        u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+        u64 drawn = vk_drawn(), skipped = g_vk_skipped;
         vk_render_draw(state, &call, &channel->owner);
         CHECK(late_shadow_drawn("native baseline", coverage, test, &call, drawn, skipped));
         if (feedback) {
@@ -342,7 +342,7 @@ static int check_late_depth_shadow(void) {
         if (coverage) call.multisample_flags = DS_MS_COVERAGE_TO_COLOR;
         else call.advanced_blend[0] = nvn_set_field(nvn_set_field(nvn_set_field(0, NVN_BLEND_ADV,
             NVN_BLEND_ADVANCED_MODE_HARDLIGHT), NVN_BLEND_ADV_PMS, 1), NVN_BLEND_ADV_NPM, 1);
-        drawn = g_vk_drawn; skipped = g_vk_skipped;
+        drawn = vk_drawn(); skipped = g_vk_skipped;
         vk_render_draw(state, &call, &channel->owner);
         CHECK(late_shadow_drawn("portable draw", coverage, test, &call, drawn, skipped));
         if (feedback) {

@@ -63,11 +63,11 @@ static int lone_lane_pass(GpuChannel* channel, u64 address, u64 cpu, u32 offset,
     VkShaderStageFlags device_stages = g_vk_subgroup_stages;
     g_vk_subgroup_stages = stages;
     vk_lock();
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     DrawCall call = {.topology = 0, .count = LONE_POINTS, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_finish();
-    int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
+    int drew = vk_drawn() == drawn + 1 && g_vk_skipped == skipped;
     vk_unlock();
     g_vk_subgroup_stages = device_stages;
     u32 count = snx_ld_le32(GP(cpu + 0x4000)), wrong = 0, first = LONE_POINTS;

@@ -117,11 +117,11 @@ static int check_indexed_texture_feedback(void) {
             memcpy(clear.color, (const float[4]){1, 0, 0, 1}, sizeof clear.color);
             vk_render_clear(state, &clear, &channel->owner);
         }
-        u64 drawn = g_vk_drawn, copies = g_vk_rt_copies;
+        u64 drawn = vk_drawn(), copies = g_vk_rt_copies;
         u64 uploads = g_vk_itable_uploads, reused = g_vk_itable_reused;
         if (draw) g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1 && g_vk_rt_copies > copies);
+        CHECK(vk_drawn() == drawn + 1 && g_vk_rt_copies > copies);
         if (draw == 1 && vk_frame_id() == uniform_frame)
             CHECK(g_vk_itable_uploads == uploads && g_vk_itable_reused > reused);
         if (draw == 2) CHECK(g_vk_itable_uploads > uploads);

@@ -80,7 +80,7 @@ static int check_capture_cap(void) {
     FILE* log = tmpfile();
     CHECK(log);
     u64 draws = g_vk_capture_draws, primitives = g_vk_capture_primitives, capped = g_vk_capture_capped;
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     t_plat.log_redirect = log;
     int failed = capture_cap_draw(channel, 2, 1, NULL);
     failed |= capture_cap_draw(channel, VK_CAPTURE_PRIMITIVES_MAX + 1, 1, NULL);
@@ -122,6 +122,6 @@ static int check_capture_cap(void) {
     CHECK(g_vk_capture_primitives == primitives + 2 + timed);
     CHECK(g_vk_capture_capped == capped + 2);
     CHECK(g_vk_skipped == skipped + 2);
-    CHECK(g_vk_drawn == drawn + 1 + (timed ? 1 : 0));
+    CHECK(vk_drawn() == drawn + 1 + (timed ? 1 : 0));
     return 0;
 }

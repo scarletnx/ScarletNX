@@ -131,10 +131,10 @@ static int check_cross_stage_blend_snapshots(void) {
             nvn_set_field(nvn_set_field(0, NVN_BLEND_ADV, NVN_BLEND_ADVANCED_MODE_DIFFERENCE), NVN_BLEND_ADV_PMS, 1),
             NVN_BLEND_ADV_NPM, 1);
         for (u32 draw = 0; draw < 2; draw++) {
-            u64 before = g_vk_drawn;
+            u64 before = vk_drawn();
             if (draw) g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
             vk_render_draw(&channel->ds, &call, &channel->owner);
-            CHECK(g_vk_drawn == before + 1);
+            CHECK(vk_drawn() == before + 1);
         }
         vk_render_end();
         Surf* surface = vk_rt_find(target);

@@ -102,9 +102,9 @@ static int check_cross_stage_image_alias(void) {
         state->prog.code[3] = gpu + (draw ? 0x2000 : 0x1800);
         state->prog.code[5] = gpu + (draw ? 0x3400 : 0x3000);
         state->gen[DS_PROGRAMS] = state->gen[DS_TARGETS] = state->gen[DS_TARGET_FORMATS] = ds_generation_next();
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         u64 waits = 0;
         for (u32 i = 0; i < VK_WAIT_N; i++) waits += g_vk_waits[i];

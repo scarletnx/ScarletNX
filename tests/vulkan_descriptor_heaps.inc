@@ -139,7 +139,7 @@ static int check_descriptor_heaps(void) {
             vk_render_clear(state, &clear, &channel->owner);
             if (!aux.pipeline) CHECK(!descriptor_heap_aux_create(&aux));
         }
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         int split_here = 0;
         for (u32 column = 0; column < 7 && !split_here; column++) {
             if (!warm && column == 1) {
@@ -158,7 +158,7 @@ static int check_descriptor_heaps(void) {
             if (column == 5) rectangle.handle = 2u << 20;
             if (column == 6) rectangle.handle = 1, rectangle.sx0 = rectangle.sy0 = .5f;
             vk_render_draw_texture(state, &rectangle);
-            CHECK(g_vk_drawn == drawn + column + 1);
+            CHECK(vk_drawn() == drawn + column + 1);
             if (!warm) {
                 if (!column) {
                     begun = vk_cb_begun();

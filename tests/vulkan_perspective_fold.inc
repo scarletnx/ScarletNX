@@ -38,7 +38,7 @@ static int fold_draw(GpuChannel* channel, u64 target, u64 vertices, const float 
     u32* r = channel->r3d;
     r[0x7c0] = (u32)((vertices + sizeof bytes - 1) >> 32);
     r[0x7c1] = (u32)(vertices + sizeof bytes - 1);
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     const u32 size = FOLD_W * FOLD_H * 16;
     vk_lock();
     rt_clear_format(channel, target, FOLD_W, FOLD_H, 0, 0, 0xC0); /* RGBA32F */
@@ -46,7 +46,7 @@ static int fold_draw(GpuChannel* channel, u64 target, u64 vertices, const float 
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;

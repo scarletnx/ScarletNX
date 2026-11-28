@@ -131,13 +131,13 @@ static int quad_pass(GpuChannel* channel, u64 gpu, u64 cpu, u32 offset, VkShader
     state->blend.mask[0] = 15;
     VkShaderStageFlags device_stages = g_vk_subgroup_stages;
     g_vk_subgroup_stages = stages;
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(state, &draw, &channel->owner);
     vk_render_end();
     vk_finish();
     g_vk_subgroup_stages = device_stages;
-    int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
+    int drew = vk_drawn() == drawn + 1 && g_vk_skipped == skipped;
     vk_unlock();
     if (!drew) fprintf(stderr, "fragment quad, %s: the draw was skipped\n", what);
     CHECK(drew);

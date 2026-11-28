@@ -60,13 +60,13 @@ static int pmg_draw(GpuChannel* channel, u32 program, u8 px[4], VkPoolGpuCounts*
     state->dyn.depth_test = state->dyn.depth_write = state->dyn.stencil_test = state->dyn.alpha_test = 0;
     state->rkey.sample_mask = ~0u;
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
-    const u64 drawn = g_vk_drawn;
+    const u64 drawn = vk_drawn();
     vk_pool_gpu_counts(&a);
     vk_render_draw(state, &call, &channel->owner);
     vk_render_end();
     vk_pool_gpu_counts(&b);
     Surf* surface = vk_rt_find(target);
-    const int ok = g_vk_drawn == drawn + 1 && surface && !read_pixel_at(surface, 0, 0, px);
+    const int ok = vk_drawn() == drawn + 1 && surface && !read_pixel_at(surface, 0, 0, px);
     vk_unlock();
     for (int k = 0; k < VK_POOL_GPU_WHY_N; k++) d->why[k] = b.why[k] - a.why[k];
     d->learned = b.learned - a.learned;

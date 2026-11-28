@@ -562,7 +562,7 @@ static void order_note(PgUse* u, u32* n, int* all, u64 lo, u64 hi, u64 work) {
 static void order_use(u64 lo, u64 hi, int write, int ordered) {
     if (!g_pages.owners) return; /* no draw has written here: every binding reads, and the copies take their own */
     order_begin();
-    u64 work = g_vk_drawn + g_vk_dispatches;
+    u64 work = vk_drawn() + g_vk_dispatches;
     int wait = order_meets(g_pages.order.wr, g_pages.order.nwr, g_pages.order.wr_all, lo, hi, work);
     if (write) {
         wait = (ordered || g_pages.order.required) &&

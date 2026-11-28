@@ -93,9 +93,9 @@ static int check_nvn_advanced_shader(void) {
                     draw.advanced_blend[0] = packed;
                     /* One draw touches each sample twice. A whole-draw composite or a noncoherent path cannot pass this. */
                     if (mode == NVN_BLEND_ADVANCED_MODE_OVERLAY && premultiplied && !overlap) draw.count = 6;
-                    u64 drawn = g_vk_drawn;
+                    u64 drawn = vk_drawn();
                     vk_render_draw(&channel->ds, &draw, &channel->owner);
-                    CHECK(g_vk_drawn == drawn + 1);
+                    CHECK(vk_drawn() == drawn + 1);
                     vk_render_end();
                     Surf* surface = vk_rt_find(target);
                     VkBuffer buffer;
