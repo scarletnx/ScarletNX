@@ -80,7 +80,7 @@ typedef struct {
     struct {
         u32 n;
         u64 bytes;
-    } by_class[VK_TEX_CLASSES];
+    } by_class[VK_TEX_CLASSES], rt_class[VK_TEX_CLASSES], rt_sys_class[VK_TEX_CLASSES];
     int detail; /* buffer_copy_stats: the sums below too */
     VkTexFormats formats;
     VkAstcSizes astc;
@@ -136,6 +136,19 @@ static void census_run(void* ctx, u64 gva, u64 cpu, u64 n) {
     }
     c->runs[c->nruns] = (VkRange){gva, n};
     c->runs[c->capruns + c->nruns++] = (VkRange){cpu, n};
+}
+
+static void census_rt(void* ctx, const Surf* s) {
+    Census* c = ctx;
+    const u64 gva = s->gva & ~(1ull << 63);
+    const int k = vk_tex_live_class(c->starts, c->nstarts, c->live, c->nlive, gva);
+    const u64 bytes = s->demoted ? s->sys_bytes : s->bytes;
+    c->rt_class[k].n++;
+    c->rt_class[k].bytes += bytes;
+    if (s->demoted) {
+        c->rt_sys_class[k].n++;
+        c->rt_sys_class[k].bytes += s->sys_bytes;
+    }
 }
 
 static void census_texture(void* ctx, const Surf* t) {
@@ -289,13 +302,23 @@ void vk_tex_report_log(void) {
     /* a game whose front end has no texture objects has no dead textures to tell */
     if (gpu_textures_added()) census_objects(&c);
     if (c.starts || c.detail) vk_surf_each(VK_LRU_TEX, census_texture, &c);
-    if (c.starts)
+    if (c.starts) {
         LOG("vulkan: textures by the game's texture objects: %u at the address of a live object (%llu MB), %u inside "
             "a live object (%llu MB), %u dead with no live object at their address (%llu MB). The game has %llu live "
             "objects at %u addresses\n",
             c.by_class[VK_TEX_LIVE].n, MB(c.by_class[VK_TEX_LIVE].bytes), c.by_class[VK_TEX_INSIDE].n,
             MB(c.by_class[VK_TEX_INSIDE].bytes), c.by_class[VK_TEX_DEAD].n, MB(c.by_class[VK_TEX_DEAD].bytes),
             (unsigned long long)c.refs, c.nstarts);
+        vk_surf_each(VK_LRU_RT, census_rt, &c);
+        LOG("vulkan: render targets by the game's texture objects: %u at the address of a live object (%llu MB), %u "
+            "inside a live object (%llu MB), %u dead with no live object at their address (%llu MB); of those in "
+            "system memory: %u at a live object (%llu MB), %u inside (%llu MB), %u dead (%llu MB)\n",
+            c.rt_class[VK_TEX_LIVE].n, MB(c.rt_class[VK_TEX_LIVE].bytes), c.rt_class[VK_TEX_INSIDE].n,
+            MB(c.rt_class[VK_TEX_INSIDE].bytes), c.rt_class[VK_TEX_DEAD].n, MB(c.rt_class[VK_TEX_DEAD].bytes),
+            c.rt_sys_class[VK_TEX_LIVE].n, MB(c.rt_sys_class[VK_TEX_LIVE].bytes), c.rt_sys_class[VK_TEX_INSIDE].n,
+            MB(c.rt_sys_class[VK_TEX_INSIDE].bytes), c.rt_sys_class[VK_TEX_DEAD].n,
+            MB(c.rt_sys_class[VK_TEX_DEAD].bytes));
+    }
     if (g_tex_report.evictions)
         LOG("vulkan: %llu textures made again after the cache evicted them (%llu MB of guest memory loaded again, "
             "%llu MB of images), %llu of them since the last report. The cache evicted %llu textures in all\n",

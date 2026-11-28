@@ -918,8 +918,11 @@ static struct {
     u64 n, bytes;         /* those there now, and their bytes */
     u64 lost, lost_bytes; /* targets that went with pixels memory lacks, so far */
     u64 kept, reloads;    /* targets set aside so far (rt_aside), and those loaded again at their next use */
+    u64 press_usage;      /* system heap's usage when hard pressure last evicted: a climb bypasses the wait */
+    u32 press_at;         /* the present hard pressure last evicted (+1: 0 is none) */
     u32 heap;             /* the heap they went to, plus one: 0 before the first */
 } g_rt_sys;
+static u64 trim_head(u64 budget);
 void vk_rt_sys_stats(VkRtSysStats* st) {
     *st = (VkRtSysStats){.out = g_rt_sys.out,
                          .back = g_rt_sys.back,
@@ -941,8 +944,18 @@ static u64 rt_demote(Surf* s, const char** no) {
         *no = "its image is in pieces";
         return 0;
     }
-    const DevMemWant want = {.at = DM_SYSTEM, .image = 1};
     const u64 was = s->bytes;
+    if (g_rt_sys.heap) {
+        DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(heaps);
+        const DevMemBudget* sys = &heaps[g_rt_sys.heap - 1];
+        const u64 cap = sys->budget > trim_head(sys->budget) ? sys->budget - trim_head(sys->budget) : 0;
+        if (sys->budget && (sys->usage >= cap || was > cap - sys->usage)) {
+            *no = "the system memory heap is near its budget";
+            return 0;
+        }
+    }
+    const DevMemWant want = {.at = DM_SYSTEM, .image = 1};
     u64 bytes;
     vk_render_end();
     const int moved = rt_move(vk_cmd(), s, &want, &bytes);
@@ -968,6 +981,10 @@ static void rt_sys_left(Surf* s) {
     g_rt_sys.n--;
     g_rt_sys.bytes -= s->sys_bytes;
     s->sys_bytes = 0;
+    if (!g_rt_sys.n) {
+        g_rt_sys.press_at = 0;
+        g_rt_sys.press_usage = 0;
+    }
 }
 /* s's image back in the GPU's memory: 1 when it went */
 static int rt_promote(Surf* s) {
@@ -4034,9 +4051,80 @@ void vk_tex_promote_frame(void) {
 }
 /* Once a present, the render targets in system memory (rt_demote): those the last two presents used go back into the
    GPU's memory as the demoted textures do (vk_tex_promote_frame), the most recently used first, while it has room.
-   Every 30 presents, while the heap they went to is past its own budget less a head, the least recently used of the
-   rest go, their pixels with them: that memory is the system's, which the texture tier and the mirror's granules
-   take too, and the targets would otherwise keep all of it */
+   Targets stay while the system heap has headroom; once it passes its budget less rt_sys_head, they go on any present
+   (paced by RT_SYS_PRESS_WAIT presents for deferred frees unless usage climbs): first those whose guest texture
+   object has ended, then the rest oldest first, only for the excess */
+#define RT_SYS_PRESS_WAIT 4u
+/* Headroom below the system heap's budget where demoted targets are evicted ahead of it: an eighth of the budget, or
+   trim_head where that is larger (trim_head caps at 256 MiB, where a burst of demotions on a large system heap ran
+   past the budget before the next check) */
+static u64 rt_sys_head(u64 budget) {
+    const u64 head = trim_head(budget), eighth = budget / 8;
+    return eighth > head ? eighth : head;
+}
+/* Whether a render target's address has no live guest texture object (parked targets set bit 63 on gva). Only asked
+   when the front end reports texture objects (gpu_textures_added) */
+static int rt_obj_dead(const Surf* s) { return !gpu_texture_live(s->gva & ~(1ull << 63)); }
+/* Demoted render targets last used before `before`, oldest first, up to `want` bytes: bytes freed, count in *went.
+   With dead_only set, only targets whose guest texture object has ended go */
+static u64 rt_sys_evict(u32 before, u64 want, int dead_only, u32* went) {
+    u64 freed = 0;
+    u32 n = 0;
+    for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < want; lru -= LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head, next; r && freed < want; r = next) {
+            next = g_rows.lru[r].next;
+            Surf* s = g_rows.surf[r];
+            if ((i32)((u32)s->last_used - before) >= 0) break;
+            if (!s->demoted || vk_gfx_image_holds(s)) continue;
+            if (dead_only && !rt_obj_dead(s)) continue;
+            freed += s->sys_bytes;
+            n++;
+            g_rt_sys.lost++;
+            g_rt_sys.lost_bytes += s->sys_bytes;
+            surf_evict(s);
+        }
+    *went = n;
+    return freed;
+}
+static int rt_sys_press_ready(u64 usage) {
+    if (!g_rt_sys.press_at || usage > g_rt_sys.press_usage) return 1;
+    return (u32)(g_vk_present + 1u - g_rt_sys.press_at) >= RT_SYS_PRESS_WAIT;
+}
+/* Pressure sweep of demoted targets when the system heap passes its budget less rt_sys_head: targets with no live
+   texture object go first, then the rest oldest first only for what remains. Safe to call outside surf_reclaim's walk
+*/
+static void rt_sys_pressure(const DevMemBudget* sys, u32 hot) {
+    if (!sys->budget) return;
+    const u64 head = rt_sys_head(sys->budget);
+    const u64 sys_high = sys->budget > head ? sys->budget - head : 0;
+    if (sys->usage <= sys_high) {
+        g_rt_sys.press_at = 0;
+        g_rt_sys.press_usage = 0;
+        return;
+    }
+    if (!rt_sys_press_ready(sys->usage)) return;
+    const u64 over = sys->usage - sys_high;
+    const int has_objs = gpu_textures_added() != 0;
+    u32 went_dead = 0, went_live = 0;
+    u64 freed = has_objs ? rt_sys_evict(hot, over, 1, &went_dead) : 0;
+    if (freed < over) freed += rt_sys_evict(hot, over - freed, 0, &went_live);
+    if (!went_dead && !went_live) return;
+    g_rt_sys.press_at = g_vk_present + 1u;
+    g_rt_sys.press_usage = sys->usage;
+    if (has_objs)
+        LOG_LIMIT(8,
+                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less %llu MB: %u "
+                  "render targets moved there went, %llu MB (%u with no live texture object, %u with one)\n",
+                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
+                  (unsigned long long)(head >> 20), went_dead + went_live, (unsigned long long)(freed >> 20), went_dead,
+                  went_live);
+    else
+        LOG_LIMIT(8,
+                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less %llu MB: %u "
+                  "render targets moved there went, %llu MB, with pixels memory lacks\n",
+                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
+                  (unsigned long long)(head >> 20), went_live, (unsigned long long)(freed >> 20));
+}
 void vk_rt_sys_frame(void) {
     if (!g_rt_sys.n) return;
     u64 usage, budget;
@@ -4054,32 +4142,10 @@ void vk_rt_sys_frame(void) {
         const u64 b = s->sys_bytes;
         if (rt_promote(s)) moved += b, use += b;
     }
-    if (g_vk_present % 30 || !g_rt_sys.heap) return;
+    if (!g_rt_sys.n || !g_rt_sys.heap) return;
     DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
     vk_devmem_budgets(heaps);
-    const DevMemBudget* sys = &heaps[g_rt_sys.heap - 1];
-    const u64 sys_high = sys->budget - trim_head(sys->budget);
-    if (sys->usage <= sys_high) return;
-    const u64 over = sys->usage - sys_high;
-    u64 freed = 0;
-    u32 went = 0;
-    for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < over; lru -= LRU_AGED)
-        for (u32 r = g_rows.lists[lru].head, n; r && freed < over; r = n) {
-            n = g_rows.lru[r].next;
-            Surf* s = g_rows.surf[r];
-            if (!s->demoted || (i32)((u32)s->last_used - hot) >= 0 || vk_gfx_image_holds(s)) continue;
-            freed += s->sys_bytes;
-            went++;
-            g_rt_sys.lost++;
-            g_rt_sys.lost_bytes += s->sys_bytes;
-            surf_evict(s);
-        }
-    if (went)
-        LOG_LIMIT(8,
-                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less a head: %u "
-                  "render targets moved there went, %llu MB, with pixels memory lacks\n",
-                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
-                  went, (unsigned long long)(freed >> 20));
+    rt_sys_pressure(&heaps[g_rt_sys.heap - 1], hot);
 }
 /* vk_surf_reclaim with the most bytes an entry may have */
 static u64 trim_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int keep_back) {
@@ -4128,6 +4194,11 @@ void vk_mem_trim(u64 extra, int force) {
         return;
     }
     SNX_ZONE_V(z, "vk mem trim", force);
+    if (g_rt_sys.n && g_rt_sys.heap) {
+        DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(heaps);
+        rt_sys_pressure(&heaps[g_rt_sys.heap - 1], vk_present_before(0, 2));
+    }
     /* What goes first is what can be had again without loss: textures (loaded again from memory), own buffers (copied
        again), then render targets memory holds. Those unused for a second go down to two heads under the budget
        (trim_head), room for what comes next. The working set itself (unused for eight presents) goes only to stay

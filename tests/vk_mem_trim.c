@@ -67,8 +67,18 @@ u64 gmmu_translate(u64 gva) {
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { stub_hit("gpu_mem_dirty_since"); }
 u64 gpu_mem_generation(void) { stub_hit("gpu_mem_generation"); }
 void gpu_mem_written(u64 gva, u64 size) { stub_hit("gpu_mem_written"); }
-int gpu_texture_live(u64 gva) { stub_hit("gpu_texture_live"); }
-u64 gpu_textures_added(void) { stub_hit("gpu_textures_added"); }
+/* the guest's live texture objects (gpu/guest_textures.h), for checks that set them; empty otherwise */
+static struct {
+    u64 added;
+    u64 live[8];
+    u32 nlive;
+} g_tex_objs;
+int gpu_texture_live(u64 gva) {
+    for (u32 i = 0; i < g_tex_objs.nlive; i++)
+        if (g_tex_objs.live[i] == gva) return 1;
+    return 0;
+}
+u64 gpu_textures_added(void) { return g_tex_objs.added; }
 int own_covered(u64 addr, u64 size) { stub_hit("own_covered"); }
 int own_hash(u64 addr, u64 size, u64* h) {
     if (!g_guest) stub_hit("own_hash");
@@ -752,6 +762,117 @@ static int forced_copies_go(void) {
     return went;
 }
 
+/* Demoted render targets stay while the system heap has headroom, however long they went unused; under system-heap
+   pressure, those with no live texture object at their address (parked bit 63 stripped) go before older ones whose
+   object is still live, and live-object targets go oldest first only for what remains. 1 when all three held */
+static int sys_dead_before_live(void) {
+    g_vk_present = (g_vk_present / 30 + 1) * 30 + 10020;
+    Surf* s[4];
+    static const u64 gvas[4] = {0x76400000ull, 0x76800000ull, 0x76c00000ull | (1ull << 63),
+                                0x77000000ull | (1ull << 63)};
+    static const u32 ages[4] = {10000u, 100u, 50u, 40u};
+    for (int i = 0; i < 4; i++) {
+        s[i] = target(gvas[i], 4 << 20, 1 + (u32)i);
+        s[i]->last_used = g_vk_present - ages[i];
+        s[i]->demoted = 1;
+        s[i]->sys_bytes = 4u << 20;
+        vk_surf_bytes(s[i], 0);
+        g_rt_sys.n++;
+        g_rt_sys.bytes += 4u << 20;
+    }
+    /* s[0] (oldest) and s[2] (parked) have live texture objects; s[1] and s[3] (parked) have none */
+    g_tex_objs.added = 2;
+    g_tex_objs.live[0] = 0x76400000ull;
+    g_tex_objs.live[1] = 0x76c00000ull;
+    g_tex_objs.nlive = 2;
+    g_rt_sys.heap = 1;
+    g_sys_budget = 16ull << 30;
+    g_sys_use =
+        12ull << 30; /* headroom under budget - budget/8 (14 GiB): nothing leaves despite 10,000 presents idle */
+    g_use = g_budget;
+    const u64 lost = g_rt_sys.lost;
+    vk_rt_sys_frame();
+    const int kept = targets_held() == 4 && g_rt_sys.lost == lost && g_rt_sys.n == 4 && g_rt_sys.bytes == 16u << 20;
+    /* 2 MiB over sys_high: younger dead s[1] goes before older live s[0] */
+    g_sys_use = (14ull << 30) + (2u << 20);
+    vk_rt_sys_frame();
+    const int dead_first = targets_held() == 3 && g_rt_sys.lost == lost + 1 && g_rt_sys.n == 3 &&
+                           g_rows.surf[g_rows.lists[VK_LRU_RT].head] == s[0] && s[0]->demoted && s[2]->demoted;
+    /* 6 MiB over sys_high after wait: parked dead s[3] (4 MiB) goes first, then oldest live s[0] (4 MiB), leaving
+       parked live s[2] */
+    g_vk_present += RT_SYS_PRESS_WAIT;
+    g_sys_use = (14ull << 30) + (6u << 20);
+    vk_rt_sys_frame();
+    const int fallback = targets_held() == 1 && g_rt_sys.lost == lost + 3 && g_rt_sys.n == 1 &&
+                         g_rows.surf[g_rows.lists[VK_LRU_RT].head] == s[2] && s[2]->demoted;
+    if (!kept || !dead_first || !fallback)
+        fprintf(stderr, "sys_dead_before_live: kept=%d dead_first=%d fallback=%d, %u held, %llu lost\n", kept,
+                dead_first, fallback, targets_held(), (unsigned long long)(g_rt_sys.lost - lost));
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_tex_objs.added = 0;
+    g_tex_objs.nlive = 0;
+    return kept && dead_first && fallback && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
+}
+
+/* On a large system heap, headroom scales with the budget (an eighth, not capped at 256 MiB) and hard pressure runs on
+   any present (not only every 30), then waits RT_SYS_PRESS_WAIT presents for deferred frees unless usage climbs. 1 when
+   the oldest went on a non-multiple-of-30 present, the next stayed while usage was flat until the wait elapsed, and the
+   third went without waiting once usage climbed */
+static int sys_pressure_scales_and_paces(void) {
+    g_vk_present = (g_vk_present / 30 + 1) * 30 + 7; /* not a multiple of 30 */
+    Surf* s[3];
+    for (int i = 0; i < 3; i++) {
+        s[i] = target(0x77000000 + (u64)i * 0x400000, 4 << 20, 1 + (u32)i);
+        s[i]->last_used = g_vk_present - (100u - (u32)i);
+        s[i]->demoted = 1;
+        s[i]->sys_bytes = 4u << 20;
+        vk_surf_bytes(s[i], 0);
+        g_rt_sys.n++;
+        g_rt_sys.bytes += 4u << 20;
+    }
+    g_rt_sys.heap = 1;
+    g_sys_budget = 16ull << 30;
+    g_sys_use = (14ull << 30) + (2u << 20); /* past budget - budget/8, ~2 GiB under budget - 256 MiB */
+    g_use = g_budget;
+    const u64 lost = g_rt_sys.lost;
+    vk_rt_sys_frame();
+    const int immediate = targets_held() == 2 && g_rt_sys.lost == lost + 1 && g_rt_sys.n == 2;
+    g_vk_present++;
+    vk_rt_sys_frame();
+    const int paced = targets_held() == 2 && g_rt_sys.lost == lost + 1;
+    g_vk_present += RT_SYS_PRESS_WAIT - 1u;
+    vk_rt_sys_frame();
+    const int after_wait = targets_held() == 1 && g_rt_sys.lost == lost + 2 && g_rt_sys.n == 1;
+    g_vk_present++;
+    g_sys_use += 64ull << 20; /* usage climbed: evict without waiting */
+    vk_rt_sys_frame();
+    const int climbed = targets_held() == 0 && g_rt_sys.lost == lost + 3 && g_rt_sys.n == 0;
+    if (!immediate || !paced || !after_wait || !climbed)
+        fprintf(stderr, "sys_pressure_scales_and_paces: immediate=%d paced=%d after_wait=%d climbed=%d, %u held\n",
+                immediate, paced, after_wait, climbed, targets_held());
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    return immediate && paced && after_wait && climbed && g_rt_sys.bytes == 0;
+}
+
+/* rt_demote refuses to allocate into a system heap whose usage plus the target would cross its budget less trim_head.
+   1 when it returned 0 with a reason and did not try to move the image */
+static int rt_demote_stops_at_sys_budget(void) {
+    g_vk.mem_model = VK_MEM_SMALL_BAR;
+    g_vk_present += 1000;
+    Surf* s = target(0x78000000, 16 << 20, 1);
+    s->mem = 1;
+    g_rt_sys.heap = 1;
+    g_sys_budget = 16ull << 30;
+    g_sys_use = g_sys_budget - trim_head(g_sys_budget) - (4ull << 20); /* 4 MiB under cap, target is 16 MiB */
+    const char* no = "";
+    const u64 moved = rt_demote(s, &no);
+    const int stopped = moved == 0 && no[0] != 0 && !s->demoted;
+    s->mem = 0;
+    surf_evict(s);
+    CHECK(targets_held() == 0);
+    return stopped;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -789,6 +910,10 @@ int main(void) {
     CHECK(forced_counts_deferred_heap());
     /* a forced trim takes copies unused for VK_RT_COPY_PRESENTS */
     CHECK(forced_copies_go());
+    /* demoted render targets stay with headroom, drop dead-object ones first under pressure, and stop before cap */
+    CHECK(sys_dead_before_live());
+    CHECK(sys_pressure_scales_and_paces());
+    CHECK(rt_demote_stops_at_sys_budget());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
