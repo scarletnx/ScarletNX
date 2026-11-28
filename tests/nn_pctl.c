@@ -35,7 +35,8 @@ int main(void) {
     for (int i = 1; i < 0x18; i++) CHECK(mem[0x40 + i] == 0);
     CHECK(mem[0x3f] == 0xee && mem[0x58] == 0xee);
     /* a 32-bit game: every hook but the one that fills a struct is in its table (pctl.hook's a32), and Initialize's
-       answers success in r0 and goes back to lr; the play timer's 64-bit answer is r0 and r1 */
+       answers success in r0 and goes back to lr; the play timer's TimeSpan goes through the pointer in r0, as the
+       SDK's own GetPlayTimerRemainingTime stores it, and r1 is left */
     {
         static SnxArmCPU a;
         CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 19);
@@ -50,9 +51,11 @@ int main(void) {
                 CHECK(a.r[0] == 0 && a.r[15] == 0x2000 && (a.cpsr & SNX_ARM_T));
             }
             if (!strcmp(hook32_symbol[i], "_ZN2nn4pctl25GetPlayTimerRemainingTimeEv")) {
-                a.r[0] = a.r[1] = 0xdead, a.r[14] = 0x3000;
+                memset(mem, 0xee, sizeof mem);
+                a.r[0] = 0x80, a.r[1] = 0xdead, a.r[14] = 0x3000;
                 hook32_fn[i](&a);
-                CHECK(a.r[0] == 0 && a.r[1] == 0 && a.r[15] == 0x3000);
+                for (int k = 0; k < 8; k++) CHECK(mem[0x80 + k] == 0);
+                CHECK(mem[0x7f] == 0xee && mem[0x88] == 0xee && a.r[1] == 0xdead && a.r[15] == 0x3000);
             }
         }
     }

@@ -43,6 +43,8 @@ i64 nnpctl_no_time(CPU* c) {
     (void)c;
     return 0;
 }
+/* a 32-bit game's: the TimeSpan through the pointer in r0, where AAPCS32 returns a class of 8 bytes */
+void nnpctl_no_time_out(CPU* c, u64 out) { snx_st_le64(hook_host(c, out), 0); }
 /* the play timer's display as nobody configured it: NotConfigured (7) in its first byte, the rest of its 0x18 bytes
    zero. Zeros alone read as TimesUp, and a game that believes it stops the person playing */
 void nnpctl_play_timer_display_info(CPU* c, u64 info) {
