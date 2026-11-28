@@ -3069,6 +3069,8 @@ typedef struct VkSh {
     int indexed; /* it reads indexed textures: its set needs the texture array bindings (vk_playout) */
     int failed;
     int shipped; /* a program the game ships, translated before a draw asked for it: 2 once one found it */
+    int texture_draw; /* the renderer's texture draw program (draw_texture_shader.c): its coordinates come divided by
+                         the texture's size (render.c's rectangle), whatever the header says of them */
     u32 clen, clen_a;
     u64 qh, qh_a;
     /* cb_fold.h: the constant buffer words the translation holds as constants; whether its draws were asked whether
@@ -3533,6 +3535,10 @@ u8 vk_tic_query_hint(const u32* tic);
    one, which the translator normalizes (ShaderInfo.tex_rect_mask), 2 for another type, which it can't (texture type
    in word 4 bits 23-26; buffers' word 5 holds no such bit), 0 for none */
 int vk_tic_unnormalized(const u32* tic);
+/* whether slot i of program s samples the header tic as normalized where the header takes texels: a header that takes
+   unnormalized coordinates whose slot the program's key doesn't divide (ShaderInfo.tex_rect_mask), in a program that
+   gets no coordinates divided already (VkSh.texture_draw) and fetches no texel by its index (ShTex flags bits 0-1) */
+int vk_tex_unnormalized_unheld(const VkSh* s, int i, const u32* tic);
 int vk_image_keyable(const ShaderInfo* si, int i);
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic);
 VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* bytes);

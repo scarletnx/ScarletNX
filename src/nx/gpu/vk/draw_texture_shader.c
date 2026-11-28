@@ -89,7 +89,10 @@ VkSh* vk_draw_texture_fragment(u32 texture_int, u32 texture_signed, u32 target_i
     mask[6] = 0x44544653;
     mask[21] = (u32)advanced_blend; mask[22] = (u32)(advanced_blend >> 32); mask[23] = advanced_mask;
     VkSh* cached = vk_shader_generated_find(draw_texture_hash(ST_FS, mask), ST_FS, mask);
-    if (cached) return cached;
+    if (cached) {
+        cached->texture_draw = 1;
+        return cached;
+    }
     /* The program only samples one normalized 2D texture. The normal translator provides alpha tests and ordered
        blending, so DrawTexture has the same per-fragment operations as a guest draw. */
     u8 code[160] = {0};
@@ -116,7 +119,9 @@ VkSh* vk_draw_texture_fragment(u32 texture_int, u32 texture_signed, u32 target_i
     size_t words = 0;
     u32* spirv = vk_translate_spirv(code, sizeof code, ST_FS, &info, &words, no_constants, &reads);
     free(reads.r);
-    return register_shader(ST_FS, mask, spirv, words, &info);
+    VkSh* made = register_shader(ST_FS, mask, spirv, words, &info);
+    if (made) made->texture_draw = 1;
+    return made;
 }
 VkSh* vk_predraw_fragment(u32 count, u32 slots, u32 ints, u32 sints) {
     if (!count || (u32)snx_popcount64(slots) != count || slots >> DS_TARGETS_MAX) return NULL;

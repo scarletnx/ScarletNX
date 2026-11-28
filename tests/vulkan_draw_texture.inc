@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* DrawTexture must use raster fragment operations and the bound sampler. A blit cannot satisfy these cases. */
+/* DrawTexture must use raster fragment operations and the bound sampler. A blit cannot satisfy these cases. Case 7's
+   header takes unnormalized coordinates, as a texture made for a rectangle's texels does: the draw's coordinates come
+   divided by the size whatever the header says, so it draws as case 0, and the bind doesn't call it sampled as
+   normalized (vk_tex_unnormalized_unheld), as it does a game's program that doesn't divide them */
 static int check_draw_texture(void) {
     const u64 gpu = 0x4ed000000ull, cpu = HEAP_BASE + 0x10000000;
     const u64 target = gpu + 0x8000, source = gpu + 0x4000;
@@ -28,7 +31,12 @@ static int check_draw_texture(void) {
     CHECK(!storage_write_words(gpu + 0x1000, (const u32[8]){2u | 2u << 3 | 2u << 6}, 8)); /* nearest and clamp to edge */
     /* tests 3 and 6 draw one fragment program with two alpha functions: the texel's alpha is a half, which is not
        greater than the reference and is less than it */
-    for (u32 test = 0; test < 7; test++) {
+    u32 rect_tic[8];
+    memcpy(rect_tic, tic, sizeof tic);
+    rect_tic[4] = (rect_tic[4] & ~(0xFu << 23)) | 7u << 23; /* TEXTURE_2D_NO_MIPMAP */
+    rect_tic[5] &= ~(1u << 31);                             /* unnormalized coordinates */
+    for (u32 test = 0; test < 8; test++) {
+        CHECK(!storage_write_words(gpu, test == 7 ? rect_tic : tic, 8));
         vk_lock();
         channel->r3d[0x574] = 0;
         rt_clear(channel, target, 4, 4, 0, 0);
@@ -116,6 +124,19 @@ static int check_draw_texture(void) {
                     }
                 }
         if (test == 5) puts("PASS NVN DrawTexture multisample: four-sample write mask exact=1");
+        if (test == 7) {
+            VkSh* program = vk_draw_texture_fragment(0, 0, 0, 0, 0, 0);
+            CHECK(program && program->texture_draw && vk_tic_unnormalized(rect_tic) == 1);
+            VkSh* fresh = vk_draw_texture_fragment(1, 1, 0, 0, 0, 0); /* made now, for a signed integer texture */
+            CHECK(fresh && fresh != program && fresh->texture_draw);
+            program->texture_draw = 0; /* as one the pipeline file brings back (pf_merge) has it */
+            CHECK(vk_draw_texture_fragment(0, 0, 0, 0, 0, 0) == program && program->texture_draw);
+            CHECK(!vk_tex_unnormalized_unheld(program, 0, rect_tic));
+            VkSh guest = *program; /* a game's program sampling the same slot, whose key doesn't divide it */
+            guest.texture_draw = 0;
+            guest.si.tex_rect_mask = 0;
+            CHECK(vk_tex_unnormalized_unheld(&guest, 0, rect_tic) && !vk_tex_unnormalized_unheld(&guest, 0, tic));
+        }
         vk_unlock();
     }
     free(channel);
