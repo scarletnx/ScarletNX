@@ -10,6 +10,7 @@
 #include "nx/nn/audio.c"
 #include "nx/hle/hle.c"
 #include "nn/hooks.hook.inc" /* audio.hook's table and adapters */
+#include "support/hook32_read.h"
 #include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
@@ -777,9 +778,10 @@ static void test_table(void) {
 #undef CALL
 }
 
-/* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions its SDK has. The AudioOut and the
-   AudioOutBuffer are laid out as a 64-bit game's; a buffer comes back as its address in r0, and a volume is a float
-   in s0 */
+/* A 32-bit game, through its table's adapters (audio.hook's a32): the 19 functions SDK 0.12.16 has, and those and
+   six more in 4.4.0, each SDK read a group of its own. The AudioOut and the AudioOutBuffer are laid out as a 64-bit
+   game's; a buffer comes back as its address in r0, a volume is a float in s0, and the samples played (4.4.0's) a
+   count of 8 bytes in r0 and r1 */
 CPU* hook_a32_cpu(SnxArmCPU* arm) { return (void)arm, &cpu; }
 static SnxArmCPU arm;
 static u32 call32(const char* symbol, u32 r0, u32 r1) {
@@ -798,10 +800,9 @@ static void test_a32(void) {
     u32 bits;
     AudOut* q;
     arm.mem = g_mem, arm.mem_size = 0x10000;
-    CHECK(HOOK32_COUNT == 19);
-    /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+    CHECK(HOOK32_COUNT == 44 && hook32_read_count(1) == 19 && hook32_read_count(2) == 25);
     for (int i = 0; i < HOOK32_COUNT; i++)
-        CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
+        CHECK(hook32_read_group(i) && (hook32_read_group(i) == 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
     parameter(48000, 2);
     memset(GP(T_OUT), 0xCC, 0x120);
     CHECK(call32("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", T_OUT, PARAMS) == 0);
@@ -816,6 +817,10 @@ static void test_a32(void) {
     CHECK(call32("_ZN2nn5audio22ContainsAudioOutBufferEPKNS0_8AudioOutEPKNS0_14AudioOutBufferE", T_OUT, (u32)B(0)) ==
           1);
     test_now += 1000000; /* the buffer's 48 frames played */
+    arm.r[1] = 0xdead;
+    CHECK(call32("_ZN2nn5audio28GetAudioOutPlayedSampleCountEPKNS0_8AudioOutE", T_OUT, 0xdead) ==
+              (u32)nnaudio_get_out_played_sample_count(&cpu, T_OUT) &&
+          arm.r[1] == (u32)((u64)nnaudio_get_out_played_sample_count(&cpu, T_OUT) >> 32));
     CHECK(call32("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", T_OUT, 0) == B(0));
     CHECK(call32("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", T_OUT, 0) == 0);
     /* the device: its name in the game's array, and its volume from and to s0, the other half of d0 as it was */

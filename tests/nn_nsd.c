@@ -4,7 +4,8 @@
    every name resolves, the 0x100 bytes of the output are the name and zeros after it, a name with no end in its
    0x100 bytes is cut there, and the environment's own name fills its 8 bytes */
 #include "nx/nn/nsd.c"
-#include "nn/hooks.hook.inc" /* nsd.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc"     /* nsd.hook's table, and a 32-bit game's */
+#include "support/hook32_read.h" /* the 32-bit SDKs read, a group each */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -43,12 +44,12 @@ int main(void) {
     /* a 32-bit game: each hook is in its table (nsd.hook's a32), the two names in r0 and r1 */
     {
         static SnxArmCPU a;
-        CHECK(HOOK32_COUNT == HOOK_COUNT);
-        /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
-        for (int i = 0; i < HOOK32_COUNT; i++)
-            CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
+        /* each for the 32-bit SDKs read, 0.12.16 and 4.4.0, a group each: a 32-bit game of another has no hook here */
+        CHECK(HOOK32_COUNT == 2 * HOOK_COUNT && hook32_read_count(1) == HOOK_COUNT &&
+              hook32_read_count(2) == HOOK_COUNT);
+        for (int i = 0; i < HOOK_COUNT; i++)
+            CHECK(hook32_read_entry(hook_symbol[i], 1) >= 0 && hook32_read_entry(hook_symbol[i], 2) >= 0);
         for (int i = 0; i < HOOK32_COUNT; i++) {
-            CHECK(!strcmp(hook32_symbol[i], hook_symbol[i]));
             if (strcmp(hook32_symbol[i], "_ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_")) continue;
             strcpy((char*)mem, "a.%.example");
             a.r[0] = 0x100, a.r[1] = 0, a.r[14] = 0x2000;

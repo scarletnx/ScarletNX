@@ -20,6 +20,7 @@
    DirectoryNotClosed when only directories are open */
 #include "nx/nn/fs.c"
 #include "nn/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
+#include "support/hook32_read.h"
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -695,10 +696,17 @@ int main(int argc, char** argv) {
     module32.nmods = 0;
     g_arm_mod = &module32;
     a.mem = mem, a.mem_size = sizeof mem;
-    CHECK(HOOK32_COUNT == 44);
-    /* each for the one 32-bit SDK read, 0.12.16, alone: a 32-bit game of another SDK has no hook here */
+    /* each for the 32-bit SDKs read, a group each: the 44 of 0.12.16, and those and 11 more in 4.4.0, the two with an
+       int64_t of their own under its 32-bit symbol (x) */
+    CHECK(HOOK32_COUNT == 99 && hook32_read_count(1) == 44 && hook32_read_count(2) == 55);
     for (int i = 0; i < HOOK32_COUNT; i++)
-        CHECK(hook32_key[i] == HOOK_SDK && hook32_lo[i] == 0 && hook32_hi[i] == 0x10000);
+        CHECK(hook32_read_group(i) && (hook32_read_group(i) == 2 || hook32_read_entry(hook32_symbol[i], 2) >= 0));
+    CHECK(hook32_read_entry("_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidExx", 2) >= 0 &&
+          hook32_read_entry("_ZN2nn2fs15GetSaveDataSizeEPxS1_RKNS_7account3UidE", 2) >= 0 &&
+          hook32_read_entry("_ZN2nn2fs17MountCacheStorageEPKc", 1) == -1);
+    /* 4.4.0's access log mask: the mask in r0, the answer in r0, as the handler gives it */
+    CHECK(call32("_ZN2nn2fs6detail18IsEnabledAccessLogEj", 3, 0, 0, 0, 0, 0, 0) ==
+          (u32)nnfs_is_enabled_access_log_mask(&cpu, 3));
     outs();
     CHECK(call32("_ZN2nn2fs29QueryMountSystemDataCacheSizeEPjNS_3ncm12SystemDataIdE", RESULT, 0xdead, (u32)SYSTEM_ID,
                  (u32)(SYSTEM_ID >> 32), 0, 0, 0) == 0);

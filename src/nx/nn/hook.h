@@ -65,15 +65,15 @@ void hook_range_text(char* out, size_t n, int key, u32 lo, u32 hi);
    module, version and the versions it is declared for */
 void hook_missed_text(char* out, size_t n);
 /* The same stop of a 32-bit game whose SDK no declaration was read in: "" unless hook_install found a function of its
-   SDK with a declaration for a 32-bit game and none for that SDK (HOOK_A32_READ_SDK), else a sentence with the SDK's
-   version and module, HOOK_A32_READ_SDK, how many of the functions each family has, and what a player can do */
+   SDK with a declaration for a 32-bit game and none for that SDK, else a sentence with the SDK's version and module,
+   the SDKs read (HOOK_A32_READ_SDKS), how many of the functions each family has, and what a player can do */
 void hook_unread_text(char* out, size_t n);
 /* The same stop with the settings turning the hooks of family off: "" unless hook_family_off(family), else a sentence
    with the setting that does, its value and its default */
 void hook_off_text(char* out, size_t n, const char* family);
-/* the SDK the declarations for a 32-bit game were read in, 0.12.16, the one 32-bit SDK read: they hold for it alone
-   (a32 @version) */
-#define HOOK_A32_READ_SDK (0u << 16 | 12u << 8 | 16u)
+/* the SDKs the declarations for a 32-bit game were read in, 0.12.16 and 4.4.0, the 32-bit SDKs read: they hold for
+   those alone (a32 @version), the oldest first */
+#define HOOK_A32_READ_SDKS {0u << 16 | 12u << 8 | 16u, 4u << 16 | 4u << 8 | 0u}
 /* the most families HostHook.unread counts */
 #define HOOK_FAMILY_SLOTS 64
 

@@ -219,9 +219,9 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   name, module, version and declared versions (`hook_missed_text`: `41 of the SDK functions the runtime has a hook
   for run their own code in this 32-bit game, ...: the first is ... in sdk, of version 3.0.1, declared for sdk <
   1.0.0`). In a 32-bit game whose SDK no declaration for a 32-bit game was read in, that reason takes the place of the
-  advice for a homebrew program (`hook_unread_text`): its SDK and the module it is in, the SDK the declarations were
-  read in (`HOOK_A32_READ_SDK`, 0.12.16), how many of its functions run their own code by family, and what to do (`This
-  32-bit game's SDK is 4.4.0 (module sdk) ...`).
+  advice for a homebrew program (`hook_unread_text`): its SDK and the module it is in, the SDKs the declarations were
+  read in (`HOOK_A32_READ_SDKS`, 0.12.16 and 4.4.0), how many of its functions run their own code by family, and what
+  to do (`This 32-bit game's SDK is 10.6.0 (module sdk) ...`).
 
 ## Struct layouts
 

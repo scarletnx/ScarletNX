@@ -167,8 +167,9 @@ int main(void) {
                           &first) >= 0);
     }
 
-    /* a 32-bit game: the six hooks hold for the 32-bit SDK read (0.12.16), and none for a module of another SDK or
-       of an unknown one. Save there: the report's fields are 4 bytes each, at 0x20, 0x24 and 0x28 */
+    /* a 32-bit game: the six hooks hold for the 32-bit SDKs read (0.12.16 and 4.4.0), and none for a module of
+       another SDK, one between them or an unknown one. Save there: the report's fields are 4 bytes each, at 0x20,
+       0x24 and 0x28 */
     {
         static const char* const all[6] = {save[0],
                                            save[1],
@@ -179,12 +180,16 @@ int main(void) {
         static SnxArmCPU a;
         u32 versions[HOOK_KEYS] = {0};
         a.mem = mem, a.mem_size = sizeof mem;
-        CHECK(HOOK32_COUNT == 6);
+        CHECK(HOOK32_COUNT == 12);
         for (int i = 0; i < 6; i++) {
             versions[HOOK_SDK] = 0;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
             versions[HOOK_SDK] = 0x010000;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x040300;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) == -2);
+            versions[HOOK_SDK] = 0x040400;
+            CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
             versions[HOOK_SDK] = 0x000c10;
             CHECK(hook_select(&hook32_table, all[i], versions, &first) >= 0);
         }
