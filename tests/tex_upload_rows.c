@@ -1333,6 +1333,18 @@ static void check_take_skip(void) {
     g_image_copies = 0;
     tex_take_drawn(&half);
     CHECK(g_image_copies == 1 && half.lod_floor == 0 && g_sparse.bound == 3);
+    /* where the level finds no memory, the target is not copied into it, and is counted: tried again at the next
+       bind */
+    const u64 unbound = vk_tex_take_unbound();
+    half.lod_floor = 1;
+    g_sparse.bound = 2;
+    g_sparse.fail = 1;
+    s.wgen++;
+    g_take_gen_now++;
+    g_image_copies = 0;
+    tex_take_drawn(&half);
+    CHECK(g_image_copies == 0 && half.lod_floor == 1 && g_sparse.bound == 2 && vk_tex_take_unbound() == unbound + 1);
+    g_sparse.fail = 0;
     g_sparse.on = 0;
     g_drawn_target = NULL;
     g_drawn_fresh = 0;

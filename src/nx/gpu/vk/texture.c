@@ -5098,6 +5098,9 @@ static int take_level_back(Surf* t, u32 level) {
     if (had > level + 1) t->upload_valid = 0;
     return 1;
 }
+/* the drawn targets a texture did not take for want of memory in their level, so far */
+static u64 g_takes_unbound;
+u64 vk_tex_take_unbound(void) { return g_takes_unbound; }
 static void tex_take_drawn(Surf* t) {
     /* a storage surface its texture hosts: what it takes is its host's to take, into the host's image */
     if (t && t->host) {
@@ -5276,7 +5279,17 @@ static void tex_take_drawn(Surf* t) {
             g_takes.stale++;
             continue;
         }
-        if (at.l < t->lod_floor) take_level_back(t, at.l);
+        if (at.l < t->lod_floor && !take_level_back(t, at.l)) {
+            /* a copy into it would go nowhere: said, and tried again at the texture's next bind */
+            g_takes_unbound++;
+            LOG_LIMIT(8,
+                      "vulkan: the %ux%u render target at %llx is not taken into level %u of the %ux%u texture of %u "
+                      "levels at %llx: the texture is sampled from level %u on and its level %u found no memory\n",
+                      s->w, s->h, (unsigned long long)s->gva, at.l, t->w, t->h, t->levels, (unsigned long long)t->gva,
+                      t->lod_floor, at.l);
+            settled = 0;
+            continue;
+        }
         if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
             mark_copied(s, t);
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its
