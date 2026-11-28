@@ -523,7 +523,16 @@ static void flush_to(Unit* u, SnxU64 target) {
 }
 
 /* the machine's instructions of a function's region */
-enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK, SGX_FN_JTAB, SGX_FN_CALL };
+enum {
+    SGX_FN_JCC = 16,
+    SGX_FN_CALLDYN,
+    SGX_FN_TAILDYN,
+    SGX_FN_JCC_BACK,
+    SGX_FN_JTAB,
+    SGX_FN_CALL,
+    SGX_FN_DISPATCH,
+    SGX_FN_JTABS
+};
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
@@ -544,8 +553,10 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 #endif
 #ifdef MG_JTAB
     case SGX_FN_JTAB: jtab_jump(u, (int)i->imm); break; /* the target in SGX_FN_TARGET (in[0]) */
+    case SGX_FN_JTABS: jtab_emit(u); break;             /* the function's jump tables, after its code */
 #endif
-    case SGX_FN_CALL: /* the guest address imm; disp: a tail call */
+    case SGX_FN_DISPATCH: mg_dispatch(u, (int)i->imm); break; /* the function's dispatch block, its first label imm */
+    case SGX_FN_CALL:                                         /* the guest address imm; disp: a tail call */
 #ifdef MG_POOL_REACH
         /* where the region's own code ends: the literals' island before the call, as when the region was assembled
            and the call written after it */
@@ -2851,7 +2862,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             pins(u, 0);
             u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
         }
-        mg_dispatch(u, lab0);
+        region_glue(u, SGX_FN_DISPATCH, lab0, 0);
     }
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
@@ -2870,7 +2881,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         }
     }
 #ifdef MG_JTAB
-    jtab_emit(u);
+    region_glue(u, SGX_FN_JTABS, 0, 0);
 #endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
     glue_count(u);
