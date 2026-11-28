@@ -237,7 +237,7 @@ host:
 void nds_memory_free(NdsBoard* board) {
     NdsMemory* m = &board->mem;
     if (m->base) snx_host_release(m->base, NDS_MAP_SIZE + NDS_MAP_GUARD);
-    SnxHostMemory* objects[] = {&m->main, &m->wram, &m->itcm, &m->dtcm, &m->palette, &m->oam, &m->scratch};
+    SnxHostMemory* objects[] = {&m->main, &m->wram, &m->itcm, &m->dtcm, &m->palette, &m->oam, &m->scratch, &m->slot2};
     for (size_t i = 0; i < sizeof objects / sizeof *objects; ++i)
         if (objects[i]->view) snx_host_memory_free(objects[i]);
     for (unsigned bank = 0; bank < NDS_VRAM_BANKS; ++bank)
@@ -276,4 +276,49 @@ void nds_write32(NdsBoard* board, uint32_t address, uint32_t value) {
         nds_io_write(board, address, 4, value);
     else
         snx_st_le32(board->mem.base + address, value);
+}
+
+/* the Rumble Pak's object: one 64 KiB of its reads at each 64 KiB of the slot, where every write of the game lands */
+#define SLOT2_PAK  0x10000u
+#define SLOT2_READ 0xFFFDu
+
+int nds_slot2_device(const char* word) {
+    return !strcmp(word, "none") ? NDS_SLOT2_NONE : !strcmp(word, "rumble") ? NDS_SLOT2_RUMBLE : -1;
+}
+
+static void pak_reads(unsigned char* pak) {
+    for (uint32_t at = 0; at < SLOT2_PAK; at += 2) snx_st_le16(pak + at, SLOT2_READ);
+}
+
+bool nds_slot2_insert(NdsBoard* board, int device, char* error, size_t error_size) {
+    NdsMemory* m = &board->mem;
+    char why[160];
+    board->slot2 = (uint8_t)device;
+    board->rumble = SLOT2_READ;
+    if (device != NDS_SLOT2_RUMBLE) return true;
+    if (!snx_host_memory_new(&m->slot2, SLOT2_PAK)) {
+        snprintf(error, error_size, "cannot make the Rumble Pak's memory: %s", snx_os_error(why, sizeof why));
+        return false;
+    }
+    pak_reads(m->slot2.view);
+    for (uint64_t at = 0x08000000u; at < 0x0A000000u; at += SLOT2_PAK)
+        if (!place(board, at, SLOT2_PAK, &m->slot2, 0)) {
+            snprintf(error, error_size, "cannot map the Rumble Pak over slot 2 at 0x%08llX: %s", (unsigned long long)at,
+                     snx_os_error(why, sizeof why));
+            return false;
+        }
+    return true;
+}
+
+bool nds_slot2_rumble(NdsBoard* board) {
+    unsigned char* pak = board->mem.slot2.view;
+    if (board->slot2 != NDS_SLOT2_RUMBLE || !pak) return false;
+    uint16_t written = SLOT2_READ;
+    for (uint32_t at = 0; at < SLOT2_PAK; at += 2)
+        if (snx_ld_le16(pak + at) != SLOT2_READ) written = snx_ld_le16(pak + at);
+    if (written == SLOT2_READ) return false;
+    pak_reads(pak);
+    bool moved = written != board->rumble;
+    board->rumble = written;
+    return moved;
 }

@@ -462,3 +462,39 @@ void snx_vk_storage_buffers(VkDevice dev, VkDescriptorSet set, const VkDescripto
         first += n;
     }
 }
+float snx_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size) {
+    if (line_size) line[0] = 0;
+    if (asked < 2) return 0;
+    if (!feature) {
+        snprintf(line, line_size,
+                 "anisotropy=%d asks for anisotropic filtering, which the device has none of: textures are filtered as "
+                 "the game asks",
+                 asked);
+        return 0;
+    }
+    float value = (float)asked < most ? (float)asked : most;
+    snprintf(line, line_size,
+             "anisotropy=%d: a mipmapped texture the game filters linearly is filtered anisotropically, at most %gx%s",
+             asked, (double)value, value < (float)asked ? ", the device's most" : "");
+    return value;
+}
+
+int snx_vk_cache_file(VkPhysicalDevice phys, const char* directory, const char* name, char* path, size_t n, char* why,
+                      size_t wn) {
+    char dir[1100], tag[SNX_VK_DRIVER_TAG], reason[256];
+    snprintf(dir, sizeof dir, "%s/shader_cache", directory);
+    snx_path_native(dir);
+    if (!snx_is_dir(dir) && plat_mkdir(dir)) {
+        snprintf(why, wn, "cannot create %s: %s", dir, snx_os_error(reason, sizeof reason));
+        return -1;
+    }
+    /* each driver's file apart: d<driver ID>-<vendor>-<device> */
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(phys, &props);
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snx_vk_driver_path(path, n, dir, name, tag, ".bin");
+    snx_path_native(path);
+    return 0;
+}

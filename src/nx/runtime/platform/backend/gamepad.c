@@ -73,7 +73,7 @@ static struct {
 void gamepad_background_set(const IniOpt* o, const char* v) {
     (void)o;
     (void)v;
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, g_settings.background_input ? "1" : "0");
+    snx_pad_background(g_settings.background_input);
 }
 /* SDL decides whether two Joy-Cons form one gamepad when its joystick subsystem starts. */
 void gamepad_joycon_pair_set(const IniOpt* o, const char* v) {

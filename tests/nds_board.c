@@ -440,6 +440,34 @@ static void test_sound_early(NdsRom* rom) {
     rom->sdk_version = sdk;
 }
 
+/* slot 2: empty, it reads as the window's zeros; a Rumble Pak reads 0xFFFD at every halfword, as a game finds it, and
+   moves its motor on each write of another value, its reads given back */
+static void test_slot2(NdsRom* rom) {
+    char error[512] = "";
+    CHECK(nds_slot2_device("none") == NDS_SLOT2_NONE && nds_slot2_device("rumble") == NDS_SLOT2_RUMBLE &&
+          nds_slot2_device("rumble pak") == -1);
+    for (int device = NDS_SLOT2_NONE; device <= NDS_SLOT2_RUMBLE; ++device) {
+        NdsBoard* board = calloc(1, sizeof *board);
+        CHECK(board && nds_board_init(board, rom, error, sizeof error));
+        CHECK(nds_slot2_insert(board, device, error, sizeof error));
+        unsigned char* slot = board->mem.base;
+        uint16_t read = device ? 0xFFFD : 0;
+        CHECK(snx_ld_le16(slot + 0x08000000) == read && snx_ld_le16(slot + 0x080000B2) == read &&
+              snx_ld_le16(slot + 0x09FFFFFE) == read);
+        snx_st_le16(slot + 0x08001000, 2); /* a write lands in the window, as a compiled block's store does */
+        CHECK(nds_slot2_rumble(board) == (device == NDS_SLOT2_RUMBLE));
+        CHECK(!device || snx_ld_le16(slot + 0x08001000) == 0xFFFD);
+        if (device) {
+            snx_st_le16(slot + 0x09000000, 2); /* the same value again: the motor stays as it was */
+            CHECK(!nds_slot2_rumble(board));
+            snx_st_le16(slot + 0x08000000, 0);
+            CHECK(nds_slot2_rumble(board) && !nds_slot2_rumble(board));
+        }
+        nds_board_free(board);
+        free(board);
+    }
+}
+
 int main(void) {
     char error[512] = "";
     char* dir = snx_temp_dir(NULL);
@@ -455,6 +483,10 @@ int main(void) {
     CHECK(board && nds_board_init(board, &rom, error, sizeof error));
     CHECK(nds_read32(board, NDS_TEST_ADDRESS) == nds_test_program[0]);
     CHECK(!memcmp(board->mem.base + 0x027FFE00, "SNXTEST", 7)); /* the header where the firmware leaves it */
+    /* the user settings' language: English as the firmware starts, the one asked after, the backlight kept */
+    CHECK((nds_read16(board, 0x027FFC80u + 0x64) & 7) == 1);
+    nds_board_language(board, 3);
+    CHECK(nds_read16(board, 0x027FFC80u + 0x64) == (3 | 3 << 4));
     test_blz();
     test_memory(board);
     test_registers(board);
@@ -471,6 +503,7 @@ int main(void) {
     nds_board_free(board);
     free(board);
     test_sound_early(&rom);
+    test_slot2(&rom);
     nds_rom_close(&rom);
     (void)snx_remove_tree(dir);
     free(image);

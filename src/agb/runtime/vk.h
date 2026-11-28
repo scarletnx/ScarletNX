@@ -13,9 +13,9 @@
 #include <stdint.h>
 
 typedef struct AgbVk AgbVk;
-/* the window, titled title, width by height pixels and fullscreen or not, and its Vulkan device; NULL with the reason
+/* the window, titled title, width by height pixels, and its Vulkan device; NULL with the reason
    in error: a host with no Vulkan 1.3 device that presents to it, or no window */
-AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, char* error, size_t error_size);
+AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t error_size);
 void agb_vk_close(AgbVk* vk);
 /* the SDL window the events come from */
 SDL_Window* agb_vk_window(AgbVk* vk);

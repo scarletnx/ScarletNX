@@ -13,6 +13,7 @@
    from its render target while the GPU keeps that newer than memory, or from the copy that a display transfer made
    of it. */
 #include "3ds/gpu/present.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/gpu/vk/vk.h"
@@ -32,6 +33,7 @@
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/state_header.h"
 #include "common/platform/file.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <signal.h>
@@ -289,12 +291,9 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
     if (g_present.separate) (void)swap_create(1);
     /* vsync's effect: FIFO waits for the display's refresh, mailbox and immediate do not */
     if (g_present.swap[0].swapchain) {
-        VkPresentModeKHR mode = g_present.swap[0].mode;
-        fprintf(stderr, "3ds gpu: the window shows its images %s (vsync=%d)\n",
-                mode == VK_PRESENT_MODE_FIFO_KHR      ? "at the display's refresh, in order (fifo)"
-                : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "the newest at the next refresh (mailbox)"
-                                                      : "at once, tearing (immediate)",
-                g_settings.vsync);
+        char said[160];
+        snx_vk_present_said(g_present.swap[0].mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "3ds gpu: %s\n", said);
     }
     return true;
 }
@@ -569,9 +568,8 @@ static void pointer_event(const SDL_Event* event) {
 }
 /* a window to fullscreen and back, said when the system refuses */
 static void fullscreen(SDL_Window* window, bool on) {
-    if (!SDL_SetWindowFullscreen(window, on))
-        fprintf(stderr, "3ds gpu: the window cannot go %s: %s\n", on ? "fullscreen" : "back from fullscreen",
-                SDL_GetError());
+    char why[256];
+    if (!snx_window_fullscreen(window, on, why, sizeof why)) fprintf(stderr, "3ds gpu: %s\n", why);
 }
 void snx_ctr_present_fullscreen(void) {
     const SnxCtrVk* v = snx_ctr_vk();
@@ -852,6 +850,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .swapchainCount = 1,
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
+        snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }

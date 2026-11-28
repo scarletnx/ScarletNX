@@ -28,7 +28,7 @@ enum {
 uint16_t agb_host_key(int scancode);
 /* the keys a console button holds (pad_map.h's bits: A, B, L and ZL, R and ZR, Plus, Minus, the D-pad): 0 for X, Y and
    the sticks' clicks */
-uint16_t agb_host_button(int bit);
+unsigned agb_host_button(int bit);
 
 /* what the on-screen controls say, on stderr */
 void agb_host_say(const char* line);
@@ -38,6 +38,11 @@ typedef struct AgbHost AgbHost;
    kept), the GBA's (vpad_consoles.h), whose settings are read by then (vpad_settings) */
 AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size);
 void agb_host_close(AgbHost* host);
+/* the gain the game's sound plays at, the player's Volume over 100; -1 without sound */
+float agb_host_volume(const AgbHost* host);
+/* the gamepads shaken for the frame by share (0 to 1) of it the cartridge's motor ran, as strongly as gamepad_rumble
+   says; a gamepad that cannot, said once */
+void agb_host_rumble(AgbHost* host, float share);
 /* the events since the last call: the keys held after them (AGB_KEY_), the on-screen controls' among them, none while
    their layout is edited; false once the window is closed */
 bool agb_host_poll(AgbHost* host, uint16_t* keys);

@@ -139,3 +139,20 @@ void snx_pad_key_sticks(const bool* held, float left[2], float right[2]) {
     right[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
     right[1] = (float)(held[SDL_SCANCODE_I] - held[SDL_SCANCODE_K]);
 }
+void snx_pad_background(int on) { SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, on ? "1" : "0"); }
+
+int snx_pads_rumble(float share, int strength, uint32_t ms, char* why, size_t size) {
+    int count = 0, refused = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    float level = share * (float)strength / 100.0f;
+    Uint16 motor = (Uint16)(level <= 0 ? 0 : level >= 1 ? 0xFFFF : level * 0xFFFF);
+    for (int i = 0; ids && i < count; ++i) {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
+        if (!pad || SDL_RumbleGamepad(pad, motor, motor, motor ? ms : 0)) continue;
+        if (!refused++)
+            snprintf(why, size, "%s does not vibrate (gamepad_rumble=%d): %s", SDL_GetGamepadName(pad), strength,
+                     SDL_GetError());
+    }
+    SDL_free(ids);
+    return refused;
+}

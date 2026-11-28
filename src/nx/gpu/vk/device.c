@@ -2713,6 +2713,7 @@ static int create_device(void) {
                                   .needs_of = device_needs,
                                   .say = ban_say};
     snx_vk_device_settings(&request, settings);
+    request.pstate = NULL; /* held below, with NVIDIA's boost on the swapchain (gpu_pstate_hold) */
     SnxVkDevice made;
     if (!snx_vk_device_make(&request, &made, err, sizeof err)) {
         /* a table that does not read is the build's fault, and which bans hold would be unknown; a setting that does

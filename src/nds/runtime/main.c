@@ -5,6 +5,7 @@
    by the runtime (hle/, bios/) and whose picture is drawn on the GPU (gpu/). A game is its image, read where it lies:
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
 #include "nds/runtime/main.h"
+#include "common/cpu/recompiler/jit/jit_settings.h"
 #include "common/utilities/endian.h"
 #include "nds/aot/nds_module.h"
 #include "nds/cartridge/key1.h"
@@ -21,6 +22,8 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_language.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/state_header.h"
 #include "nds/runtime/state.h"
 #include "common/online/wfc.h"
@@ -272,7 +275,7 @@ int snx_nds_main(int argc, char** argv) {
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
     SnxCli cli;
     vpad_console(&snx_vpad_nds);
-    snx_vpad_sdl_settings();
+    snx_vpad_sdl_settings(SNX_SYSTEM_NDS);
     snx_cli_init(&cli, "scarletnx-nds", nds_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -294,6 +297,12 @@ int snx_nds_main(int argc, char** argv) {
             return 2;
         }
         if (controls) continue;
+        /* one of the Switch's settings a DS game does not take, said with why */
+        if (snx_console_arg(SNX_SYSTEM_NDS, argv[i], error, sizeof error) < 0) {
+            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
         char* end;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
@@ -370,8 +379,15 @@ int snx_nds_main(int argc, char** argv) {
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
     double seconds = cli.seconds;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen == 1;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     int headless = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS));
+    /* slot 2, the GBA cartridge's: empty, or a Rumble Pak (nds_slot2) */
+    int slot2 = nds_slot2_device(g_settings.ds_slot_2_device);
+    if (slot2 < 0) {
+        fprintf(stderr, "settings: nds_slot2=%s is not none or rumble: it keeps none\n", g_settings.ds_slot_2_device);
+        snprintf(g_settings.ds_slot_2_device, sizeof g_settings.ds_slot_2_device, "none");
+        slot2 = NDS_SLOT2_NONE;
+    }
     /* the WFC service, refused before anything is made when the setting names none */
     uint8_t wfc_dns[4];
     char wfc_why[512];
@@ -430,6 +446,7 @@ int snx_nds_main(int argc, char** argv) {
     if (rom.size >= 0x84 && snx_ld_le32(rom.data + 0x80) > rom.size)
         fprintf(stderr, "scarletnx-nds: %s is incomplete: it has %zu bytes of the %u its header counts. The game can stop "
                         "where it reads the rest\n", image, rom.size, (unsigned)snx_ld_le32(rom.data + 0x80));
+    snx_jit_settings("scarletnx-nds", g_settings.perf_map, g_settings.gdb_jit_symbols);
     module = snx_format("%s/%s" NDS_MODULE_SUFFIX, folder, name);
     hints = snx_format("%s/%s" NDS_HINTS_SUFFIX, folder, name);
     save = snx_format("%s/%s.sav", folder, name);
@@ -470,6 +487,27 @@ int snx_nds_main(int argc, char** argv) {
         goto done;
     }
     board->trace = trace;
+    if (!nds_slot2_insert(board, slot2, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-nds: %s\n", error);
+        goto done;
+    }
+    if (slot2 == NDS_SLOT2_RUMBLE) printf("Slot 2: a Rumble Pak (nds_slot2=rumble)\n");
+    /* the window's and the board's settings, the network's among them, read before the firmware's Wi-Fi */
+    vpad_set_say(nds_host_say);
+    vpad_settings(folder, name, argc, argv);
+    if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
+    /* the player's language, the Switch's setting, as the firmware's: one the DS has none of said */
+    int language = snx_language_nds(g_settings.language);
+    if (language < 0)
+        fprintf(stderr, "settings: language=%d (%s) is no language of the DS: it plays in English\n",
+                g_settings.language, snx_language_name(g_settings.language));
+    nds_board_language(board, language < 0 ? 1 : language);
+    /* offline, as the Switch's network and airplane mode say (the 3DS's too): no Wi-Fi connection set */
+    if (wfc && !snx_console_online()) {
+        printf("WFC: nds_wfc=%s, and %s: the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service,
+               g_settings.airplane_mode ? "airplane_mode=1" : "network=0");
+        wfc = 0;
+    }
     if (wfc == SNX_ONLINE_WFC_AUTO) wfc = wfc_fastest(wfc_dns);
     if (wfc > 0 && !nds_pxi_wfc(board, wfc_dns, error, sizeof error)) {
         fprintf(stderr, "scarletnx-nds: the firmware's Wi-Fi connection: %s\n", error);
@@ -478,7 +516,7 @@ int snx_nds_main(int argc, char** argv) {
     if (wfc > 0)
         printf("WFC: nds_wfc=%s, the firmware's first Wi-Fi connection (%s) asks the DNS server %u.%u.%u.%u\n",
                g_settings.ds_wfc_service, NDS_WFC_NETWORK, wfc_dns[0], wfc_dns[1], wfc_dns[2], wfc_dns[3]);
-    else
+    else if (snx_console_online())
         printf("WFC: nds_wfc=%s, the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service);
     save_load(board, save, image);
     recomp = nds_recomp_new(&rom, module, error, sizeof error);
@@ -495,10 +533,8 @@ int snx_nds_main(int argc, char** argv) {
     printf("card: %s\n", rom.code);
     {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
-        vpad_set_say(nds_host_say);
-        vpad_settings(folder, name, argc, argv);
-        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
-                             sizeof error);
+        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, g_settings.fullscreen && !(seconds > 0),
+                             error, sizeof error);
         free(title);
         if (!host) {
             fprintf(stderr, "scarletnx-nds: %s\n", error);

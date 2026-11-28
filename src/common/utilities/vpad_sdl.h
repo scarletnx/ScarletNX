@@ -7,6 +7,7 @@
 #ifndef SNX_VPAD_SDL_H
 #define SNX_VPAD_SDL_H
 #include <SDL3/SDL.h>
+#include "common/utilities/console_settings.h"
 #include "common/utilities/ui_rects.h"
 #include "common/utilities/vpad.h"
 
@@ -28,10 +29,11 @@ void snx_vpad_sdl_auto(int finger_seen);
 SDL_Haptic* snx_vpad_sdl_buzzer(void);
 void snx_vpad_sdl_buzz(SDL_Haptic* buzzer);
 
-/* the runtime's keys (hotkeys.h: hotkey_quit...) and the Switch's fps_limit among the settings vpad_arg and
-   vpad_settings take: before the first vpad_arg. fps_limit's text is read as a Switch game reads it (pace.h), one not
-   taken as given said with the pace in effect */
-void snx_vpad_sdl_settings(void);
+/* the runtime's keys (hotkeys.h: hotkey_quit...), the Switch's fps_limit and every other of the Switch's settings
+   console's game takes (console_settings.h) among the settings vpad_arg and vpad_settings take: before the first
+   vpad_arg. fps_limit's text is read as a Switch game reads it (pace.h), one not taken as given said with the pace in
+   effect */
+void snx_vpad_sdl_settings(SnxSystem console);
 /* a frame's time at the pace fps_limit and F4 give, console_ns the console's own: 0 for no limit */
 uint64_t snx_vpad_window_frame_ns(uint64_t console_ns);
 /* window's controls, their layout kept in [On-screen controls] of the game's .ini at ini as it is edited, what they say

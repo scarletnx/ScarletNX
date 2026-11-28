@@ -8,6 +8,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/vpad_consoles.h"
 #include "gui/i18n.h"
 #include "snx_settings.h"
@@ -122,6 +123,14 @@ static const char* controls_name(const SnxVpadConsole* pad, const char* key, con
         if (!strcmp(key, SHOWN[i])) return NULL;
     return name;
 }
+/* a game's console's, as the consoles' table names it (console_settings.h) */
+static SnxSystem console_of(int game) {
+    return game == GUI_GAME_3DS    ? SNX_SYSTEM_3DS
+           : game == GUI_GAME_VITA ? SNX_SYSTEM_VITA
+           : game == GUI_GAME_GBA  ? SNX_SYSTEM_GBA
+           : game == GUI_GAME_NDS  ? SNX_SYSTEM_NDS
+                                   : SNX_SYSTEM_SWITCH;
+}
 /* the on-screen controls of a game's console, NULL for the Switch's and the 3DS's */
 static const SnxVpadConsole* pad_of(int game) {
     return game == GUI_GAME_GBA    ? &snx_vpad_gba
@@ -181,7 +190,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         if (f < 7) continue; /* not a setting: another line the runtime printed */
         if (game == GUI_GAME_3DS && !snx_ctr_game_setting(field[1])) continue;
         const char* name = f < 8 ? "" : field[7];
-        if (pad_of(game) && !(name = controls_name(pad_of(game), field[1], name))) continue;
+        /* a Vita, GBA or DS game's own: the Switch's settings its driver takes, a control by its console's name */
+        if (pad_of(game) && (controls_key(field[1]) ? !(name = controls_name(pad_of(game), field[1], name))
+                                                    : snx_console_why(console_of(game), field[1]) != NULL))
+            continue;
         for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
@@ -1003,25 +1015,21 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     return 1;
 }
 /* argv's --key=value of each setting picked; with a driver's prefix, that driver's only: its tables' (keys that start
-   with ctr_ or vita_), and for the 3DS the Switch's it takes too. A Switch run's (prefix NULL), the game's .ini at
-   game_ini (NULL: none), are the launcher's picks for every game, said by --launcher-picks=1, under the game's own
-   picks, which the runtime reads; the recompile, which reads none, gets the game's own of its settings (given). So are
-   a 3DS run's, when one of them is a setting a 3DS game has of its own, which its driver reads */
+   with linux_ or android_). A Switch run's (prefix NULL), the game's .ini at game_ini (NULL: none), are the launcher's
+   picks for every game, said by --launcher-picks=1, under the game's own picks, which the runtime reads; the
+   recompile, which reads none, gets the game's own of its settings (given) */
 static size_t picked_options(GuiSettings* s, const char** argv, const char* prefix, const char* game_ini) {
     char* picks = !prefix && game_ini ? snx_game_picks(game_ini) : NULL;
-    int ctr = prefix && !strcmp(prefix, "ctr_"), over = !prefix; /* what goes over them, said: the game's own picks */
     size_t n = 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
         const char* key = s->values[i].key;
         const char* value;
-        if (!key || (prefix && strncmp(key, prefix, strlen(prefix)) && !(ctr && snx_ctr_shared_setting(key)))) continue;
-        if (prefix && !strncmp(key, "nds_wfc", 7)) continue; /* the driver reads the launcher's own from settings.ini */
+        if (!key || (prefix && strncmp(key, prefix, strlen(prefix)))) continue;
         if ((value = prefix ? picked(s, i) : given(s, i, picks)) == NULL) continue;
         argv[n++] = option_of(s, i, value);
-        over = over || (ctr && snx_ctr_game_setting(key));
     }
-    if (n && over) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    if (n && !prefix) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
     free(picks);
     return n;
 }
@@ -1035,13 +1043,16 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, co
     }
     return n;
 }
-size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "ctr_", NULL); }
-size_t gui_settings_vita_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "vita_", NULL); }
-size_t gui_settings_controls_options(GuiSettings* s, const char** argv) {
+size_t gui_settings_console_options(GuiSettings* s, int console, const char** argv) {
+    static const char* const own[SNX_SYSTEMS] = {NULL, "ctr_", "vita_", "gba_", "nds_"};
     size_t n = 0;
+    if (console <= SNX_SYSTEM_SWITCH || console >= SNX_SYSTEMS) return 0;
     for (int i = s->own; i < s->count; ++i) {
-        const char* value = s->values[i].kind || !controls_key(s->values[i].key) ? NULL : picked(s, i);
-        if (value) argv[n++] = option_of(s, i, value);
+        const char* key = s->values[i].key;
+        const char* value;
+        if (s->values[i].kind || !key || !strncmp(key, "nds_wfc", 7)) continue; /* that driver reads settings.ini's */
+        if (strncmp(key, own[console], strlen(own[console])) && snx_console_why((SnxSystem)console, key)) continue;
+        if ((value = picked(s, i)) != NULL) argv[n++] = option_of(s, i, value);
     }
     if (n) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
     return n;
@@ -1050,4 +1061,3 @@ size_t gui_settings_linux_options(GuiSettings* s, const char** argv) { return pi
 size_t gui_settings_android_options(GuiSettings* s, const char** argv) {
     return picked_options(s, argv, "android_", NULL);
 }
-size_t gui_settings_nds_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "nds_", NULL); }

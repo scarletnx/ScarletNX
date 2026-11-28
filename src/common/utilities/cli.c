@@ -235,6 +235,16 @@ void snx_cli_free(SnxCli* cli) {
     cli->update_count = 0;
 }
 
+int snx_cli_fullscreen_flag(int argc, char** argv) {
+    int flag = 0;
+    for (int i = 1; i < argc && strcmp(argv[i], "--"); ++i)
+        if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--fullscreen"))
+            flag = 1;
+        else if (!strncmp(argv[i], "--fullscreen=", 13))
+            flag = 0;
+    return flag;
+}
+
 void snx_cli_help(FILE* out, unsigned accepted) {
     fputs("Common options, each value given as --option VALUE or --option=VALUE:\n", out);
     for (int id = 1; id < SNX_CLI_COUNT; ++id) {

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/device.h"
 #include "common/gpu/vk/extension_commands.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -250,9 +251,39 @@ static void say_made(const SnxVkDeviceRequest* r, const SnxVkChoice* c, VkBanSay
     say(line, 0);
 }
 
+/* gpu_pstate's mode (r->pstate, read before any device) held on the device made: its render node where it lists
+   VK_EXT_physical_device_drm; NVIDIA's boost is a swapchain's (VK_NV_low_latency2), which a console's window does not
+   make */
+static void pstate_hold(int mode, const SnxVkDevice* d, VkBanSay say) {
+    SnxVkExtensions listed = {0};
+    bool drm_listed = snx_vk_device_extensions(d->phys, &listed) &&
+                      snx_vk_extensions_has(&listed, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
+    snx_vk_extensions_free(&listed);
+    VkPhysicalDeviceDrmPropertiesEXT drm = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                      .pNext = drm_listed ? &drm : NULL};
+    vkGetPhysicalDeviceProperties2(d->phys, &p2);
+    SnxGpuPstateDevice g = {p2.properties.deviceName,
+                            p2.properties.vendorID,
+                            (int)p2.properties.deviceType,
+                            drm.hasRender,
+                            drm.renderMajor,
+                            drm.renderMinor,
+                            "/sys",
+                            "/dev",
+                            "the window makes its swapchain without VK_NV_low_latency2"};
+    (void)snx_gpu_pstate_hold(mode, &g, say);
+}
 bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err, size_t n) {
     VkBanSay say = r->say ? r->say : say_stderr;
     *out = (SnxVkDevice){0};
+    /* a word gpu_pstate does not take stops the device whatever it is, as it stops a Switch game */
+    int pstate = r->pstate ? snx_gpu_pstate_mode(r->pstate) : SNX_GPU_PSTATE_OFF;
+    if (pstate < 0) {
+        snprintf(err, n, "settings: gpu_pstate=%s is not auto, on or off", r->pstate);
+        out->refused = SNX_VK_REFUSED_SETTING;
+        return false;
+    }
     if (r->api < VK_API_VERSION_1_2) {
         snprintf(err, n, "%s asks for Vulkan %u.%u, below the 1.2 whose properties the bans read a driver by", r->who,
                  VK_API_VERSION_MAJOR(r->api), VK_API_VERSION_MINOR(r->api));
@@ -301,5 +332,6 @@ bool snx_vk_device_make(const SnxVkDeviceRequest* r, SnxVkDevice* out, char* err
     say_made(r, &c, say);
     *out = (SnxVkDevice){.phys = c.phys, .device = c.device, .family = c.family, .extension_count = c.extension_count};
     memcpy(out->extensions, c.extensions, c.extension_count * sizeof *c.extensions);
+    if (r->pstate) pstate_hold(pstate, out, say);
     return true;
 }

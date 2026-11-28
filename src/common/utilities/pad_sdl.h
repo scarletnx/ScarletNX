@@ -34,10 +34,17 @@ void snx_pads_event(SDL_Gamepad** pads, int count, const SDL_Event* event, void 
 void snx_pads_close(SDL_Gamepad** pads, int count);
 /* a stick's axis, -1 to 1 */
 float snx_pad_axis(SDL_Gamepad* g, SDL_GamepadAxis which);
+/* a gamepad's input reaching the game while its window has no focus, on (the setting gamepad_background) or not:
+   before SDL's gamepad subsystem starts, and again when the setting changes */
+void snx_pad_background(int on);
 /* The console buttons (a bit for each of pad_map.h's) that the window's keys hold, as a Switch game's keyboard has
    them: X A, Z B, C X, V Y, Q L, E R, 1 ZL, 3 ZR, Enter Plus (not with Alt, which is the window's fullscreen),
    Backspace Minus and the arrows the D-pad. held is SDL_GetKeyboardState's */
 unsigned snx_pad_keys(const bool* held);
 /* WASD as the left stick and IJKL as the right one, -1 to 1 with y up */
 void snx_pad_key_sticks(const bool* held, float left[2], float right[2]);
+/* Every open gamepad's motors at share (0 to 1) of strength, the player's gamepad_rumble in percent, for ms, the low and
+   the high one alike; share 0 stops them. The gamepads that could not, 0 for none, the first one's name and SDL's
+   reason in why */
+int snx_pads_rumble(float share, int strength, uint32_t ms, char* why, size_t size);
 #endif

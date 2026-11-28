@@ -31,6 +31,8 @@ typedef struct {
     bool preserve_infnan; /* shaderSignedZeroInfNanPreserveFloat32: the shaders declare SignedZeroInfNanPreserve */
     bool bc; /* the device samples BC1 to BC3 (textureCompressionBC) */
     bool depth16_blit; /* D16 depth images blit both ways (a depth surface scaled to and from its samples) */
+    bool anisotropic;  /* samplerAnisotropy */
+    float anisotropy;  /* the samplers' anisotropy, snx_vk_anisotropy's: 0 for none */
     bool depth_clamp;  /* the device clamps depth rather than clipping it (depthClamp), as the console does */
     bool timeline;     /* timelineSemaphore: the ring's submissions signal a timeline, not fences */
     VkFormat stencil_format; /* a depth and stencil format it renders to (D24S8, else D32S8), UNDEFINED for none */

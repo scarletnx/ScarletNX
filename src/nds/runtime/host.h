@@ -35,4 +35,6 @@ bool nds_host_held(NdsHost* host);
 /* the last frame, both screens, as a PPM at path: 0, or -1 */
 int nds_host_shot(NdsHost* host, const char* path);
 void nds_host_close(NdsHost* host);
+/* the gain the game's sound plays at, the player's Volume over 100; -1 without sound */
+float nds_host_volume(const NdsHost* host);
 #endif

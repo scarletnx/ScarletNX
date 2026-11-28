@@ -2947,28 +2947,18 @@ static void copy_every_page_back(void) {
 void snx_ctr_vk_pipeline_cache_open(const char* directory) {
     const SnxCtrVk* v = snx_ctr_vk();
     if (!v || g.cache || !g_settings.vulkan_pipeline_cache) return;
-    char dir[1100], tag[SNX_VK_DRIVER_TAG];
-    snprintf(dir, sizeof dir, "%s/shader_cache", directory);
-    snx_path_native(dir);
-    if (!snx_is_dir(dir) && plat_mkdir(dir)) {
-        char why[256];
-        fprintf(stderr, "3ds gpu: no pipeline cache kept between runs: cannot create %s: %s\n", dir,
-                snx_os_error(why, sizeof why));
+    char why[512];
+    if (snx_vk_cache_file(v->phys, directory, "vk_pipelines", g.cache_path, sizeof g.cache_path, why, sizeof why)) {
+        fprintf(stderr, "3ds gpu: no pipeline cache kept between runs: %s\n", why);
         return;
     }
-    /* each driver's file apart, as the Switch's: d<driver ID>-<vendor>-<device> */
-    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     vkGetPhysicalDeviceProperties2(v->phys, &props);
-    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
-                      NULL);
-    snx_vk_driver_path(g.cache_path, sizeof g.cache_path, dir, "vk_pipelines", tag, ".bin");
-    snx_path_native(g.cache_path);
     size_t loaded = 0;
     if (v->shader_object) {
         /* the draws make no pipelines: the shaders' binaries are what an earlier run keeps */
-        snx_vk_driver_path(g.binaries_path, sizeof g.binaries_path, dir, "vk_shaders", tag, ".bin");
-        snx_path_native(g.binaries_path);
+        (void)snx_vk_cache_file(v->phys, directory, "vk_shaders", g.binaries_path, sizeof g.binaries_path, why,
+                                sizeof why);
         snx_vk_shader_binaries_init(&g.binaries, v->shader_binary_uuid, v->shader_binary_version);
         snx_vk_shader_binaries_load(&g.binaries, g.binaries_path, &loaded);
         g.binaries_open = true;
@@ -2977,7 +2967,6 @@ void snx_ctr_vk_pipeline_cache_open(const char* directory) {
                     loaded >> 10);
         return;
     }
-    char why[512];
     g.cache = snx_vk_pipeline_cache_load(v->device, &props.properties, g.cache_path, &loaded, why, sizeof why);
     if (why[0]) fprintf(stderr, "3ds gpu: %s: %s\n", g.cache_path, why);
     if (loaded) fprintf(stderr, "3ds gpu: the pipeline cache of earlier runs loaded (%zu KB)\n", loaded >> 10);

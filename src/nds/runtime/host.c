@@ -11,7 +11,10 @@
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/audio_volume.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +32,7 @@ struct NdsHost {
     int headless, gpu, paced;
     SnxPadMap pad;
     uint16_t keyboard;
+    bool rumbling, rumble_said; /* the gamepads shake for the Rumble Pak's last move; one that could not, said */
     /* the pen: one finger, or the mouse's left button, the first that pressed the lower screen, until it lets go; its
        id and where it is, in the window's pixels */
     struct {
@@ -83,9 +87,7 @@ static uint16_t key_of(int scancode) {
 }
 
 /* a gamepad's control, by the Switch's bit the map gives it: A, B, X, Y, the shoulders and triggers, +, -, the pad */
-static uint16_t button_of(int bit);
-static unsigned nds_key(int bit) { return button_of(bit); }
-static uint16_t button_of(int bit) {
+static unsigned button_of(int bit) {
     switch (bit) {
         case 0: return 0x001;
         case 1: return 0x002;
@@ -181,6 +183,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
     host->headless = headless;
     host->paced = !headless;
     if (!headless) snx_vpad_sdl_hints();
+    if (!headless) snx_pad_background(g_settings.background_input);
     if (!headless && !SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -189,9 +192,12 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
     char why[256] = "";
     if (nds_vk_init(title, headless != 0, why, sizeof why)) {
         if (nds_vk_render3d_init(why, sizeof why) && nds_vk_frame_init(why, sizeof why) &&
-            nds_vk_present_init(why, sizeof why))
+            nds_vk_present_init(why, sizeof why)) {
             host->gpu = 1;
-        else {
+            char* folder = ini ? snx_dirname(ini) : NULL; /* the game's, beside its save */
+            nds_vk_pipeline_cache_open(folder);
+            free(folder);
+        } else {
             nds_vk_present_free();
             nds_vk_frame_free();
             nds_vk_render3d_free();
@@ -211,8 +217,11 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
     NdsVk* v = nds_vk();
     if (v && v->host.window) {
         snx_window_icon(v->host.window);
-        if (fullscreen) SDL_SetWindowFullscreen(v->host.window, true);
-        snx_pad_map_position(&host->pad);
+        char said[256];
+        if (!snx_window_fullscreen(v->host.window, fullscreen, said, sizeof said)) nds_host_say(said);
+        /* each button where the console has it, the player's map over it and A and B swapped as the Switch's
+           settings say */
+        snx_pad_map_console(&host->pad, button_of, "DS", g_settings.button_map, g_settings.swap_a_b);
         snx_vpad_window_open(v->host.window, ini, nds_host_say, nds_vk_notice);
     }
     if (!headless) {
@@ -223,13 +232,17 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
             fprintf(stderr, "scarletnx-nds: no sound: %s\n", SDL_GetError());
             if (host->audio) SDL_DestroyAudioStream(host->audio);
             host->audio = NULL;
-        }
+        } else if (!snx_audio_volume_open(host->audio, g_settings.volume, why, sizeof why)) /* the player's Volume */
+            nds_host_say(why);
     }
     if (wav && (host->wav = fopen(wav, "wb"))) wav_header(host->wav, 0);
     host->due = SDL_GetTicksNS() + FRAME_NS;
     return host;
 }
 
+float nds_host_volume(const NdsHost* host) {
+    return host && host->audio ? SDL_GetAudioDeviceGain(SDL_GetAudioStreamDevice(host->audio)) : -1;
+}
 void nds_host_close(NdsHost* host) {
     if (!host) return;
     free(host->captures);
@@ -295,7 +308,7 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
             if (pressed >> bit & 1) input->keys |= button_of(bit);
         pen_read(host, input);
         if (vpad_editing()) input->keys = 0, input->touching = 0;
-        snx_vpad_window_showcase(input->keys, nds_key, NULL);
+        snx_vpad_window_showcase(input->keys, button_of, NULL);
     }
     return open;
 }
@@ -314,6 +327,17 @@ void nds_host_frame(NdsHost* host) {
         host->wav_frames += count;
     }
     if (host->shot) shot(host);
+    /* each move of the Rumble Pak's motor shakes the gamepads for two frames, which the next move renews */
+    bool moved = nds_slot2_rumble(host->board);
+    if (moved || host->rumbling) {
+        char why[256];
+        host->rumbling = moved;
+        if (snx_pads_rumble(moved ? 1.0f : 0.0f, g_settings.vibration, 34, why, sizeof why) &&
+            !host->rumble_said) {
+            host->rumble_said = true;
+            fprintf(stderr, "scarletnx-nds: %s\n", why);
+        }
+    }
     if (!host->paced) return;
     /* the frame's time by the host's clock, at fps_limit's pace (F4 switches it): a late frame does not hurry the ones
        after it past a frame's worth */
