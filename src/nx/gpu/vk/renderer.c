@@ -1061,7 +1061,6 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
         vk_bl_scratch_trim();
         vk_mem_release_run();
         vk_mem_trim(0, 0);
-        vk_astc_auto_present(); /* after the trim: Exact again for astc_mode's Auto where the room is back */
         SNX_PLOT("vk pres maintenance ms", (double)(plat_ns() - t_maint) / 1e6);
         if (g_vk_present % 600 == 0) {
             char cs_why[256];
@@ -1213,6 +1212,26 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)(vk_bc7_cache_max() >> 20), (unsigned long long)cache.stored,
                         (unsigned long long)cache.evicted, (unsigned long long)cache.refused,
                         (unsigned long long)(cache.released >> 20));
+                u64 choice_levels, choice_bytes, choice_given, choice_known;
+                vk_bc7_choices_stats(&choice_levels, &choice_bytes, &choice_given, &choice_known);
+                if (choice_levels || choice_given)
+                    LOG("vulkan: the BC7 encoder's choices: %llu of the %llu blocks of kept levels encoded since the start took a kept "
+                        "one in place of the search; %llu levels' kept (%llu KB), written at the exit\n",
+                        (unsigned long long)choice_known, (unsigned long long)choice_given,
+                        (unsigned long long)choice_levels, (unsigned long long)(choice_bytes >> 10));
+                VkBc7LaterTime lt;
+                vk_bc7_later_time(&lt);
+                if (lt.strips || lt.untimed)
+                    LOG("vulkan: the BC7 encoder between frames on the GPU since the start: %llu strips, %.1f ms for "
+                        "%llu blocks (%.0f ns a block), %llu of them given a kept choice; strips whose every block had "
+                        "one %.0f ns a block (%llu blocks), strips with none %.0f ns a block (%llu blocks); %llu strips "
+                        "found no timestamps free\n",
+                        (unsigned long long)lt.strips, (double)lt.ns / 1e6, (unsigned long long)lt.blocks,
+                        lt.blocks ? (double)lt.ns / (double)lt.blocks : 0.0, (unsigned long long)lt.known,
+                        lt.all_blocks ? (double)lt.all_ns / (double)lt.all_blocks : 0.0,
+                        (unsigned long long)lt.all_blocks,
+                        lt.none_blocks ? (double)lt.none_ns / (double)lt.none_blocks : 0.0,
+                        (unsigned long long)lt.none_blocks, (unsigned long long)lt.untimed);
                 VkLaterStats later;
                 vk_tex_later_stats(&later);
                 if (later.made || later.waiting || later.restarted || later.went_hot)
@@ -1232,7 +1251,6 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                         (unsigned long long)bg.quick, (unsigned long long)bg.made, (unsigned long long)bg.finished,
                         (unsigned long long)bg.pending, (unsigned long long)bg.stored,
                         (unsigned long long)bg.gpu_pieces, (unsigned long long)bg.loaded, (unsigned long long)bg.hits);
-                vk_astc_auto_say();
                 vk_astc_kind_say();
                 vk_astc_quick_say();
                 u64 sparse_binds, sparse_ns;
@@ -1960,6 +1978,7 @@ static void vkr_reset(void) {
 static void vk_save(int at_exit) {
     if (at_exit) vk_pipeline_file_save();
     if (at_exit) vk_cb_dynamic_save(); /* the constant buffers' moves, which the next start chooses from */
+    if (at_exit) vk_bc7_choices_save(); /* the BC7 encoder's choices, which the next start skips the search with */
     vk_pipeline_save(at_exit);
 }
 const Renderer vk_renderer = {

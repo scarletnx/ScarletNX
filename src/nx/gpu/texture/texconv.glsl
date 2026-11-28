@@ -817,6 +817,7 @@ void main() {
             as_hib = kind == TC_BC1 && e0 <= e1 ? 3u : 2u;
         }
         hint_on = false;
+        choice_on = false;
         block = AstcEncode();
 #if SNX_ASTC_PASS == 2
         if (as_more) { /* its lines don't hold it: searched for, in the third pass */

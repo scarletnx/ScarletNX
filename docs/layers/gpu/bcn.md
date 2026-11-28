@@ -28,7 +28,7 @@ where the device makes no 3D image of the ETC2 format. As the device starts, the
 from the formats `vk_tic_format` picks (`vk_blocks_say`), on a Mali-G52 for instance:
 
 ```
-vulkan: ASTC textures (native_astc=1, the GPU samples ASTC, astc_mode=0): sampled as the game's blocks: ASTC
+vulkan: ASTC textures (native_astc=1, the GPU samples ASTC, astc_textures=0): sampled as the game's blocks: ASTC
 vulkan: ETC2 and EAC textures (native_etc2=1, the GPU samples ETC2): sampled as the game's blocks: ETC2 RGB, ...
 vulkan: BCn textures (native_bc=1, the GPU samples no BCn, ETC2 sampled): encoded again on the GPU: BC1 as ETC2
 RGB8A1, BC2 as ETC2 RGBA8, BC3 as ETC2 RGBA8, BC4 as EAC R11, BC5 as EAC RG11, BC7 as ETC2 RGBA8; decoded on the

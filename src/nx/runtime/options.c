@@ -1173,23 +1173,49 @@ int options_astc_bc_old(const char* old) {
     if (!strcmp(old, "0")) return -1;
     return -2;
 }
-/* astc_bc, deprecated for astc_mode, read while the file and the command line give astc_mode no value, as memory_fit
-   is */
-static void astc_bc_old(void) {
-    const char* old = ini_deprecated_value("astc_bc");
-    int now;
-    if (!old || override_of("astc_mode") || store_find("astc_mode")) return;
-    now = options_astc_bc_old(old);
+int options_astc_mode_old(const char* old) {
+    if (!strcmp(old, "0") || !strcmp(old, "2")) return 0;
+    if (!strcmp(old, "1")) return 1;
+    if (!strcmp(old, "3")) return 2;
+    return -1;
+}
+static const char* const k_astc_textures_words[] = {"Approximate", "Exact", "BC7 at load"};
+/* astc_mode, deprecated for astc_textures: its Auto turned BC7 only once the GPU's memory filled and back to Exact
+   when room came, so it is BC7 from the start now, as its BC7 was. Read while the file and the command line give
+   astc_textures no value, as memory_fit is; before it, astc_bc, which astc_mode had taken the place of */
+static void astc_textures_old(void) {
+    if (override_of("astc_textures") || store_find("astc_textures")) return;
+    const char* old = ini_deprecated_value("astc_mode");
+    if (old) {
+        const int now = options_astc_mode_old(old);
+        if (now < 0)
+            WARN(
+                "settings: astc_mode=%s, deprecated, is none of 0 to 3: astc_textures takes its default, 0 (Approximate)\n",
+                old);
+        else {
+            char v[4];
+            snprintf(v, sizeof v, "%d", now);
+            store_put("astc_textures", v);
+            WARN("settings: astc_mode=%s, deprecated, is astc_textures=%d (%s) now (docs/user/deprecations.md)\n", old,
+                 now, k_astc_textures_words[now]);
+        }
+        return;
+    }
+    old = ini_deprecated_value("astc_bc");
+    if (!old) return;
+    const int now = options_astc_bc_old(old);
     if (now == -2)
-        WARN("settings: astc_bc=%s, deprecated, is neither 0 nor 1: astc_mode takes its default, 0 (Auto)\n", old);
-    else if (now == -1)
-        WARN("settings: astc_bc=%s, deprecated, was its default: astc_mode takes its own, 0 (Auto), which holds ASTC "
-             "textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn but not ASTC "
-             "(docs/user/deprecations.md)\n",
+        WARN("settings: astc_bc=%s, deprecated, is neither 0 nor 1: astc_textures takes its default, 0 (Approximate)\n",
              old);
+    else if (now == -1)
+        WARN(
+            "settings: astc_bc=%s, deprecated, was its default: astc_textures takes its own, 0 (Approximate), which holds ASTC "
+            "textures as BC7 where the GPU samples BCn but not ASTC (docs/user/deprecations.md)\n",
+            old);
     else {
-        store_put("astc_mode", "0");
-        WARN("settings: astc_bc=%s, deprecated, is astc_mode=0 (Auto) now (docs/user/deprecations.md)\n", old);
+        store_put("astc_textures", "0");
+        WARN("settings: astc_bc=%s, deprecated, is astc_textures=0 (Approximate) now (docs/user/deprecations.md)\n",
+             old);
     }
 }
 
@@ -1611,7 +1637,7 @@ void ini_open(const char* path) {
         free(text);
     }
     memory_fit_old();
-    astc_bc_old();
+    astc_textures_old();
     bc7_cache_gb_old();
     unit_cache_gb_old();
     compress_shader_cache_old();

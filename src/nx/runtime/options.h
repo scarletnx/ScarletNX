@@ -96,9 +96,11 @@ int options_perf_notice(const char* base);
    else -1, memory_fit_mode's default, as 0 was then memory_fit's own, which every game's .ini had written; -2 for
    any other value */
 int options_memory_fit_old(const char* old, int ios);
-/* astc_bc's value old as astc_mode's (0 Auto, 1 Exact): 1 is 0; 0 is -1, astc_mode's default, as 0 was astc_bc's own,
+/* astc_bc's value old as astc_textures's (0 BC7, 1 Exact): 1 is 0; 0 is -1, astc_textures's default, as 0 was astc_bc's own,
    which every game's .ini had written; -2 for any other value */
 int options_astc_bc_old(const char* old);
+/* astc_mode's value old as astc_textures's (0 BC7, 1 Exact, 2 BC7 at load), or -1 for none of 0 to 3 */
+int options_astc_mode_old(const char* old);
 /* vk_descriptors's value old as vk_descriptors_mode's, whose values are the same (0 Sets, 1 Buffers, 2 Heaps, 3
    Automatic): the command line's (given 1) as it is, a choice of that run; the .ini's (given 0) as it is but 0 and 3,
    which are -1, vk_descriptors_mode's default, as 0 was vk_descriptors's own until 3 was, and every game's .ini had

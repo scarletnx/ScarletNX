@@ -8,7 +8,7 @@
    - a handle past the pools' limits: zeros, through the draw's word
    - a draw that fetches the target it draws into: the feedback loop's copy, through the draw's word
    - a texture that crops a target, and the target drawn again: the new pixels, the map's slot still the crop's
-   - an ASTC texture held as BC7 later (astc_mode 2): its BC7 image takes the RGBA8 one's place, and the draw after the
+   - an ASTC texture held as BC7 later (astc_textures 0): its BC7 image takes the RGBA8 one's place, and the draw after the
      swap takes its word and teaches the map the new view, with texels near the RGBA8 ones
    The renderer starts with the SM86 frontend (SNX_TEST_SM86_TABLE=1), so that it takes the texture table, and with
    --pool-map=1 (SNX_TEST_NVN_CASE=pool_map alone) */
@@ -194,8 +194,8 @@ static int check_pool_map_draws(void) {
     /* an ASTC texture held as BC7 later: header 4 */
     static const AlCase astc = {"ASTC 8x8 64x64", NVN_FORMAT_RGBA_ASTC_8x8, 64, 64, 1, 0};
     AlTex x;
-    const int astc_mode = g_settings.astc_mode;
-    g_settings.astc_mode = 2;
+    const int astc_textures = g_settings.astc_textures;
+    g_settings.astc_textures = 0;
     CHECK(!al_place(&x, &astc, 0, 0));
     al_fill(&x);
     CHECK(!storage_write_words(PM_GPU + PM_POOL + 128, x.tic, 8));
@@ -218,7 +218,7 @@ static int check_pool_map_draws(void) {
     CHECK(!pmg_draw(channel, 0x1800, px, &d[1]));
     failed |= pm_case("the ASTC texture as BC7, the draw after",
                       pm_near(px, snx_ld_le32(before), 64) && d[1].why[VK_POOL_GPU_MAP], px, &d[1]);
-    g_settings.astc_mode = astc_mode;
+    g_settings.astc_textures = astc_textures;
     vk_lock();
     vk_finish();
     vk_unlock();

@@ -1,79 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* How a GPU that samples BCn but not ASTC holds the ASTC textures it decodes (astc_mode, settings.txt): Exact (1) as
-   RGBA8, BC7 (2) encoded again as BC7 between frames, a quarter of RGBA8's memory, close to the game's blocks but not
-   the same, and Auto (0, the default) one of the two by the room the GPU's memory has as the game runs. Then when the
-   log suggests BC7 to a run that holds them as RGBA8, and from what size a level held as BC7 at load is encoded
-   quickly */
+/* How a GPU that samples BCn but not ASTC holds the ASTC textures it decodes (astc_textures, settings.txt): BC7 (0, the
+   default) shown at once as RGBA8 and encoded again as BC7 between frames, a quarter of RGBA8's memory, close to the
+   game's blocks but not the same; Exact (1) as RGBA8; BC7 at load (2) encoded as each texture loads. Then when the log
+   suggests BC7 to a run that holds them as RGBA8, and from what size a level held as BC7 at load is encoded quickly */
 #ifndef SNX_TEXTURE_ASTC_BC_H
 #define SNX_TEXTURE_ASTC_BC_H
 
-/* Auto follows the room in the heap images go to: its
-   budget (the driver's, VK_EXT_memory_budget, or vk_budget_mb where that is lower) less the caches' use (vk_mem_use).
-   The levels that load are Exact while the caches have room, and BC7 from the first trim (vk_mem_trim: the caches past
-   mark, vk_mem_trim_start's head under the budget, from where each new RGBA8 level costs an eviction, or an image that
-   found no memory). They are Exact again once the room under mark is more than band, the most room any trim of this run
-   has left under it. A trim frees the caches from past mark toward two heads under the budget, so a return with less
-   room than a trim leaves would follow every trim, BC7 at the trim and Exact at the next present; with more, a trim
-   alone never brings it, only memory the game freed or a budget that grew. band is the run's own measure of the caches'
-   swing on this GPU and this game, not a number set here. Turning BC7, the textures held as RGBA8 whose memory is
-   unchanged go to the encoder too, read again from it at their next use, and the room that makes joins band
-   (snx_astc_auto_converted); turning Exact, those held as BC7 stay so. device.c applies these at each trim and each
-   present, under vk_lock */
-typedef struct {
-    int bc7;                     /* the ASTC levels that load now are held as BC7 */
-    unsigned long long band;     /* the most room under mark a trim has left, in bytes */
-    unsigned long long switches; /* from Exact to BC7 or back */
-} SnxAstcAuto;
-/* what a trim left the caches at: the use it counted, with the extra bytes of the allocation it made room for, less
-   what it freed. An allocation that found no memory (force) is left out: it is asked for again a present or two later,
-   and the presents between see the caches without it */
-static inline unsigned long long snx_astc_trim_left(unsigned long long usage, unsigned long long extra,
-                                                    unsigned long long freed, int force) {
-    const unsigned long long held = force && usage > extra ? usage - extra : force ? 0 : usage;
-    return held > freed ? held - freed : 0;
-}
-/* a trim ran, and left the caches at left bytes (snx_astc_trim_left) against mark: band takes the room it left under
-   mark. 1 when Auto turns to BC7 with it */
-static inline int snx_astc_auto_trimmed(SnxAstcAuto* a, unsigned long long left, unsigned long long mark) {
-    if (left < mark && mark - left > a->band) a->band = mark - left;
-    if (a->bc7) return 0;
-    a->bc7 = 1;
-    a->switches++;
-    return 1;
-}
-/* the ASTC textures Auto held as RGBA8 when it turned to BC7, bytes of them, to be encoded again as BC7, a quarter of
-   those bytes (vk_tex_later_exact): the room their encode makes is Auto's own, not the game's, so band takes it as it
-   takes a trim's, else that room alone turns it Exact again and the next loads to BC7 again. One run's switch took 893
-   MB of them before any trim had left room: 239 MB of room 23 s later, Exact with a band of 0, and four switches in
-   180 s */
-static inline void snx_astc_auto_converted(SnxAstcAuto* a, unsigned long long bytes) {
-    if (bytes - bytes / 4 > a->band) a->band = bytes - bytes / 4;
-}
-/* the caches' use at a present, against mark: 1 when Auto turns to Exact again, with more room under mark than band */
-/* Auto held as BC7, with the caches at usage against mark and held_bc7 bytes of ASTC textures held as BC7 now: 1 when
-   it turns Exact again. The room under mark must be more than band, and more than those textures would take more as
-   RGBA8 (three times their bytes): a game that loads new parts of its world as it goes loads them again in time, Exact
-   from the switch on. Without the second, the room that BC7 itself made turned it Exact, and the next loads filled the
-   caches again: one Ounce game's race under a 6 GB budget turned 58 to 75 times in 330 s, and each turn to BC7 read
-   hundreds of MB of textures again */
-static inline int snx_astc_auto_room(SnxAstcAuto* a, unsigned long long usage, unsigned long long mark,
-                                     unsigned long long held_bc7) {
-    if (!a->bc7 || usage >= mark || mark - usage <= a->band || mark - usage <= held_bc7 * 3) return 0;
-    a->bc7 = 0;
-    a->switches++;
-    return 1;
-}
-/* 1 where astc_mode mode holds them as BC7 (2 between frames, 3 at load), Auto as auto_bc7 says (SnxAstcAuto's bc7) */
-static inline int snx_astc_bc7(int mode, int auto_bc7) { return mode == 2 || mode == 3 || (mode == 0 && auto_bc7); }
+/* 1 where astc_textures mode holds them as BC7: 0 between frames, 2 at load */
+static inline int snx_astc_bc7(int mode) { return mode == 0 || mode == 2; }
 
 /* why the images ran short of memory (vk_mem_trim): an image allocation found none, a trim left the caches past their
    budget, or a trim took textures or targets the last two presents used, the working set, which the next frames load
    again: the game held slow by eviction */
 enum { SNX_ASTC_SHORT_NONE, SNX_ASTC_SHORT_NO_MEMORY, SNX_ASTC_SHORT_PAST_BUDGET, SNX_ASTC_SHORT_WORKING_SET };
-/* 1 where the log suggests astc_mode=2 (BC7): they are held as RGBA8 by Exact (bc7 0: astc_mode=1; Auto makes them BC7
-   by itself), the GPU samples BCn (bc) but not ASTC (astc), ASTC textures were decoded to RGBA8 (astc_bytes), and the
-   images ran short (why) */
+/* 1 where the log suggests astc_textures=0 (Approximate): they are held as RGBA8 by Exact (bc7 0: astc_textures=1), the GPU
+   samples BCn (bc) but not ASTC (astc), ASTC textures were decoded to RGBA8 (astc_bytes), and the images ran short
+   (why) */
 static inline int snx_astc_bc_suggest(int bc7, int bc, int astc, unsigned long long astc_bytes, int why) {
     return why != SNX_ASTC_SHORT_NONE && !bc7 && bc && !astc && astc_bytes;
 }

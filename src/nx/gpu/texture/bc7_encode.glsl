@@ -160,6 +160,13 @@ bool enc_more;
 bool hint_on;
 uint hint_part;
 uint hint_rot;
+/* The winner of an earlier encode of the same texels (vk/bc7_choices.c keeps them between runs), which Encode takes in
+   place of its whole search when choice_on: that job alone, the one the search chose, so the block is the search's,
+   bit for bit, without the other jobs nor the spreads of 128 partitions. choice is EncodeChoice's word. Whoever calls
+   Encode sets choice_on */
+bool choice_on;
+uint choice;
+bool enc_solid; /* the last block Encode made was of one colour (Solid), which needs no choice */
 /* 1: the packed dot product instruction (Dot4) */
 #ifndef SNX_BC7_DOT
 #define SNX_BC7_DOT 0
@@ -976,7 +983,8 @@ uvec4 Encode() {
         solid = solid && PX(k) == PX(0);
     }
     enc_more = false;
-    if (SNX_BC7_SOLID != 0 && solid) return Solid(PX(0));
+    enc_solid = SNX_BC7_SOLID != 0 && solid;
+    if (enc_solid) return Solid(PX(0));
     best_err = 0xFFFFFFFFu;
     /* The shapes tried, in turn, one call of TryShape and one of TryDual for all of them (see FitSubset):
        job 0, mode 6: one subset, RGBA, 7 bits and a p-bit an end, 4-bit weights. Unless it is exact, then the two
@@ -986,6 +994,13 @@ uvec4 Encode() {
        other block mode 7 (two subsets, RGBA, 5 bits and a p-bit an end, 2-bit weights) in each. Last modes 5, 4 and 4
        with the other index selection, in each rotation */
 #if SNX_BC7_PASS == 1 || SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3
+#if SNX_BC7_PASS == 1
+    /* a choice of another mode goes to the second pass at once, which takes it */
+    if (choice_on && (choice & 7u) != 6u && SNX_BC7_FAST != 2 && SNX_BC7_FAST != 3) {
+        enc_more = true;
+        return uvec4(0u);
+    }
+#endif
     /* These builds try mode 6 alone, so its job is written out here without the loop of jobs: the shape is then the
        same constants wherever the fit reads it, and the compiler folds every test of the mode out of FitSubset and
        Pack. In the loop below it cannot: the shape is whatever the job before left */
@@ -1015,8 +1030,25 @@ uvec4 Encode() {
     const uint shapes = 1u + (opaque ? 5u : 2u);
     const uint jobs = shapes + (SNX_BC7_MODES_4_5 != 0 ? 12u : 0u);
     uint first = 0u, second = 1u, third = 0u;
+    /* the job a choice names, its partition first (and third); one this block cannot take (it would have another
+       opacity, which the same texels never do) leaves the whole search */
+    uint want = jobs;
+    if (choice_on) {
+        const uint m = choice & 7u, p = (choice >> 3u) & 63u, r = (choice >> 9u) & 3u, s = (choice >> 11u) & 1u;
+        if (m == 6u)
+            want = 0u;
+        else if (m == 4u || m == 5u)
+            want = shapes + r * 3u + (m == 5u ? 0u : 1u + s);
+        else if (opaque ? m == 1u || m == 3u || m == 2u : m == 7u)
+            want = m == 3u ? 3u : m == 2u ? 5u : 1u;
+        first = p;
+        third = p;
+        choice_on = want < jobs;
+        hint_on = hint_on && !choice_on;
+    }
     for (uint j = 0u; j < jobs; j++) {
         if (best_err <= uint(SNX_BC7_GOOD_ENOUGH)) break;
+        if (choice_on && j != want) continue;
         if (j == 1u) {
             if (SNX_BC7_FAST == 2 || SNX_BC7_FAST == 3 || best_err <= SNX_BC7_ENOUGH) break;
             if (SNX_BC7_PASS == 1) {
@@ -1029,7 +1061,7 @@ uvec4 Encode() {
         if (hint_on && j > 0u &&
             (j < shapes ? hint_part >= 64u || ((j - 1u) & 1u) != 0u || j == 5u : (j - shapes) / 3u != hint_rot))
             continue;
-        if (j == 1u && !hint_on) {
+        if (j == 1u && !hint_on && !choice_on) {
             BlockSums();
             const uint alpha = opaque ? 0u : 1u;
             uint f_cost = 0xFFFFFFFFu, s_cost = 0xFFFFFFFFu;
@@ -1144,4 +1176,13 @@ uvec4 Encode() {
     sh_ib = best_mode == 6u ? 4u : best_mode == 1u ? 3u : 2u;
     return Pack();
 #endif
+}
+
+/* the last Encode's winner as a choice (choice_on's word): the mode in bits 0-2, 0 for a block of one colour, which
+   needs none, the partition of two or three subsets in bits 3-8, the rotation of modes 4 and 5 in bits 9-10 and mode
+   4's index selection in bit 11 */
+uint EncodeChoice() {
+    if (enc_solid || best_err == 0xFFFFFFFFu) return 0u;
+    const bool dual = best_mode == 4u || best_mode == 5u;
+    return best_mode | (dual ? (best_rot << 9u) | (best_isb << 11u) : best_part << 3u);
 }

@@ -88,11 +88,12 @@ static void kind_land(void) {
 }
 /* the BC7 encoder's frames (vk_tex_later_frame) until every ASTC texture held as BC7 is, or until a frame does nothing
    (a texture whose load failed waits for it): the images a check compares are BC7 then. No wait for the GPU: a check
-   that holds a submission at a gate drains too. A texture whose kind is still on its way waits for it (kind_land). The
-   frames it took */
+   that holds a submission at a gate drains too. The kinds of new textures land first (kind_land): under astc_textures's
+   default a new ASTC texture waits for its blocks' kind before the encoder takes it. The frames it took */
 static u32 later_drain(void) {
     VkLaterStats a, b;
     u32 frames = 0;
+    kind_land();
     for (vk_tex_later_stats(&a); a.waiting; a = b) {
         vk_lock();
         vk_tex_later_frame();
@@ -1687,24 +1688,20 @@ static int gpu_unpack(const VkFmt* f, const u32* src, u32 n, u32* depth, u8* ste
     return 0;
 }
 
-/* astc_mode: where the GPU samples BCn but not ASTC, an ASTC texture is held as BC7 by BC7 (2), as RGBA8 by Exact (1),
-   and by Auto (0, the default) as the GPU's memory has room now (gpu/texture/astc_bc.h; RGBA8 as the device starts,
-   with no trim yet: vulkan_astc_later.inc's al_auto follows it); where the GPU samples ASTC, all three keep the game's
+/* astc_textures: where the GPU samples BCn but not ASTC, an ASTC texture is held as BC7 by BC7 (0, the default, from
+   the start) and by BC7 at load (2), as RGBA8 by Exact (1); where the GPU samples ASTC, all three keep the game's
    blocks */
 static int check_astc_mode(void) {
-    u64 usage, budget;
-    vk_mem_use(&usage, &budget);
     for (int mode = 0; mode < 3; mode++) {
-        g_settings.astc_mode = mode;
-        const int bc7 = mode == 2 || (mode == 0 && g_vk.astc_auto.bc7);
+        g_settings.astc_textures = mode;
+        const int bc7 = mode != 1;
         const VkFormat want = g_vk.feat.textureCompressionASTC_LDR    ? VK_FORMAT_ASTC_4x4_UNORM_BLOCK
                               : g_vk.feat.textureCompressionBC && bc7 ? VK_FORMAT_BC7_UNORM_BLOCK
                                                                       : VK_FORMAT_R8G8B8A8_UNORM;
         CHECK(vk_tic_format(0x40, 0).vk == want && vk_astc_bc7() == bc7);
     }
-    g_settings.astc_mode = 0;
-    printf("astc_mode: Auto holds ASTC textures as %s here (a budget of %llu MB now), Exact as RGBA8, BC7 as BC7\n",
-           g_vk.astc_auto.bc7 ? "BC7" : "RGBA8", (unsigned long long)(budget >> 20));
+    g_settings.astc_textures = 0;
+    printf("astc_textures: BC7 and BC7 at load hold ASTC textures as BC7 here, Exact as RGBA8\n");
     return 0;
 }
 
@@ -4705,7 +4702,7 @@ static int check_sparse_pieces_batched(void) {
    mapped tiles and mip tails alone */
 #define RS_TILE 0x10000u
 /* the format such a texture is made in: NVN's, its tile's texels across and down, and its image's blocks (texels
-   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_mode=2), whose image is compared with the same texture made
+   across and bytes): RGBA8, or ASTC 4x4 held as BC7 (astc_textures=0), whose image is compared with the same texture made
    whole, not with memory */
 typedef struct {
     const char* name;
@@ -5097,18 +5094,18 @@ static int check_resident_texture(void) {
                             most, n));
     return 0;
 }
-/* the same for an ASTC 4x4 texture held as BC7 (astc_mode=2), whose tiles of 64x64 blocks are BC7's 256x256 texels:
+/* the same for an ASTC 4x4 texture held as BC7 (astc_textures=0), whose tiles of 64x64 blocks are BC7's 256x256 texels:
    its bound tiles are decoded where they lie, its image the same texture's made whole there and zeros elsewhere */
 static int check_resident_astc(void) {
-    const int had = g_settings.astc_mode;
+    const int had = g_settings.astc_textures;
     RsTex probe;
-    g_settings.astc_mode = 2;
+    g_settings.astc_textures = 0;
     rs_make(&probe, &RS_ASTC4, 256, 1, 0xA10000000ull);
     const VkFmt f = vk_tic_format(probe.tic[0], 0);
     if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
         printf("resident texture ASTC: the GPU %s, skipped\n",
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
-        g_settings.astc_mode = had;
+        g_settings.astc_textures = had;
         return 0;
     }
     /* the decoder's and the encoder's buffers made first, by a texture of its own mapped whole, made BC7 between
@@ -5134,7 +5131,7 @@ static int check_resident_astc(void) {
                                   HEAP_BASE + 0x1200000, one, 5);
     failed |= resident_texture(&RS_ASTC4, 512, 1, 0xA40000000ull, 0xA50000000ull, 0xA60000000ull, HEAP_BASE + 0x1200000,
                                most, 5);
-    g_settings.astc_mode = had;
+    g_settings.astc_textures = had;
     return failed;
 }
 
@@ -5354,26 +5351,27 @@ static int resident_astc_blocks(void) {
     return 0;
 }
 static int check_resident_astc_stacks(void) {
-    const int had = g_settings.astc_mode;
-    g_settings.astc_mode = 2;
+    const int had = g_settings.astc_textures;
+    g_settings.astc_textures = 0;
     const int failed = resident_astc_stacks() || resident_astc_blocks();
-    g_settings.astc_mode = had;
+    g_settings.astc_textures = had;
     return failed;
 }
 
 /* An ASTC array is uploaded a level at a time over all its layers (vk_astc_upload_layers): a layer and level at a time,
    each layer's encoder dispatch waited for the one before, and one game's arrays of 118 layers of 128x128 in 8 levels
-   took 667 ms of an RX 6700 XT as BC7 (docs/layers/gpu/astc.md). Held as BC7 (astc_mode 2), the encoder makes its BC7 image
+   took 667 ms of an RX 6700 XT as BC7 (docs/layers/gpu/astc.md). Held as BC7 (astc_textures 0), the encoder makes its BC7 image
    between frames a level at a time too, all the layers in one dispatch; and each layer's image is the one its memory
-   makes as a 2D texture on its own, as BC7 and as RGBA8 (astc_mode 1) */
+   makes as a 2D texture on its own, as BC7 and as RGBA8 (astc_textures 1) */
 static int astc_array_levels(int mode) {
     static const RsFmt as_rgba8 = {"ASTC 4x4 as RGBA8", NVN_FORMAT_RGBA_ASTC_4x4, 256, 1, 4, 1};
     const RsFmt* as = mode == 1 ? &as_rgba8 : &RS_ASTC4;
     const u32 layers = 8; /* 7 levels each: rs_image's 64 regions */
-    const u64 cpu = HEAP_BASE + 0x1E000000 + (u64)mode * 0x100000;
+    const u64 place = mode == 1 ? 1 : 2; /* apart from the other checks' places: one address space for all */
+    const u64 cpu = HEAP_BASE + 0x1E000000 + place * 0x100000;
     RsTex arr;
-    g_settings.astc_mode = mode;
-    rs_make(&arr, as, 64, layers, 0xA80000000ull + (u64)mode * 0x1000000);
+    g_settings.astc_textures = mode;
+    rs_make(&arr, as, 64, layers, 0xA80000000ull + place * 0x1000000);
     arr.tex.d.flags = 0; /* made whole, as a game's texture is */
     nvn_tex_layout(&arr.tex.d, &arr.lay);
     nvn_tic_encode(&arr.tex, NULL, 0, 0, arr.tic);
@@ -5434,9 +5432,9 @@ static int astc_array_levels(int mode) {
     return 0;
 }
 static int check_astc_array_levels(void) {
-    const int had = g_settings.astc_mode;
-    int failed = astc_array_levels(2) || astc_array_levels(1);
-    g_settings.astc_mode = had;
+    const int had = g_settings.astc_textures;
+    int failed = astc_array_levels(0) || astc_array_levels(1);
+    g_settings.astc_textures = had;
     return failed;
 }
 
@@ -5617,11 +5615,12 @@ static int resident_in_flight(const RsFmt* as, u64 gva, u64 ref_gva, u64 cpu) {
     return 0;
 }
 static int check_resident_texture_in_flight(void) {
-    const int had = g_settings.astc_mode;
+    const int had = g_settings.astc_textures;
     CHECK(!resident_in_flight(&RS_RGBA8, 0x960000000ull, 0, HEAP_BASE + 0x1300000));
-    g_settings.astc_mode = 2; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
+    g_settings.astc_textures =
+        0; /* held as BC7 where the GPU samples BCn and not ASTC; rs_device_can skips it elsewhere */
     int failed = resident_in_flight(&RS_ASTC4, 0xA70000000ull, 0xA80000000ull, HEAP_BASE + 0x1300000);
-    g_settings.astc_mode = had;
+    g_settings.astc_textures = had;
     return failed;
 }
 /* copies of the CPU's bytes one after another with no draw between them (a game's load through the GL layer, 256 MiB

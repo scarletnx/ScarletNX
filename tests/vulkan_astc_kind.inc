@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* astc_mode's Auto by what an ASTC texture's blocks hold (texture.c's astc_by_kind, gpu/texture/astc_kind.h): a texture
-   goes up as Auto holds one of unknown kind (RGBA8 with room), its blocks kept, and once the GPU's read of them is back
+/* astc_textures's BC7 by what an ASTC texture's blocks hold (texture.c's astc_by_kind, gpu/texture/astc_kind.h): a texture
+   goes up as one of unknown kind (RGBA8, BC7 later), its blocks kept, and once the GPU's read of them is back
    (vk_tex_kind_frame) one whose blocks are luminance alone is made BC4, luminance and alpha BC5, opaque colour on one
    line a 4x4 block BC1 (sRGB luminance too, as BC4 has no sRGB), and one of RGBA direct blocks whose ends are grey (a
-   normal map's) BC5, from its kept blocks, where the same blocks with ends apart stay RGBA8, their blocks let go; its
+   normal map's) BC5, from its kept blocks, where the same blocks with ends apart stay as the rest (RGBA8, BC7 later); its
    texels, the image decoded as the view gives them back (BC4 as R, R, R, 1, BC5 as R, R, R, G, whatever the header's
    swizzle picks of them), are its Exact twin's within what the encoder loses on such blocks
    (tests/glsl/astc_bcn_glsl.cpp's floors). Loaded again, it is RGBA8 again while the GPU reads its blocks' kind, and
    blocks that hold more take it to their format; a single block written loads it whole and reads it again; blocks of
-   every kind leave it as Auto holds the rest, RGBA8 with room, its twin's texels exactly. Needs vulkan_astc_later.inc
+   every kind leave it as the rest (RGBA8, BC7 later), its twin's texels exactly. Needs vulkan_astc_later.inc
    (al_*) */
 #include "astc_bcn_cpu.h"
 #include "support/astc_kind_ref.h"
@@ -66,14 +66,14 @@ static void ak_fill_rgba(AlTex* x, u32 apart) {
 }
 
 /* t's image sampled as its view gives it back: each level of its one layer decoded (tests/support/bcn.c, the
-   specification's interpolants), against its Exact twin's texels (astc_mode 1 over the same memory). The largest
+   specification's interpolants), against its Exact twin's texels (astc_textures 1 over the same memory). The largest
    error of R, G, B and A in *most; 1 when the images could not be read */
 static int ak_against_exact(AlTex* x, Surf* t, u32 most[4]) {
     u64 size = 0, exact_size = 0;
-    const int had = g_settings.astc_mode;
-    g_settings.astc_mode = 1;
+    const int had = g_settings.astc_textures;
+    g_settings.astc_textures = 1;
     Surf* twin = al_frame(x->twin);
-    g_settings.astc_mode = had;
+    g_settings.astc_textures = had;
     u8* got = al_image(x, t, &size);
     u8* exact = twin && twin->f.vk == (t->f.vk == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ? VK_FORMAT_R8G8B8A8_SRGB
                                                                                 : VK_FORMAT_R8G8B8A8_UNORM)
@@ -196,7 +196,7 @@ static int ak_case(const AkCase* k, u32 index) {
 }
 
 /* The control of the RGBA direct case: each end's G and B 2 and 4 levels over R in their values, colour and alpha, which
-   Auto holds as the rest, RGBA8 with room, its Exact twin's texels exactly */
+   BC7 holds as the rest: RGBA8 at once, its Exact twin's texels exactly, and BC7 later (bc7_later) */
 static int ak_rgba_colour(u32 index) {
     static const AlCase c = {"ASTC 8x8 128x96, RGBA direct ends apart", NVN_FORMAT_RGBA_ASTC_8x8, 128, 96, 1, 0};
     AlTex x;
@@ -206,30 +206,32 @@ static int ak_rgba_colour(u32 index) {
     vk_lock();
     Surf* t = vk_tex_from_tic(x.tic);
     vk_unlock();
-    kind_land(); /* its kind back: RGBA8 still, its blocks let go */
-    g_settings.astc_mode = 1;
+    kind_land(); /* its kind back: RGBA8 still, BC7 later */
+    g_settings.astc_textures = 1;
     Surf* twin = al_frame(x.twin);
-    g_settings.astc_mode = 0;
+    g_settings.astc_textures = 0;
     u8* got = t && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM ? al_image(&x, t, &size) : NULL;
     u8* exact = twin ? al_image(&x, twin, &exact_size) : NULL;
     const int same =
-        got && exact && size == exact_size && !memcmp(got, exact, (size_t)size) && !t->kind_want && !t->bc7.kept;
+        got && exact && size == exact_size && !memcmp(got, exact, (size_t)size) && !t->kind_want && t->bc7_later;
     free(got);
     free(exact);
     al_free(&x);
     if (!same) {
-        fprintf(stderr,
-                "ASTC by its blocks' kind, %s: format %d, not RGBA8 with its Exact twin's texels, its kind read\n",
-                c.name, t ? (int)t->f.vk : -1);
+        fprintf(
+            stderr,
+            "ASTC by its blocks' kind, %s: format %d, not RGBA8 with its Exact twin's texels, its kind read and BC7 "
+            "later\n",
+            c.name, t ? (int)t->f.vk : -1);
         return 1;
     }
-    printf("ASTC by its blocks' kind, %s: RGBA8, its Exact twin's texels\n", c.name);
+    printf("ASTC by its blocks' kind, %s: RGBA8, its Exact twin's texels, BC7 later\n", c.name);
     return 0;
 }
 
 /* A BC4 texture loaded again: blocks of luminance and alpha take it to BC5; one block of colour written over them
-   loads it whole (a piece of another kind would show in a format that does not hold it) and takes it to RGBA8, as
-   colour with alpha is held by Auto with room; its texels then its Exact twin's, exactly */
+   loads it whole (a piece of another kind would show in a format that does not hold it) and takes it to RGBA8, BC7
+   later, as BC7 holds colour with alpha; its texels then its Exact twin's, exactly */
 static int ak_again(u32 index) {
     static const AlCase c = {"ASTC 8x8 128x96, loaded again", NVN_FORMAT_RGBA_ASTC_8x8, 128, 96, 1, 0};
     AlTex x;
@@ -271,11 +273,11 @@ static int ak_again(u32 index) {
     memcpy(GP(x.cpu), b, 16);
     const int loaded_again = al_frame(x.tic) == t;
     kind_land();
-    const int to_rgba8 = loaded_again && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && !t->bc7_later && t->upload_valid &&
-                         !t->kind_want && !t->bc7.kept;
-    g_settings.astc_mode = 1;
+    const int to_rgba8 =
+        loaded_again && t->f.vk == VK_FORMAT_R8G8B8A8_UNORM && t->bc7_later && t->upload_valid && !t->kind_want;
+    g_settings.astc_textures = 1;
     Surf* twin = al_frame(x.twin);
-    g_settings.astc_mode = 0;
+    g_settings.astc_textures = 0;
     u8* got = to_rgba8 ? al_image(&x, t, &size) : NULL;
     u8* exact = twin ? al_image(&x, twin, &exact_size) : NULL;
     const int same = got && exact && size == exact_size && !memcmp(got, exact, (size_t)size);
@@ -345,8 +347,7 @@ static int check_astc_kind(void) {
                               {17, 17, 17, 19},
                               AK_MAP(R, R, R, G),
                               AK_MAP(G, ONE, R, ZERO)}};
-    const int had = g_settings.astc_mode;
-    const SnxAstcAuto auto_had = g_vk.astc_auto;
+    const int had = g_settings.astc_textures;
     u32 tic[8];
     NvnTexture probe = {0};
     probe.d.target = NVN_TEXTURE_TARGET_2D;
@@ -355,22 +356,19 @@ static int check_astc_kind(void) {
     probe.d.width = probe.d.height = 64;
     probe.d.depth = 1;
     probe.gpu = AL_GVA;
-    g_settings.astc_mode = 0;
-    g_vk.astc_auto = (SnxAstcAuto){0, 0, 0}; /* Exact with room: the rest RGBA8 */
+    g_settings.astc_textures = 0;
     CHECK(nvn_tic_encode(&probe, NULL, 0, 0, tic));
     const VkFmt f = vk_tic_format(tic[0], 0);
     if (f.conv != VKC_ASTC || !g_vk.feat.textureCompressionBC) {
         printf("ASTC by its blocks' kind: the GPU %s, skipped\n",
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "samples no BCn");
-        g_settings.astc_mode = had;
-        g_vk.astc_auto = auto_had;
+        g_settings.astc_textures = had;
         return 0;
     }
     int failed = 0;
     for (u32 i = 0; i < 5; i++) failed |= ak_case(&cases[i], 20 + i);
     failed |= ak_rgba_colour(25);
     failed |= ak_again(26);
-    g_settings.astc_mode = had;
-    g_vk.astc_auto = auto_had;
+    g_settings.astc_textures = had;
     return failed;
 }

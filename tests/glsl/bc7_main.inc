@@ -5,13 +5,21 @@
    encoder a picture, and what the transcoder's blocks are held to: an invocation a 4x4 block of a w x h strip of rgba,
    64 a workgroup along a row of blocks, a block past the edge repeating its last texels, as astc_bc7.glsl does. Included in
    a struct after the body, which declares width, height, blocks_x, blocks_y, rgba and bc7_blocks */
+/* each block's choice to take (choices_in, EncodeChoice's words; none: the whole search) and the choice each block's
+   encode made (choices_out), where the caller gives them (vk/bc7_choices.c keeps them between runs) */
+const leuint* choices_in = nullptr;
+leuint* choices_out = nullptr;
 void main() {
     const uint bx = gl_GlobalInvocationID.x, by = gl_GlobalInvocationID.y, z = gl_WorkGroupID.z;
     if (bx >= blocks_x || by >= blocks_y) return;
+    const uint i = (z * blocks_y + by) * blocks_x + bx;
     hint_on = false; /* a picture says nothing of its blocks */
+    choice_on = choices_in != nullptr && choices_in[i] != 0u;
+    choice = choices_in != nullptr ? uint(choices_in[i]) : 0u;
     for (uint k = 0u; k < 16u; k++) {
         const uint x = min(bx * 4u + (k & 3u), width - 1u), y = min(by * 4u + (k >> 2u), height - 1u);
         px[k] = rgba[(z * height + y) * width + x];
     }
-    bc7_blocks[(z * blocks_y + by) * blocks_x + bx] = Encode();
+    bc7_blocks[i] = Encode();
+    if (choices_out != nullptr) choices_out[i] = EncodeChoice();
 }

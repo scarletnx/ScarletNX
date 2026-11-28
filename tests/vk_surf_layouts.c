@@ -143,7 +143,6 @@ PFN_vkGetPhysicalDeviceImageFormatProperties vkGetPhysicalDeviceImageFormatPrope
 void vk_all_barrier(VkCommandBuffer cb) { STUB(); }
 void vk_stamp_runtime_begin(void) {}
 void vk_stamp_runtime_end(void) {}
-void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) { STUB(); }
 int vk_astc_bc7(void) { STUB(); }
 void vk_astc_forget(const Surf* t, u32 level) { STUB(); }
 u64 vk_astc_rgba8_bytes(void) { STUB(); }

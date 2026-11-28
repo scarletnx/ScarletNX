@@ -1413,7 +1413,7 @@ again in the present.**
 - Comment: `surface.c`, `surf_create_`.
 - Check: no test covers it.
 
-**M20. A trim that finds the images short of memory suggests `astc_mode=2` in the log, one time in a run.**
+**M20. A trim that finds the images short of memory suggests `astc_textures=2` in the log, one time in a run.**
 
 - Without the rule: a game on a GPU that samples BCn and not ASTC stays slow by eviction, and the log does not say
   why. The comment defines "short".

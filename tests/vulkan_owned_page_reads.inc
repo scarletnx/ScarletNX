@@ -163,7 +163,7 @@ static int owned_word(void) {
 #define OPR_ASTC_INDEX 12
 static int owned_astc_key(void) {
     static const AlCase c = {"ASTC 8x8 256x256 beside an owner", NVN_FORMAT_RGBA_ASTC_8x8, 256, 256, 1, 0};
-    const int had = g_settings.astc_mode;
+    const int had = g_settings.astc_textures;
     AlTex x;
     memset(&x, 0, sizeof x);
     x.c = &c;
@@ -178,13 +178,13 @@ static int owned_astc_key(void) {
     x.tex.d.depth = 1;
     x.tex.gpu = gbase + 0x200;
     nvn_tex_layout(&x.tex.d, &x.lay);
-    g_settings.astc_mode = 2;
+    g_settings.astc_textures = 0;
     CHECK(nvn_tic_encode(&x.tex, NULL, 0, 0, x.tic));
     const VkFmt f = vk_tic_format(x.tic[0], 0);
     if (f.conv != VKC_ASTC || f.vk != VK_FORMAT_BC7_UNORM_BLOCK) {
         printf("owned page reads: no ASTC key case, as the GPU %s\n",
                f.conv != VKC_ASTC ? "samples ASTC as it is" : "holds no ASTC texture as BC7");
-        g_settings.astc_mode = had;
+        g_settings.astc_textures = had;
         return 0;
     }
     const u64 own = base; /* before the texture's bytes, on their first page */
@@ -212,7 +212,7 @@ static int owned_astc_key(void) {
     vk_bc7_cache_close();
     gmmu_space_unmap(gbase, AL_SPAN);
     mem_unmap(base, AL_SPAN);
-    g_settings.astc_mode = had;
+    g_settings.astc_textures = had;
     CHECK(made && !(keyed & 1) && keyed && kept && !landed);
     printf("owned page reads: an ASTC texture went up beside an owner, levels %#x of %#x keyed\n", keyed, all);
     return 0;

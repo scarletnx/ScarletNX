@@ -59,6 +59,7 @@ extern "C" void astc_encode_vendor_cpu(int vendor, const uint8_t* rgba, uint32_t
 template <typename E> static uint32_t encode_block(const uint32_t texels[16], uint8_t out[16]) {
     E e;
     e.hint_on = false;
+    e.choice_on = false;
     e.as_hint = 0u;
     for (int k = 0; k < 16; k++) e.px[k] = texels[k];
     const glsl::leuvec4 block = e.AstcEncode();

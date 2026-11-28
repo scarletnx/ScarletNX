@@ -693,7 +693,7 @@ u32 vk_tex_made(const Surf* t) { /* gpu/vk/tex_report.c's count, which no test h
 void vk_surf_touch(Surf* s) { (void)s; }
 void vk_surf_relist(Surf* s) { (void)s; }
 void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) { (void)fn, (void)ctx; }
-int vk_astc_bc7(void) { return 0; } /* no texture here is marked to be read again (vk_tex_later_exact) */
+int vk_astc_bc7(void) { return 0; } /* the textures here are not ASTC */
 /* astc.c's: no texture here is held by its blocks' kind (no device samples BCn), so none of it is reached but the
    format's test */
 u32 vk_astc_bcn(VkFormat f) {

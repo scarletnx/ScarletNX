@@ -90,6 +90,8 @@ void main() {
         }
     }
     hint_on = false;
+    choice = choices[(z * cy + by) * cx + bx];
+    choice_on = choice != 0u;
     if (SNX_BC7_HINTS != 0 && !mixed) {
         /* the texels not of the first texel's set, a bit each, and whether they are all of one other set */
         const uint s0 = set_lo & 15u;
@@ -130,4 +132,5 @@ void main() {
     }
 #endif
     bc7_blocks[(z * cy + by) * cx + bx] = block;
+    choices[(z * cy + by) * cx + bx] = EncodeChoice();
 }

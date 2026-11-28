@@ -23,6 +23,7 @@ struct Encoder : Invocation {
         const uint bx = gl_GlobalInvocationID.x, by = gl_GlobalInvocationID.y, z = gl_WorkGroupID.z;
         if (bx >= blocks_x || by >= blocks_y) return;
         hint_on = false;
+        choice_on = false;
         as_hint = 0u; // a picture says nothing of its blocks
         for (uint k = 0u; k < 16u; k++) {
             const uint x = min(bx * 4u + (k & 3u), width - 1u), y = min(by * 4u + (k >> 2u), height - 1u);
@@ -54,6 +55,7 @@ extern "C" void astc_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uin
 extern "C" uint32_t astc_encode_block_cpu(const uint32_t texels[16], uint8_t out[16]) {
     astc_encode_shader::Encoder e;
     e.hint_on = false;
+    e.choice_on = false;
     e.as_hint = 0u;
     for (int k = 0; k < 16; k++) e.px[k] = texels[k];
     const glsl::leuvec4 block = e.AstcEncode();

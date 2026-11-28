@@ -140,7 +140,7 @@ typedef struct {
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
     int has_divisor;    /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
-    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_mode=2 holds its ASTC textures as BC7 */
+    int astc_bc7_could; /* the GPU samples BCn but not ASTC: astc_textures=2 holds its ASTC textures as BC7 */
     /* the images ran short of memory (surface.c's trim): with bcn_astc's Auto the BC1 textures made from now on are
        ETC2 RGB8A1, half ASTC 4x4's bytes (format.c). A texture keeps the format it was made with, so ETC2 takes
        ASTC's place as textures are evicted and loaded again */
@@ -150,12 +150,8 @@ typedef struct {
     int bc7_dot;
     /* the block formats the device samples, whether turned on or not (vk_blocks_want): VK_BLOCKS_* bits */
     u32 blocks_have;
-    /* astc_mode's Auto: whether the ASTC textures that load now are held as BC7, which follows the GPU's memory as the
-       game runs (gpu/texture/astc_bc.h; device.c vk_astc_auto_trimmed, vk_astc_auto_present), and always is for an
-       Ounce program. vk_astc_bc7 says what the mode in effect holds them as */
-    SnxAstcAuto astc_auto;
-    /* ASTC held as BC7 is encoded as each texture loads, with no RGBA8 image before it: astc_mode=3, or its Auto for an
-       Ounce program, as feat/ounce holds them (texture.c's tex_create) */
+    /* ASTC held as BC7 is encoded as each texture loads, with no RGBA8 image before it: astc_textures=2 (texture.c's
+       tex_create) */
     int astc_at_load;
     /* VK_EXT_vertex_input_dynamic_state in effect (vertex_input.h's choice): each draw sets its vertex layout, which
        pipelines leave out of their keys */
@@ -1201,10 +1197,9 @@ enum { VK_BLOCKS_ASTC = 1, VK_BLOCKS_ETC2 = 2, VK_BLOCKS_BC = 4 };
 void vk_blocks_want(const VkPhysicalDeviceFeatures* have, VkPhysicalDeviceFeatures* want);
 /* the log's line for each family of block textures (ASTC, ETC2 and EAC, BCn): sampled as the games' blocks, encoded
    again on the GPU, or decoded, and into what; a warning where a setting asks for what the GPU lacks. Once the device
-   is made and astc_mode chosen */
+   is made and astc_textures chosen */
 void vk_blocks_say(void);
-/* the ASTC textures the GPU decodes are held as BC7: astc_mode's BC7, or its Auto on a device that started with little
-   memory (gpu/texture/astc_bc.h) */
+/* the ASTC textures the GPU decodes are held as BC7: astc_textures's BC7 or BC7 at load (gpu/texture/astc_bc.h) */
 int vk_astc_bc7(void);
 /* the images ran short of memory, why said: g_vk.bc1_tight from now on (format.c). 1 when that changes what BC1
    textures become, which the log then says */
@@ -1392,8 +1387,9 @@ typedef struct Surf {
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
     /* its image is in system memory (texture.c vk_tex_demote, a render target's surface.c rt_demote), bytes 0 while it
-       is: sys_bytes its size */
+       is: sys_bytes its size; sys_read_at / sys_reads count touches in the current present (PCIe read pressure) */
     u8 demoted;
+    u32 sys_read_at, sys_reads;
     u64 sys_bytes;
     /* render targets the caches would have let go with pixels memory lacks, kept (surface.c rt_aside): the guest's
        memory as of then, its write-tracking clock (aside_wseen, 0 without tracking: aside_hash its bytes' hash), so
@@ -1425,13 +1421,8 @@ typedef struct Surf {
        in, plus one (0: never) */
     u8 bc7_hot;
     u32 bc7_wrote;
-    /* an ASTC texture held Exact when astc_mode's Auto turned to BC7 (vk_tex_later_exact), its memory unchanged since
-       it loaded: its next use reads its blocks again from memory, as a load held as BC7 does, unless it was loaded
-       again since (its wgen then, texture.c later_reread) */
-    u8 bc7_reread;
-    u32 bc7_reread_wgen;
-    /* textures: an ASTC one under astc_mode's Auto whose blocks' kind the GPU reads (texture.c's kind_frame), made in
-       the format Auto holds one of unknown kind in, its blocks kept (bc7.kept) for the read and for the BC1, BC4 or BC5
+    /* textures: an ASTC one under astc_textures's BC7 whose blocks' kind the GPU reads (texture.c's kind_frame), made in
+       BC7, as one of unknown kind, its blocks kept (bc7.kept) for the read and for the BC1, BC4 or BC5
        image made from them where the kind takes one. kind_want: the read is to come or on its way (the texture is in
        kind_frame's queue); kind_tries: the reads recorded; kind_slot: the one on its way (astc.c's slot plus one, 0:
        none), of the blocks of write generation kind_wgen; kind_key: the kind memo's key of the bytes it was made from
@@ -1854,6 +1845,7 @@ int vk_tex_finer(Surf* t);
    1 when it went. vk_tex_sysmem_stats: textures moved out and back, and the bytes in system memory now */
 u64 vk_tex_demote(Surf* t);
 int vk_tex_promote(Surf* t);
+void vk_tex_sys_left(Surf* t);
 void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
 u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
 /* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
@@ -1871,6 +1863,24 @@ typedef struct {
        as the guest had written their memory meanwhile */
     u64 kept, reloads;
 } VkRtSysStats;
+/* Size buckets for system-memory residency and CPU<->GPU bus transfers: < 64 KiB, < 1 MiB, < 16 MiB, >= 16 MiB */
+enum { VK_BUS_LT64K, VK_BUS_LT1M, VK_BUS_LT16M, VK_BUS_GE16M, VK_BUS_BUCKETS };
+static inline u32 vk_bus_bucket(u64 bytes) {
+    return bytes < (64ull << 10)   ? VK_BUS_LT64K
+           : bytes < (1ull << 20)  ? VK_BUS_LT1M
+           : bytes < (16ull << 20) ? VK_BUS_LT16M
+                                   : VK_BUS_GE16M;
+}
+typedef struct {
+    u32 frames;       /* presents with at least one GPU use of a demoted surface since the last report */
+    u64 touches;      /* total touches of demoted surfaces since the last report */
+    u64 unique_bytes; /* sum of per-present unique bytes of demoted surfaces touched */
+    u64 peak_bytes;   /* peak single-present unique bytes touched */
+    u64 bw_promotes;  /* promotions made under PCIe read-bandwidth pressure */
+    u64 bucket_touches[VK_BUS_BUCKETS];      /* touches per size bucket since the last report */
+    u64 bucket_unique_bytes[VK_BUS_BUCKETS]; /* sum of per-present unique bytes touched per size bucket */
+} VkSysBwStats;
+void vk_sys_bw_stats(VkSysBwStats* st);
 void vk_rt_sys_stats(VkRtSysStats* st);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */
 void vk_tex_refine_frame(void);
@@ -1880,15 +1890,6 @@ void vk_tex_shed_stats(u64* made, u64* bytes, u64* coarser, u64* finer);
    never bound */
 void vk_tex_half_stats(u64* made, u64* bytes);
 u64 vk_mem_trimmed(void); /* statistics: the bytes vk_mem_trim freed */
-/* astc_mode's Auto follows the memory (gpu/texture/astc_bc.h): vk_astc_auto_trimmed, at the end of each trim that ran,
-   with the use it counted (an allocation's extra bytes in it), what it left (the use less what it freed, an
-   allocation that found no memory left out) and the budget, turns it to BC7; vk_astc_auto_present, at each present
-   after the trim, turns it to Exact again where the room is back, and opens the BC7 cache once it holds them as BC7.
-   Each switch is said in the log with the use, the budget and the room. vk_astc_auto_say: Auto's state for the stats
-   of the last 600 presents (renderer.c) */
-void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force);
-void vk_astc_auto_present(void);
-void vk_astc_auto_say(void);
 /* the system's word that its memory runs short (why, its words), from any thread; at the renderer's next present
    (vk_mem_release_run, under vk_lock) the caches free all they can make again that the last two presents didn't use,
    whatever the budget, and four presents later the log says how much went and how far the renderer's memory blocks
@@ -2322,22 +2323,43 @@ typedef struct {
     u64 bytes, levels; /* held now; keys met, held or not */
 } VkBc7CacheStats;
 void vk_bc7_cache_stats(VkBc7CacheStats* s);
+/* bc7_choices.c: the BC7 encoder's choices by level (vk_bc7_key's key), a word a block, 0 where none is known: the
+   level's words, NULL where none are kept for a level of n blocks (find), or made zero for one (take: NULL where
+   there is no memory); a strip's come back from its encode (put: count words from block first); a strip's blocks
+   given choices, of which known had one (given); the levels and bytes kept, and the blocks given and known so far
+   (stats); the game's file read as the device starts (load: the levels read; its path kept) and written there at the
+   exit (save) */
+u16* vk_bc7_choices_find(const u64 key[2], u64 n);
+u16* vk_bc7_choices_take(const u64 key[2], u64 n);
+void vk_bc7_choices_put(const u64 key[2], u64 n, u64 first, const void* got, u64 count);
+void vk_bc7_choices_given(u64 blocks, u64 known);
+void vk_bc7_choices_stats(u64* levels, u64* bytes, u64* given, u64* known);
+/* The encoder's strips between frames (the levels a texture keeps for its BC7 image) timed on the GPU since the
+   start, as the fast build's are (VK_BC7_TIMED more pairs): the strips and the ns, blocks and blocks given a kept
+   choice of those, and apart the strips whose every block had a kept choice and those with none (the whole search);
+   untimed: strips that found no pair free */
+typedef struct {
+    u64 strips, ns, blocks, known, all_ns, all_blocks, none_ns, none_blocks, untimed;
+} VkBc7LaterTime;
+void vk_bc7_later_time(VkBc7LaterTime* t);
+u64 vk_bc7_choices_load(const char* path);
+void vk_bc7_choices_save(void);
 u64 vk_bc7_strip_blocks(void); /* the BC7 blocks vk_bc7_encode_kept makes at once at most */
 /* the image levels (or regions of them) uploaded as BC7 so far, the levels the BC7 cache gave (here or between frames),
    their bytes, and the bytes they would have taken as RGBA8 */
 void vk_astc_stats(u64* levels, u64* hits, u64* bytes, u64* rgba8_bytes);
 u64 vk_astc_bc7_copies(void); /* BC7 levels copied from another texture's image in place of a BC7 cache read */
 /* An ASTC texture whose blocks hold no more than BC1, BC4 or BC5 do (gpu/texture/astc_kind.h; texture.c picks it under
-   astc_mode's Auto) is held in that format, uploaded straight to it by vk_astc_upload (astc_bcn.comp), no RGBA8 image
+   astc_textures's BC7) is held in that format, uploaded straight to it by vk_astc_upload (astc_bcn.comp), no RGBA8 image
    before it: its encoders are a pass each, near the decoder's cost. vk_astc_bcn: 1, 4 or 5 for such a texture's image
    format, BC1 (RGBA, sRGB or not), BC4 or BC5 (UNORM), 0 for any other; vk_astc_bcn_name its name. vk_astc_bcn_stats:
    the levels (or regions) uploaded as BC1, BC4 and BC5 so far, their bytes and what they would take as RGBA8 */
 u32 vk_astc_bcn(VkFormat f);
 const char* vk_astc_bcn_name(u32 kind);
 void vk_astc_bcn_stats(u64 levels[3], u64 bytes[3], u64 rgba8_bytes[3]);
-/* What astc_mode's Auto found an ASTC texture's blocks to hold, read from their endpoint modes on the GPU after it is
+/* What astc_textures's BC7 found an ASTC texture's blocks to hold, read from their endpoint modes on the GPU after it is
    made or loaded again (texture.c's vk_tex_kind_frame, gpu/texture/astc_kind.h): the BCn format they take (luminance in
-   sRGB BC1, as BC4 has no sRGB), or why none does and the texture is held as Auto holds the rest (colour with alpha,
+   sRGB BC1, as BC4 has no sRGB), or why none does and the texture is held as BC7 as the rest (colour with alpha,
    colour on more than one line a 4x4 block, luminance with alpha in sRGB, which BC5 has not, the error colour or HDR,
    or blocks not read: a sparse texture, no room to keep its blocks, or reads that never came back) */
 enum {
@@ -2422,7 +2444,7 @@ int vk_astc_quick_measure(int on);
    Both functions run under vk_lock. Cumulative time is in nanoseconds, including time inside the driver. */
 void vk_texture_pipeline_made(u64 ns);
 void vk_texture_pipeline_stats(u64* count, u64* ns);
-/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_mode=1, or a GPU without BCn) */
+/* the bytes of the ASTC textures decoded to RGBA8 so far (astc_textures=1, or a GPU without BCn) */
 u64 vk_astc_rgba8_bytes(void);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
@@ -2652,13 +2674,7 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes);
 #define VK_BC7_LATER_BLOCKS (1u << 15)
 /* s goes: its place in the queue and the BC7 image being made for it with it (surface.c surf_free) */
 void vk_tex_later_forget(Surf* s);
-/* astc_mode's Auto turned to BC7 (device.c vk_astc_auto_trimmed): the ASTC textures it held Exact, as RGBA8, whose
-   memory still holds what they loaded from, are read again from it at their next use, their blocks kept, and go to the
-   encoder as ones held as BC7 do (Liz's choice, of keeping every Exact texture's blocks or of leaving them RGBA8); the
-   others stay Exact. How many go, and the bytes of their RGBA8 images */
-void vk_tex_later_exact(u32* textures, u64* bytes);
-/* the bytes of the ASTC textures held as BC7 images now (astc_mode's Auto: what it needs room for to turn Exact
-   again, snx_astc_auto_room). A walk over the textures, under vk_lock */
+/* the bytes of the ASTC textures held as BC7 images now. A walk over the textures, under vk_lock */
 u64 vk_tex_astc_bc7_bytes(void);
 /* statistics since the start: textures made BC7, the RGBA8 bytes that freed, encodes started over for a write or
    given up, blocks encoded, textures held Exact for their writes and made BC7 again after; and now: textures waiting,
@@ -2869,6 +2885,8 @@ void vk_buf_writable_commit(void);
    commit moved it staged one */
 u64 vk_buf_commits_staged(void);
 void vk_buf_mem_need(u64 gva, u64 len);
+/* own buffers last used before `before` whose guest GPU mapping is gone, oldest first, up to `want` bytes */
+u64 vk_buf_reclaim_ended(u32 before, u64 want);
 /* own buffers last used before the present `before`, the least recently used first, dropped until `want` bytes went
    (their ranges are copied again when next read). Returns the bytes */
 u64 vk_buf_reclaim(u32 before, u64 want);

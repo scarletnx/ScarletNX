@@ -10,7 +10,7 @@
 * [Encoded again as BC7](#encoded-again-as-bc7)
   * [Straight from the blocks](#straight-from-the-blocks)
   * [Two passes](#two-passes)
-  * [Auto, Exact and BC7](#auto-exact-and-bc7)
+  * [Approximate, Exact and BC7 at load](#approximate-exact-and-bc7-at-load)
   * [By what the blocks hold](#by-what-the-blocks-hold)
   * [Between frames](#between-frames)
   * [The fast build](#the-fast-build)
@@ -184,7 +184,7 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. Held as BC7 (the `astc_mode` setting, below), `format.c`'s `TA()` gives such a texture a
+take one (4x4) or less. Held as BC7 (the `astc_textures` setting, below), `format.c`'s `TA()` gives such a texture a
 `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, which texture.c makes between frames
 (below), and `vk_astc_upload`, where it uploads straight to BC7, runs another shader in the decoder's place:
 `src/nx/gpu/texture/astc_bc7.comp`, with its body in `astc_bc7.glsl`, makes the ASTC blocks BC7 blocks in one
@@ -196,7 +196,7 @@ it whatever `native_bc` says, and `format.c` then samples BCn as it is only when
 keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
 levels went up as BC7 and their megabytes against RGBA8's.
 
-A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_mode` says, where the
+A texture with holes in its mapping (a game's sparse texture, `texture.c`) is BC7 whatever `astc_textures` says, where the
 GPU samples BCn: one game's are 68 layers of 8192x8192 ASTC 8x8 with seven of them mapped, 1.7 GB each as RGBA8 (16
 times the game's bytes), which took the GPU past its memory. So it goes up straight to BC7, not RGBA8 first and BC7
 between frames (below). `device.c` turns `textureCompressionBC` on wherever the device has it for this. A sparse
@@ -287,77 +287,47 @@ first takes its box's line with one choice of p-bits and each texel at the weigh
 an error. Under 64 it took the first pass of a level mode 6 holds from 18.5 to 12.8 ms for 0.3 to 0.8 dB, and made the
 levels with hard blocks no faster.
 
-### Auto, Exact and BC7
+### Approximate, Exact and BC7 at load
 
-`astc_mode` (a `startup` setting) says how a GPU that samples BCn but not ASTC holds the ASTC textures it decodes:
+`astc_textures` (a `startup` setting) says how a GPU that samples BCn but not ASTC holds the ASTC textures it decodes,
+from the start of the game to its end:
 
 | Value | Name | Held as |
 | --- | --- | --- |
-| `0` | Auto, the default | Exact while the heap images go to has room, BC7 from its caches' first trim, Exact again once the room is back (below) |
+| `0` | Approximate, the default | RGBA8 at once, then BC7 made between frames and the RGBA8 image freed, a byte a texel; by what the blocks hold (below) BC1, BC4 or BC5 |
 | `1` | Exact | RGBA8, as the game's blocks decode, four bytes a texel |
-| `2` | BC7 | RGBA8 at once, then BC7 made between frames, a byte a texel |
-| `3` | BC7 at load | BC7 as each texture loads, with no RGBA8 image before it |
-
-Auto held an Ounce game's textures as BC7 at load until 2026-11-23, as feat/ounce did. In one Ounce game's race on an
-RX 9070 XT (14.4 GB budget), BC7 at load made 54 frames of 50 ms or more where Exact made 7, the worst 196 ms against
-114 ms. Its encoder's pace waited for the GPU in the draws that loaded new parts of the track (45 to 134 ms each), and
-the GPU thread took 12.3 ms a present against 10.2 ms. Both kept the heap within its budget, and BC7 at load had its
-caches give back textures they took again within 60 presents about five times as often. So Auto follows the room for
-an Ounce game too.
-
-Under a 6 GB budget (`vk_budget_mb=6000`) the same race then turned Auto from Exact to BC7 and back 58 to 75 times
-in 330 s, and textures flickered: the room that BC7 itself made was more than the band, so Auto turned Exact, and the
-track's next loads filled the caches again. Auto turns Exact again only where the room is also more than its ASTC
-textures held as BC7 would take more as RGBA8, three times their bytes (`snx_astc_auto_room`). It then turned once in
-each run, the race had 7 and 17 frames of 50 ms or more, and BC7 at load lost the device in both of its runs there.
+| `2` | BC7 at load | BC7 as each texture loads, with no RGBA8 image before it |
 
 Memory is what a desktop GPU runs short of. As RGBA8, one game's textures took 5.7 GB of a 5.7 GB budget and were
-evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. Another took 3.9 GB of an
-RX 6700 XT's 11.8 GB budget as RGBA8, 0.4 GB more than as BC7, and its frames were smoother so. BC7 is not exact (its
-PSNR is below), mostly seen in UI text. So Auto holds them Exact while the memory has room for it, and follows the
-room as the game runs (`gpu/texture/astc_bc.h`'s `SnxAstcAuto`, `device.c`'s `vk_astc_auto_trimmed` and
-`vk_astc_auto_present`). The room is the budget of the heap images go to, `VK_EXT_memory_budget`'s or `vk_budget_mb`
-where that is lower, less the caches' use, both as `vk_mem_use` gives them:
+evicted and uploaded again every frame (600 to 1000 ms frames); as BC7 they took 2.5 GB. A mode that held them Exact
+while the memory had room and turned BC7 once it filled (`astc_mode`'s Auto, which `astc_textures` took the place of)
+kept the GPU's memory full of RGBA8 that was never encoded, and turned back and forth: 32 turns in one racing game's
+race, each reading hundreds of MB of textures again, and the frames at the turn the slowest. BC7 from the start
+encodes each texture once and frees its RGBA8 image as soon as the BC7 one is made. BC7 is not exact (its PSNR is
+below), mostly seen in UI text; Exact keeps them exact for whoever chooses it.
 
-- **BC7** from the caches' first trim (`surface.c`'s `vk_mem_trim`): their use past `vk_mem_trim_start`, the budget less
-  a head (`trim_head`: a 16th of the budget from 128 to 256 MiB, a quarter at most), from where each new RGBA8 level
-  costs an eviction, or an image that found no memory. The textures that load from then on are held as BC7. Those loaded
-  before as RGBA8 whose memory is unchanged (unwritten where write tracking watches it, else the hash they loaded with)
-  go too (`texture.c`'s `vk_tex_later_exact`): each is read again from memory at its next use, its RGBA8 image the same
-  and its blocks kept, and queued for the encoder, 16 MB of RGBA8 a present at most and one at least (`later_reread`),
-  so the frame after the switch does not decode at once every texture it draws. Keeping the blocks of every texture held
-  Exact would cost memory for a switch that may never come, and leaving them RGBA8 left one state load's 1091 MB of them
-  past a 1800 MB budget. One whose memory changed stays Exact. The room their encode frees joins the band
-  (`snx_astc_auto_converted`).
-- **Exact again** at a present (after the frame's trim) whose room under that mark is more than the most room any trim
-  of the run has left under it (the band). A trim takes the caches from past the mark down to two heads under the budget
-  or a little under, and with no band the next present would find room and turn Exact again, and the next trim BC7: two
-  switches a trim. With the band, a trim alone never brings Exact back; memory the game freed (a scene left behind) or a
-  budget that grew does. The band is not a number set here: the run's trims measure it, on this GPU and for this game.
+BC7 at load makes the frames that load new textures wait for the encoder. In one Ounce game's race on an RX 9070 XT
+(14.4 GB budget), it made 54 frames of 50 ms or more where Exact made 7, the worst 196 ms against 114 ms: its pace
+waited for the GPU in the draws that loaded new parts of the track (45 to 134 ms each).
 
-Where the driver has no `VK_EXT_memory_budget`, both numbers are the renderer's own (`devmem.c`: its memory blocks for
-the use, 80% of the heap's size for the budget), blind to what other programs take; Auto follows them, and its first
-line says so. Its lines say the numbers as the device starts and at every switch, and Auto's state with the stats of
-every 600 presents (an RX 6700 XT's, with `vk_budget_mb=1800`):
+Its line says the mode as the device starts:
 
 ```
-vulkan: astc_mode=0 (Auto): ASTC textures that load are decoded to RGBA8, exact, in four times BC7's memory while heap 1 has room, and BC7 from the first trim of its caches, past 1620 of the 1800 MB budgeted, until the room under that is more than any trim has left: 0 MB in use as the device starts
-vulkan: astc_mode=0 (Auto): ASTC textures that load from now on are BC7, decoded to RGBA8 at once and encoded again as BC7 between frames, a quarter of RGBA8's memory: heap 1 has 1622 of 1800 MB budgeted in use, 177 MB free, past the 1620 MB where its caches' trim starts
-vulkan: astc_mode=0 (Auto): ASTC textures that load now are BC7, after 1 switches; the trims left at most 0 MB under where they start
+vulkan: astc_textures=0 (Approximate): ASTC textures are shown at once decoded to RGBA8 and encoded again as BC7 between frames, the RGBA8 image freed then, a quarter of its memory; those whose blocks hold luminance alone are BC4, luminance and alpha BC5, opaque colour on one line a 4x4 block BC1
 ```
 
-Held as RGBA8 by Exact (`astc_mode=1`), the log suggests `astc_mode=2` once a run, with the budget, the use and the
-megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image
+Held as RGBA8 by Exact (`astc_textures=1`), the log suggests `astc_textures=0` (Approximate) once a run, with the budget, the use and
+the megabytes of ASTC textures decoded to RGBA8, when the images run short (`surface.c`'s `astc_bc_suggest`): an image
 allocation finds no memory, a trim leaves the caches past their budget, or a trim takes what the last eight presents
-used (the working set, which the next frames load again). Auto makes them BC7 itself then.
+used (the working set, which the next frames load again).
 
 ### By what the blocks hold
 
-Auto also reads what each ASTC texture's blocks can hold, on the GPU after it is made, and holds it in the smallest BCn
-format that holds that, whatever the room: luminance alone as BC4 (8 bytes a 4x4 block, an eighth of RGBA8), luminance
-and alpha as BC5 (16, as BC7), opaque colour on one line a 4x4 block as BC1 (8, half of BC7). The rest is held as above,
-Exact or BC7 by the room. Exact (`astc_mode=1`), BC7 (`2`) and BC7 at load (`3`) are as they were, and so are 3D
-textures and textures with holes in their mapping.
+BC7 (`astc_textures=0`) also reads what each ASTC texture's blocks can hold, on the GPU after it is made, and holds it
+in the smallest BCn format that holds that: luminance alone as BC4 (8 bytes a 4x4 block, an eighth of RGBA8), luminance
+and alpha as BC5 (16, as BC7), opaque colour on one line a 4x4 block as BC1 (8, half of BC7). The rest is held as BC7.
+Exact (`astc_textures=1`) and BC7 at load (`2`) are as they were, and so are 3D textures and textures with holes in
+their mapping.
 
 **The kind** (`gpu/texture/astc_kind.h`) comes from each block's header, its colour endpoint modes and, for the RGB and
 RGBA modes, its endpoints' values, not from its texels: luminance modes (0, 1) decode R = G = B with alpha 255,
@@ -380,8 +350,8 @@ colour goes to BC1 only at those three footprints.
 linear layout (or pitch rows), the layout's padding left out, which stops at the first block that leaves no BCn format
 (`snx_astc_level_kind` in `tests/support/astc_kind_ref.h`, then the same over the levels). The CPU made that walk as
 each texture was made, and in one game's race, which loads new parts of the track as it goes, it took 58 to 78% of the
-GPU thread in the bursts of new textures, 21% of it over 15 s. Now a new texture goes up at once as Auto holds one of
-unknown kind (Exact or BC7 between frames by the room), and its upload keeps its
+GPU thread in the bursts of new textures, 21% of it over 15 s. Now a new texture goes up at once as one of unknown kind
+(BC7 between frames), and its upload keeps its
 ASTC blocks on the GPU beside its image (`vk_astc_keep`, also for a level the BC7 cache gives, whose blocks are staged
 only to be kept). `astc_kind.comp` (its body `astc_kind.glsl`, `snx_astc_block_read` in the part of GLSL that is also
 C++) reads them, a dispatch a level of every layer, an invocation a block, and leaves four words a level of each layer:
@@ -398,7 +368,7 @@ dropped; the kept blocks go either way, unless the BC7 encoder still makes the t
 written before its read is back is read again from the blocks its new upload kept (four reads at most). The kinds of
 bytes read before stay in a memo by the hash of the bytes and their layout, which the change checks take anyway: a
 texture evicted and made again goes up straight to its format, as all did when the CPU read them. A sparse texture's
-blocks are not read, nor those of one with no room to keep them: it stays as Auto holds the rest.
+blocks are not read, nor those of one with no room to keep them: it is held as BC7, as the rest.
 
 **The kind's arithmetic.** `astc_kind.glsl` was written as `snx_astc_block_read` is, then made cheaper by forms that
 `ucas` proved equal to it, a function at a time with its inputs as parameters (a prelude of plain globals makes it
@@ -441,7 +411,7 @@ colour takes, a channel at a time, the 565 ends whose colour a third of the way 
 arithmetic in the part of GLSL that is also C++, so the tests run the same file on the CPU and get the GPU's bytes.
 
 **Written again.** A texture held so and loaded whole again may hold more now, which its format would not show, and the
-CPU reads none of its blocks (`kind_again`): an image of the format Auto holds one of unknown kind in takes its place,
+CPU reads none of its blocks (`kind_again`): an image of the format one of unknown kind is held in (BC7) takes its place,
 which the load fills, its blocks are kept, and the GPU reads their kind as for a new texture, which takes it to BC1, BC4
 or BC5 again where the kind says so. Pieces load it whole, which reads them: a piece of other blocks would show in a
 format that does not hold them. A texture held as usual is not read again. Such a texture is never sparse for its
@@ -459,7 +429,7 @@ vulkan: a 128x96x1 ASTC 8x8 texture held as BC4 is loaded again with blocks of l
 **What it costs**, against the texels the game's blocks decode to (the CPU decoder's), as the view gives them back
 (`snx-test-astc-bcn-glsl --measure [--srgb] FILE.astc...`, the shaders' bodies run on the CPU, the GPU's bytes): PSNR over
 RGBA, and the largest error of R, G, B and A in levels of 256. BC7 is the encoder's fast build on the same blocks, what
-Auto gives them under pressure. The pictures are astcenc's `-medium` encodings of the Khronos glTF sample images
+`astc_textures`'s BC7 gives them. The pictures are astcenc's `-medium` encodings of the Khronos glTF sample images
 astc-encoder's tests carry (MIT), and Amberlith's astcimage picture:
 
 | Blocks | Footprint | Held as | Its PSNR, largest errors | BC7's |
@@ -707,7 +677,7 @@ blocks each, 447 megatexels with their mips. Its blocks are the encoder's worst 
 and the fast build took a Radeon 890M 92 ms a strip of two layers: the frame took 10.1 seconds. (In one submission it
 had reset the GPU, amdgpu's job timeout being 2 seconds: the upload's wait once 256 thousand blocks are queued, above,
 keeps every submission well under that.) The rules above count one layer (1.9 megatexels), and the levels were past
-what the cache took, so every run paid it again. A level held as BC7 at load (`astc_mode=3`: one made BC7 between
+what the cache took, so every run paid it again. A level held as BC7 at load (`astc_textures=3`: one made BC7 between
 frames goes up as RGBA8 first, above) of the very large size or more, every layer of a 2D
 array and every slice of a 3D level counted, now goes another way. The size starts at `astc_quick_mtexels`
 megatexels (8 by default: a 4096x2048 level, or two layers of 2048x2048) and then follows the encoder's speed here
@@ -817,7 +787,7 @@ The `[Debug]` setting `vk_max_allocation_mb` (`--vk-max-allocation-mb=4` for a r
 
 A sparse texture's memory is mapped a 64 KiB tile at a time; for blocks of 16 bytes a tile is 64x64 of them. Where the
 device has sparse residency of 2D images and reads what isn't bound as zeros, `texture.c` gives such a texture's image
-memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_mode`, above) takes part: BC7's sparse block is
+memory only for its mapped tiles. An ASTC 4x4 one held as BC7 (`astc_textures`, above) takes part: BC7's sparse block is
 256x256 texels, 64x64 blocks of 16 bytes too, so each mapped tile is one block of the image, decoded and encoded on its own as
 a texture's changed runs are. A tile of several of the device's blocks binds them in stacks where they divide its
 blocks of GOBs (`resident_stacks`): an 8x8 tile is 2x2 BC7 blocks, two stacks of two, each stack bound where memory

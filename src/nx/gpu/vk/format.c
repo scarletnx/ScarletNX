@@ -180,11 +180,11 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
    textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (vk_blocks_want). A texture
    in them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
    are uploaded, but BCn where the GPU samples ETC2: encoded again as ETC2 and EAC, the same bytes a texel (TB).
-   ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_mode's BC7, or its Auto, the default, while the GPU's
-   memory has no room for RGBA8, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC
+   ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (astc_textures's BC7, the default, or
+   BC7 at load, vk_astc_bc7), where the device samples BCn: vk_blocks_want turns textureCompressionBC
    on for it, so BCn is sampled as it is only when native_bc says so as well */
 enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8, BCN_AS_ASTC = 16, BC1_AS_ASTC = 32 };
-int vk_astc_bc7(void) { return snx_astc_bc7(g_settings.astc_mode, g_vk.astc_auto.bc7); }
+int vk_astc_bc7(void) { return snx_astc_bc7(g_settings.astc_textures); }
 static u32 native_blocks(void) {
     return (g_vk.feat.textureCompressionASTC_LDR ? NATIVE_ASTC : 0) |
            (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) |
@@ -523,7 +523,7 @@ static void family_say(const char* family, const char* why, int warn, const u32*
 }
 /* The log says once, as the device starts, how each family of the games' block textures is held, from what
    vk_tic_format picks: so any player's log answers whether their GPU samples ASTC, ETC2 and BCn as the games' blocks,
-   and what the rest become. ASTC encoded again as BC7 is astc_mode's (its own line says when: between frames, or as
+   and what the rest become. ASTC encoded again as BC7 is astc_textures's (its own line says when: between frames, or as
    each texture loads) */
 void vk_blocks_say(void) {
     static const u32 astc[1] = {0x40}, etc[5] = {0x06, 0x0A, 0x0B, 0x19, 0x1A},
@@ -534,8 +534,8 @@ void vk_blocks_say(void) {
     char why[160];
     u32 astc_has = g_vk.blocks_have & VK_BLOCKS_ASTC, etc2_has = g_vk.blocks_have & VK_BLOCKS_ETC2;
     u32 bc_has = g_vk.blocks_have & VK_BLOCKS_BC;
-    snprintf(why, sizeof why, "native_astc=%d, the GPU samples %sASTC, astc_mode=%d", g_settings.native_astc,
-             astc_has ? "" : "no ", g_settings.astc_mode);
+    snprintf(why, sizeof why, "native_astc=%d, the GPU samples %sASTC, astc_textures=%d", g_settings.native_astc,
+             astc_has ? "" : "no ", g_settings.astc_textures);
     family_say("ASTC", why, g_settings.native_astc && !astc_has, astc, astc_names, 1);
     snprintf(why, sizeof why, "native_etc2=%d, the GPU samples %sETC2", g_settings.native_etc2, etc2_has ? "" : "no ");
     family_say("ETC2 and EAC", why, g_settings.native_etc2 && !etc2_has, etc, etc_names, 5);

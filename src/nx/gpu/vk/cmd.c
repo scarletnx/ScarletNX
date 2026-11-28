@@ -134,6 +134,8 @@ static struct {
     u32 cap_gen;
     u64 submits[VK_SUB_N]; /* submissions since the start, by why (statistics, tests) */
     u32 stage_told; /* the staging ring's memory type is in the log */
+    /* bus transfers crossing host/mapped memory over 600 presents by size bucket: [0] uploads, [1] readbacks */
+    u64 bus_n[2][VK_BUS_BUCKETS], bus_bytes[2][VK_BUS_BUCKETS];
 } g_cmd;
 
 static Frame g_fr[VK_FRAMES];
@@ -673,6 +675,13 @@ static struct {
     int line;
     u64 n, bytes;
 } g_device_sites[DEVICE_SITES];
+static void bus_note(u32 ring, u32 where, u64 size) {
+    if (where == XFER_DEVICE) return;
+    const u32 dir = ring == XRING_BACK || ring == XRING_READBACK ? 1u : 0u;
+    const u32 b = vk_bus_bucket(size);
+    g_cmd.bus_n[dir][b]++;
+    g_cmd.bus_bytes[dir][b] += size;
+}
 void vk_stage_report(void) {
     static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback", "stream"};
     char line[512];
@@ -686,6 +695,18 @@ void vk_stage_report(void) {
         line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made,
         (unsigned long long)g_cmd.spilled);
     memset(g_xfer, 0, sizeof g_xfer);
+    LOG("vulkan: bus transfers over 600 presents by size (<64K / <1M / <16M / >=16M): uploads %llu/%llu/%llu/%llu "
+        "(%.1f/%.1f/%.1f/%.1f MB), readbacks %llu/%llu/%llu/%llu (%.1f/%.1f/%.1f/%.1f MB)\n",
+        (unsigned long long)g_cmd.bus_n[0][0], (unsigned long long)g_cmd.bus_n[0][1],
+        (unsigned long long)g_cmd.bus_n[0][2], (unsigned long long)g_cmd.bus_n[0][3],
+        (double)g_cmd.bus_bytes[0][0] / 1048576.0, (double)g_cmd.bus_bytes[0][1] / 1048576.0,
+        (double)g_cmd.bus_bytes[0][2] / 1048576.0, (double)g_cmd.bus_bytes[0][3] / 1048576.0,
+        (unsigned long long)g_cmd.bus_n[1][0], (unsigned long long)g_cmd.bus_n[1][1],
+        (unsigned long long)g_cmd.bus_n[1][2], (unsigned long long)g_cmd.bus_n[1][3],
+        (double)g_cmd.bus_bytes[1][0] / 1048576.0, (double)g_cmd.bus_bytes[1][1] / 1048576.0,
+        (double)g_cmd.bus_bytes[1][2] / 1048576.0, (double)g_cmd.bus_bytes[1][3] / 1048576.0);
+    memset(g_cmd.bus_n, 0, sizeof g_cmd.bus_n);
+    memset(g_cmd.bus_bytes, 0, sizeof g_cmd.bus_bytes);
     for (u32 i = 0; i < DEVICE_SITES && g_device_sites[i].file; i++) {
         const char* f = strrchr(g_device_sites[i].file, '/');
         if (g_device_sites[i].n)
@@ -935,6 +956,7 @@ u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
     chunk_written(c);
     if (at + size > c->handed) c->handed = at + size;
     g_xfer[XRING_STREAM][c->in] += size;
+    bus_note(XRING_STREAM, c->in, size);
     g_cmd.stream_since += c->big ? c->size : size;
     *buf = c->buf;
     *off = at;
@@ -1056,6 +1078,7 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
     }
     if (at + size > c->handed) c->handed = at + size;
     g_xfer[ring][c->in] += size;
+    bus_note(ring, c->in, size);
     *buf = c->buf;
     *off = at;
     if (mem) *mem = c->mem;
@@ -1814,6 +1837,7 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
         g_rb_in = xfer_where(&info);
     }
     g_xfer[XRING_READBACK][g_rb_in] += size;
+    bus_note(XRING_READBACK, g_rb_in, size);
     *buf = g_rb;
     return g_rb_ptr;
 }

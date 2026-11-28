@@ -373,34 +373,66 @@ static void test_memory_fit_old(void) {
     g_test.write = 0;
 }
 
-/* astc_bc, deprecated for astc_mode, read from an old .ini while astc_mode has no value: 1 is astc_mode=0 (Auto),
-   written for the next run, and 0, the default every .ini had written, leaves astc_mode at its own */
-static void test_astc_bc_old(void) {
+/* astc_mode, deprecated for astc_textures, read from an old .ini while astc_textures has no value: its Auto (0) and
+   BC7 (2) are astc_textures=0 (Approximate), its Exact (1) is 1, its BC7 at load (3) is 2, written for the next run and said
+   once with both values; any other value leaves astc_textures at its default, said with it. astc_bc, which astc_mode had
+   taken the place of, is read only where astc_mode has no value either: 1 is astc_textures=0, and 0, the default every
+   .ini had written, leaves astc_textures at its own */
+static void test_astc_textures_old(void) {
     char *text, *again;
+    CHECK(options_astc_mode_old("0") == 0 && options_astc_mode_old("1") == 1 && options_astc_mode_old("2") == 0 &&
+          options_astc_mode_old("3") == 2);
+    CHECK(options_astc_mode_old("4") == -1 && options_astc_mode_old("") == -1 && options_astc_mode_old("bc7") == -1);
     CHECK(options_astc_bc_old("1") == 0 && options_astc_bc_old("0") == -1);
     CHECK(options_astc_bc_old("2") == -2 && options_astc_bc_old("") == -2);
     g_test.write = 1;
-    text = open_ini("[Graphics]\nastc_bc=1\n");
-    CHECK(strstr(g_test.said, "settings: astc_bc=1, deprecated, is astc_mode=0 (Auto) now (docs/user/deprecations.md)\n"));
-    CHECK(text && strstr(text, "\nastc_mode=0\n") && strstr(text, "\n[Deprecated]\n") &&
-          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nastc_bc=1\n"));
-    again = open_ini(text); /* the next run: astc_mode given, astc_bc not read again */
-    CHECK(!strstr(g_test.said, "settings: astc_bc=") && again && strstr(again, "\nastc_mode=0\n"));
+    text = open_ini("[Graphics]\nastc_mode=3\n");
+    CHECK(strstr(
+        g_test.said,
+        "settings: astc_mode=3, deprecated, is astc_textures=2 (BC7 at load) now (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nastc_textures=2\n") && strstr(text, "\n[Deprecated]\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\nastc_mode=3\n"));
+    again = open_ini(text); /* the next run: astc_textures given, astc_mode not read again */
+    CHECK(!strstr(g_test.said, "settings: astc_mode=") && again && strstr(again, "\nastc_textures=2\n"));
     free(again);
     free(text);
+    text = open_ini("[Graphics]\nastc_mode=1\n");
+    CHECK(strstr(g_test.said, "settings: astc_mode=1, deprecated, is astc_textures=1 (Exact) now"));
+    CHECK(text && strstr(text, "\nastc_textures=1\n"));
+    free(text);
+    text = open_ini("[Graphics]\nastc_mode=0\n"); /* Auto, the default every .ini had written */
+    CHECK(strstr(g_test.said, "settings: astc_mode=0, deprecated, is astc_textures=0 (Approximate) now"));
+    free(text);
+    text = open_ini("[Graphics]\nastc_mode=9\n");
+    CHECK(strstr(
+        g_test.said,
+        "settings: astc_mode=9, deprecated, is none of 0 to 3: astc_textures takes its default, 0 (Approximate)\n"));
+    free(text);
+    /* astc_mode given, astc_bc is not read */
+    text = open_ini("[Graphics]\nastc_bc=1\nastc_mode=1\n");
+    CHECK(!strstr(g_test.said, "settings: astc_bc=") && text && strstr(text, "\nastc_textures=1\n"));
+    free(text);
+    text = open_ini("[Graphics]\nastc_bc=1\n");
+    CHECK(
+        strstr(g_test.said,
+               "settings: astc_bc=1, deprecated, is astc_textures=0 (Approximate) now (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nastc_textures=0\n"));
+    free(text);
     text = open_ini("[Graphics]\nastc_bc=0\n");
-    CHECK(strstr(g_test.said, "settings: astc_bc=0, deprecated, was its default: astc_mode takes its own, 0 (Auto), "
-                              "which holds ASTC textures as RGBA8 or BC7 by the GPU's memory where the GPU samples BCn "
-                              "but not ASTC (docs/user/deprecations.md)\n"));
-    CHECK(text && strstr(text, "\nastc_mode=0\n"));
+    CHECK(strstr(g_test.said,
+                 "settings: astc_bc=0, deprecated, was its default: astc_textures takes its own, 0 (Approximate), "
+                 "which holds ASTC textures as BC7 where the GPU samples BCn but not ASTC "
+                 "(docs/user/deprecations.md)\n"));
     free(text);
     text = open_ini("[Graphics]\nastc_bc=yes\n");
-    CHECK(strstr(g_test.said, "settings: astc_bc=yes, deprecated, is neither 0 nor 1: astc_mode takes its default, 0 "
-                              "(Auto)\n"));
+    CHECK(strstr(g_test.said,
+                 "settings: astc_bc=yes, deprecated, is neither 0 nor 1: astc_textures takes its default, 0 "
+                 "(Approximate)\n"));
     free(text);
-    /* the new key given, the old one is not read */
-    text = open_ini("[Graphics]\nastc_bc=1\nastc_mode=1\n");
-    CHECK(!strstr(g_test.said, "settings: astc_bc=") && text && strstr(text, "\nastc_mode=1\n"));
+    /* the new key given, neither old one is read */
+    text = open_ini("[Graphics]\nastc_bc=1\nastc_mode=3\nastc_textures=1\n");
+    CHECK(!strstr(g_test.said, "settings: astc_bc=") && !strstr(g_test.said, "settings: astc_mode=") && text &&
+          strstr(text, "\nastc_textures=1\n"));
     free(text);
     g_test.write = 0;
 }
@@ -440,7 +472,7 @@ static void test_bc7_cache_gb_old(void) {
     CHECK(text && strstr(text, "\n[Deprecated]\n") &&
           strstr(text, "\n[Deprecated]\n") < strstr(text, "\nbc7_cache_gb=3\n"));
     free(text);
-    text = open_ini("[Graphics]\nastc_mode=0\n"); /* an .ini without it says nothing of it */
+    text = open_ini("[Graphics]\nastc_textures=0\n"); /* an .ini without it says nothing of it */
     CHECK(!strstr(g_test.said, "bc7_cache_gb"));
     free(text);
     g_test.write = 0;
@@ -469,11 +501,11 @@ static void test_unit_cache_gb_old(void) {
    default */
 static void test_settings_line(void) {
     char list[2048];
-    g_settings.astc_mode = 1;
-    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_mode=1 (default 0)"));
-    g_settings.astc_mode = 0;
+    g_settings.astc_textures = 1;
+    CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "astc_textures=1 (default 0)"));
+    g_settings.astc_textures = 0;
     options_settings(list, sizeof list);
-    CHECK(!strstr(list, "astc_mode"));
+    CHECK(!strstr(list, "astc_textures"));
     g_settings.volume = 40; /* the player's Volume: a silent game's log says why */
     CHECK(options_settings(list, sizeof list) >= 1 && strstr(list, "volume=40 (default 100)"));
     g_settings.volume = 100;
@@ -1388,7 +1420,7 @@ int main(int argc, char** argv) {
     test_key_twice(); /* after the TV mode tests: the file's every setting applied, which they count from nought */
     test_settings_line();
     test_memory_fit_old();
-    test_astc_bc_old();
+    test_astc_textures_old();
     test_bc7_cache_gb_old();
     test_unit_cache_gb_old();
     test_compress_shader_cache_old();

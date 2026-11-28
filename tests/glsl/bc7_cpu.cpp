@@ -129,6 +129,29 @@ template <typename E> static void encode(const uint8_t* rgba, uint32_t w, uint32
     std::memcpy(out, blocks.data(), blocks.size() * 16);
 }
 
+extern "C" void bc7_encode_cpu_choices(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out,
+                                       const uint32_t* choices_in, uint32_t* choices_out) {
+    const uint32_t bx = (w + 3) / 4, by = (h + 3) / 4;
+    const size_t n = (size_t)bx * by * depth;
+    std::vector<glsl::leuint> texels((size_t)w * h * depth), in(n), got(n);
+    std::memcpy(texels.data(), rgba, texels.size() * 4);
+    if (choices_in) std::memcpy(in.data(), choices_in, n * 4);
+    std::vector<glsl::leuvec4> blocks(n, glsl::uvec4(0xdeadbeefu));
+    glsl::dispatch<bc7_shader::Encoder>(glsl::uvec3((bx + 63) / 64, by, depth), glsl::uvec3(64u, 1u, 1u),
+                                        [&](bc7_shader::Encoder& e) {
+                                            e.width = w;
+                                            e.height = h;
+                                            e.blocks_x = bx;
+                                            e.blocks_y = by;
+                                            e.rgba = texels.data();
+                                            e.bc7_blocks = blocks.data();
+                                            e.choices_in = choices_in ? in.data() : nullptr;
+                                            e.choices_out = choices_out ? got.data() : nullptr;
+                                        });
+    std::memcpy(out, blocks.data(), n * 16);
+    if (choices_out) std::memcpy(choices_out, got.data(), n * 4);
+}
+
 extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     encode<bc7_shader::Encoder>(rgba, w, h, depth, out);
 }

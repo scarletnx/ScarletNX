@@ -614,7 +614,7 @@ Running out of video memory looks like a GPU slowdown (evictions, uploads, textu
 lost device. Watch the stats box's video memory against the budget, Tracy's GPU memory and budget plots and
 `texture cache misses/s`, and the `resources:`/`memory:` lines of `--log=2`. A Vulkan out-of-memory logs each heap
 and the descriptor pools. `vk_budget_mb` and `vk_max_allocation_mb` impose a smaller budget, to reproduce a small
-GPU's behaviour on a large one ([Settings](../user/settings.md#debug)); `astc_mode` changes what ASTC textures cost
+GPU's behaviour on a large one ([Settings](../user/settings.md#debug)); `astc_textures` changes what ASTC textures cost
 on a GPU without ASTC ([Settings](../user/settings.md#graphics)).
 
 ### Memory view: which allocations have a pool

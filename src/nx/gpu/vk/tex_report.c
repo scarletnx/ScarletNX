@@ -80,7 +80,7 @@ typedef struct {
     struct {
         u32 n;
         u64 bytes;
-    } by_class[VK_TEX_CLASSES];
+    } by_class[VK_TEX_CLASSES], rt_class[VK_TEX_CLASSES], rt_sys_class[VK_TEX_CLASSES], sys_size[VK_BUS_BUCKETS];
     int detail; /* buffer_copy_stats: the sums below too */
     VkTexFormats formats;
     VkAstcSizes astc;
@@ -136,6 +136,27 @@ static void census_run(void* ctx, u64 gva, u64 cpu, u64 n) {
     }
     c->runs[c->nruns] = (VkRange){gva, n};
     c->runs[c->capruns + c->nruns++] = (VkRange){cpu, n};
+}
+
+static void census_sys(void* ctx, const Surf* s) {
+    Census* c = ctx;
+    if (!s->demoted) return;
+    const u32 b = vk_bus_bucket(s->sys_bytes);
+    c->sys_size[b].n++;
+    c->sys_size[b].bytes += s->sys_bytes;
+}
+
+static void census_rt(void* ctx, const Surf* s) {
+    Census* c = ctx;
+    const u64 gva = s->gva & ~(1ull << 63);
+    const int k = vk_tex_live_class(c->starts, c->nstarts, c->live, c->nlive, gva);
+    const u64 bytes = s->demoted ? s->sys_bytes : s->bytes;
+    c->rt_class[k].n++;
+    c->rt_class[k].bytes += bytes;
+    if (s->demoted) {
+        c->rt_sys_class[k].n++;
+        c->rt_sys_class[k].bytes += s->sys_bytes;
+    }
 }
 
 static void census_texture(void* ctx, const Surf* t) {
@@ -220,6 +241,7 @@ static void line_add(char* line, size_t size, size_t* at, const char* fmt, ...) 
     if (w > 0) *at += (size_t)w;
 }
 
+static double mb_f(u64 bytes) { return (double)bytes / 1048576.0; }
 #define MB(bytes) ((unsigned long long)((bytes) >> 20))
 
 /* the sums by host format, the most bytes first, and by ASTC block size */
@@ -289,13 +311,23 @@ void vk_tex_report_log(void) {
     /* a game whose front end has no texture objects has no dead textures to tell */
     if (gpu_textures_added()) census_objects(&c);
     if (c.starts || c.detail) vk_surf_each(VK_LRU_TEX, census_texture, &c);
-    if (c.starts)
+    if (c.starts) {
         LOG("vulkan: textures by the game's texture objects: %u at the address of a live object (%llu MB), %u inside "
             "a live object (%llu MB), %u dead with no live object at their address (%llu MB). The game has %llu live "
             "objects at %u addresses\n",
             c.by_class[VK_TEX_LIVE].n, MB(c.by_class[VK_TEX_LIVE].bytes), c.by_class[VK_TEX_INSIDE].n,
             MB(c.by_class[VK_TEX_INSIDE].bytes), c.by_class[VK_TEX_DEAD].n, MB(c.by_class[VK_TEX_DEAD].bytes),
             (unsigned long long)c.refs, c.nstarts);
+        vk_surf_each(VK_LRU_RT, census_rt, &c);
+        LOG("vulkan: render targets by the game's texture objects: %u at the address of a live object (%llu MB), %u "
+            "inside a live object (%llu MB), %u dead with no live object at their address (%llu MB); of those in "
+            "system memory: %u at a live object (%llu MB), %u inside (%llu MB), %u dead (%llu MB)\n",
+            c.rt_class[VK_TEX_LIVE].n, MB(c.rt_class[VK_TEX_LIVE].bytes), c.rt_class[VK_TEX_INSIDE].n,
+            MB(c.rt_class[VK_TEX_INSIDE].bytes), c.rt_class[VK_TEX_DEAD].n, MB(c.rt_class[VK_TEX_DEAD].bytes),
+            c.rt_sys_class[VK_TEX_LIVE].n, MB(c.rt_sys_class[VK_TEX_LIVE].bytes), c.rt_sys_class[VK_TEX_INSIDE].n,
+            MB(c.rt_sys_class[VK_TEX_INSIDE].bytes), c.rt_sys_class[VK_TEX_DEAD].n,
+            MB(c.rt_sys_class[VK_TEX_DEAD].bytes));
+    }
     if (g_tex_report.evictions)
         LOG("vulkan: %llu textures made again after the cache evicted them (%llu MB of guest memory loaded again, "
             "%llu MB of images), %llu of them since the last report. The cache evicted %llu textures in all\n",
@@ -313,8 +345,29 @@ void vk_tex_report_log(void) {
         LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
             "moved back; %llu MB there now\n",
             (unsigned long long)sys_out, (unsigned long long)sys_back, MB(sys_bytes));
+    VkSysBwStats bw;
+    vk_sys_bw_stats(&bw);
+    if (bw.touches)
+        LOG("vulkan: GPU reads of system-memory surfaces over 600 presents: %u frames, %llu touches, %.1f MB/frame "
+            "avg (%.1f MB peak), %llu bandwidth-driven promotions\n",
+            bw.frames, (unsigned long long)bw.touches,
+            bw.frames ? (double)bw.unique_bytes / (double)bw.frames / 1048576.0 : 0.0,
+            (double)bw.peak_bytes / 1048576.0, (unsigned long long)bw.bw_promotes);
     VkRtSysStats rts;
     vk_rt_sys_stats(&rts);
+    if (sys_out || rts.n || bw.touches) {
+        vk_surf_each(VK_LRU_TEX, census_sys, &c);
+        vk_surf_each(VK_LRU_RT, census_sys, &c);
+        LOG("vulkan: system-memory surfaces by size (<64K / <1M / <16M / >=16M): held %u/%u/%u/%u "
+            "(%.1f/%.1f/%.1f/%.1f MB); GPU reads over 600 presents: %llu/%llu/%llu/%llu touches "
+            "(%.1f/%.1f/%.1f/%.1f MB unique)\n",
+            c.sys_size[0].n, c.sys_size[1].n, c.sys_size[2].n, c.sys_size[3].n, mb_f(c.sys_size[0].bytes),
+            mb_f(c.sys_size[1].bytes), mb_f(c.sys_size[2].bytes), mb_f(c.sys_size[3].bytes),
+            (unsigned long long)bw.bucket_touches[0], (unsigned long long)bw.bucket_touches[1],
+            (unsigned long long)bw.bucket_touches[2], (unsigned long long)bw.bucket_touches[3],
+            mb_f(bw.bucket_unique_bytes[0]), mb_f(bw.bucket_unique_bytes[1]), mb_f(bw.bucket_unique_bytes[2]),
+            mb_f(bw.bucket_unique_bytes[3]));
+    }
     if (rts.kept || rts.lost)
         LOG("vulkan: %llu render targets with pixels memory lacks kept where the caches would have let them go, %llu "
             "of them loaded again from memory the guest wrote meanwhile; %llu moved into system memory, %llu back, %llu "

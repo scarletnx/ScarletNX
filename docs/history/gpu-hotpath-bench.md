@@ -146,7 +146,7 @@ reclamation and buffer work. Resource categories exclude nested resource interva
 wait intervals, so these groups must not be added together. These are elapsed times inside CPU calls, not GPU
 execution timestamps.
 
-On a GPU without native ASTC, `astc_mode=1` decodes to exact RGBA8 and avoids BC7 re-encoding. The decoded image
+On a GPU without native ASTC, `astc_textures=1` (Exact) decodes to exact RGBA8 and avoids BC7 re-encoding. The decoded image
 payload is four times the size of BC7. Test this per game with sufficient memory and watch the cache/budget log.
 The ASTC fixture's `--bench` compares identical input blocks through GPU completion; its timings do not measure game
 FPS or native NVN. Its normal mode checks pixels against CPU references, including partial updates and images whose
