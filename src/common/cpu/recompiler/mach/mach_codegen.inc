@@ -1433,13 +1433,15 @@ static int reverse(Unit* u, SnxU32 word) {
     if (!sf) v = sg_d_slice(g, v, 31, 0);
     if (!opc)
         r = MG_RBIT(u, v);
-    else if (opc == 1 && sf) { /* REV16's halves of X: each byte with its neighbour */
-        SgD m = sgx_const(64, 0x00FF00FF00FF00FFull);
-        r = sg_d_or(g, sg_d_and(g, sg_d_lsr(g, v, 8), m), sg_d_lsl(g, sg_d_and(g, v, m), 8));
+    else if (opc == 1 && sf) {
+        /* REV16's halves of X: each byte with its neighbour. The odd bytes are v less its even ones, so the mask is
+           one constant in a register and not two */
+        SgD even = sg_d_and(g, v, sgx_const(64, 0x00FF00FF00FF00FFull));
+        r = sg_d_or(g, sg_d_lsl(g, even, 8), sg_d_lsr(g, sg_d_xor(g, v, even), 8));
     } else {
         sgx_flat(sgx(g), &v);
         r = SGX_OP(sgx(g), rev, w, v);
-        if (opc != 2 + sf) r = sg_d_or(g, sg_d_lsl(g, r, w / 2), sg_d_lsr(g, r, w / 2)); /* the halves back in order */
+        if (opc != 2 + sf) r = sg_d_ror(g, r, w / 2); /* the halves back in order */
     }
     if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
     return 1;

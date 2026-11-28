@@ -98,6 +98,8 @@ static const Row k_rows[] = {
     {"rev x0, x1", 0, NEEDS_GFNI, 192, -1, NULL, "DAC00C20"},
     {"rev16 x0, x1", 0, NEEDS_GFNI, 240, -1, NULL, "DAC00420"},
     {"rev16 w0, w1", 0, NEEDS_GFNI, 208, -1, NULL, "5AC00420"},
+    {"rev32 x0, x1 (BSWAP and one rotation)", 0, 0, 44, -1, NULL, "DAC00820"},
+    {"rev16 w0, w1 (BSWAP and one rotation)", 0, 0, 43, -1, NULL, "5AC00420"},
     /* a bit field moved into a register by one mask of it, not the Sail's two: no rotation (RORX, or ROR by an
        immediate) before the masks */
     {"bfi x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B37C1C20"},
