@@ -672,6 +672,46 @@ static int forced_counts_deferred_heap(void) {
     return went;
 }
 
+/* A trim for an allocation that found no memory (force) lets go of target copies unused for VK_RT_COPY_PRESENTS
+   presents before the lossy steps take targets, while keeping recent copies and save copies (predraw). 1 when the
+   copy unused for 100 presents went and the 50-present copy and save copy stayed */
+static int forced_copies_go(void) {
+    static const u32 ago[3] = {VK_RT_COPY_PRESENTS + 40, VK_RT_COPY_PRESENTS - 10, VK_RT_COPY_PRESENTS + 40};
+    static const u64 bytes[3] = {4 << 20, 2 << 20, 5 << 20};
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* rt = target(0x75000000, 8 << 20, 1);
+    rt->last_used = g_vk_present;
+    Surf* kept[2] = {NULL, NULL};
+    for (int i = 0; i < 3; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = rt->gva;
+        c->bytes = bytes[i];
+        c->last_used = g_vk_present - ago[i];
+        c->predraw = i == 2;
+        c->next = rt->crop;
+        rt->crop = c;
+        if (i >= 1) kept[i - 1] = c;
+    }
+    g_use = g_budget - 3 * trim_head(g_budget);
+    g_heap_use = g_budget;
+    g_deferred = 0;
+    vk_mem_trim(8 << 20, 1);
+    u32 left = 0;
+    for (const Surf* x = rt->crop; x; x = x->next) left++;
+    const int went =
+        left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 4 << 20 && targets_held() == 1;
+    if (!went)
+        fprintf(stderr, "forced_copies_go: %u copies left, %llu bytes deferred, %u targets\n", left,
+                (unsigned long long)g_deferred, targets_held());
+    surf_evict(rt);
+    CHECK(targets_held() == 0);
+    g_heap_use = 0;
+    return went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -706,6 +746,8 @@ int main(void) {
     CHECK(headroom_in_pieces());
     /* a forced trim counts deferred releases in the heap's use */
     CHECK(forced_counts_deferred_heap());
+    /* a forced trim takes copies unused for VK_RT_COPY_PRESENTS */
+    CHECK(forced_copies_go());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "

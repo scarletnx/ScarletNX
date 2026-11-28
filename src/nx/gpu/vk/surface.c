@@ -4147,8 +4147,8 @@ void vk_mem_trim(u64 extra, int force) {
     const u32 superseded_before =
         g_vk.has_pageable && !force && !heap_full ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
     /* the copies of targets no bind asked for lately go with them: made again from their targets */
-    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) +
-                     rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
+    const u32 copy_before = vk_present_before(0, force ? VK_RT_COPY_PRESENTS : VK_RT_COPY_TRIM_PRESENTS);
+    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) + rt_copies_reclaim(copy_before, ~0ull);
     const u64 tex_superseded_bytes = vk_tex_reclaim_superseded(superseded_before, ~0ull);
     static const struct {
         u32 ms, presents;
