@@ -16,6 +16,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/platform/time.h"
@@ -37,7 +38,12 @@
      rate at 0x18, the channels at 0x1c; from SDK 6 the last decode's time in microseconds at 0x20 and, at 0x28, the
      flag the SDK's own ResetHardwareOpusDecoder sets for the next decode to start the stream again. The multistream
      struct has the stream counts at 0x20 and 0x24, and the time and the flag 8 bytes later;
-   - the class from SDK 5 to 14, which is that struct behind its vtable.
+   - the class from SDK 5 to 14, which is that struct behind its vtable;
+   - a 32-bit game's struct of SDK 10.6.0, the one 32-bit SDK of this API read: its three words of the session at 0,
+     4 and 8 (the object a word), the rate at 0xc, the channels at 0x10, the time at 0x18 and the flag at 0x20; the
+     multistream struct has the stream counts at 0x14 and 0x18, the time at 0x20 and the flag at 0x28, and the class
+     keeps the struct at 8, behind its vtable's word and a word of padding. Its decode gives the bytes it used through a
+     size_t of 4 bytes. Finalize clears the struct's first five words, the multistream one's seven.
    A decoder is found by the address of that object (g_hle.audio.opus, which a save state holds), and the word where
    the SDK keeps its session's object holds the decoder's place in the pool, so the SDK's own IsInitialized says yes.
 
@@ -53,15 +59,38 @@
 
 /* where an object keeps what the SDK's own code reads; 0 for a field the shape doesn't have */
 typedef struct {
-    u8 object; /* the session's object (8 bytes), or the initialized flag (1 byte) of the class up to SDK 4 */
+    u8 object; /* the session's object, or the initialized flag (1 byte) of the class up to SDK 4 */
     u8 flag;   /* object is that flag */
     u8 rate, channels, streams, stereo_streams;
     u8 time, reset; /* from SDK 6 */
+    u8 word;        /* a pointer's and a size_t's bytes: the object's, and the bytes a decode used */
+    u8 head;        /* the bytes from 0 that Finalize clears, the rate and the channels the last of them */
 } Shape;
-static const Shape g_class = {8, 1, 0xc, 0x10, 0, 0, 0, 0}, g_class_multi = {8, 1, 0xc, 0x10, 0x14, 0x18, 0, 0};
-static const Shape g_type = {0, 0, 0x18, 0x1c, 0, 0, 0, 0}, g_type_multi = {0, 0, 0x18, 0x1c, 0x20, 0x24, 0, 0};
-static const Shape g_timed = {0, 0, 0x18, 0x1c, 0, 0, 0x20, 0x28},
-                   g_timed_multi = {0, 0, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x30};
+static const Shape g_class = {8, 1, 0xc, 0x10, 0, 0, 0, 0, 8, 0},
+                   g_class_multi = {8, 1, 0xc, 0x10, 0x14, 0x18, 0, 0, 8, 0};
+static const Shape g_type = {0, 0, 0x18, 0x1c, 0, 0, 0, 0, 8, 0x20},
+                   g_type_multi = {0, 0, 0x18, 0x1c, 0x20, 0x24, 0, 0, 8, 0x20};
+static const Shape g_timed = {0, 0, 0x18, 0x1c, 0, 0, 0x20, 0x28, 8, 0x20},
+                   g_timed_multi = {0, 0, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x30, 8, 0x20};
+static const Shape g_timed32 = {0, 0, 0xc, 0x10, 0, 0, 0x18, 0x20, 4, 0x14},
+                   g_timed_multi32 = {0, 0, 0xc, 0x10, 0x14, 0x18, 0x20, 0x28, 4, 0x14};
+/* the struct from SDK 6 on: a 32-bit game's (g_arm_mod) is 10.6.0's */
+static const Shape* timed(int multi) {
+    if (g_arm_mod) return multi ? &g_timed_multi32 : &g_timed32;
+    return multi ? &g_timed_multi : &g_timed;
+}
+/* the struct of the class from SDK 5 to 14, as its Finalize closes it */
+static const Shape* typed(int multi) {
+    if (g_arm_mod) return multi ? &g_timed_multi32 : &g_timed32;
+    return multi ? &g_type_multi : &g_type;
+}
+/* a word of the game's: a pointer or a size_t, 8 bytes or a 32-bit game's 4 */
+static void word_put(const CPU* c, const Shape* s, u64 addr, u64 value) {
+    if (s->word == 4)
+        snx_st_le32(hook_host(c, addr), (u32)value);
+    else
+        snx_st_le64(hook_host(c, addr), value);
+}
 #define CLASS_TYPE 8 /* the struct in the class from SDK 5: behind the vtable */
 
 /* the decoder of the game's object at guest, under g_host.audio.lk, which the caller holds from here whether there is
@@ -115,7 +144,7 @@ static u32 open_decoder(CPU* c, const Shape* s, u64 guest, u32 rate, u32 channel
     if (s->flag)
         *hook_host(c, guest + s->object) = 1;
     else
-        snx_st_le64(hook_host(c, guest + s->object), place);
+        word_put(c, s, guest + s->object, place);
     LOG("hwopus: decoder %llx: %lu channels in %lu streams at %lu Hz\n", (unsigned long long)guest,
         (unsigned long)channels, (unsigned long)streams, (unsigned long)rate);
     return 0;
@@ -144,8 +173,8 @@ static void close_decoder(CPU* c, const Shape* s, u64 guest) {
     if (!h) return;
     if (s->flag)
         *hook_host(c, guest + s->object) = 0;
-    else { /* the struct's first four words, the rate and the channels among them */
-        memset(hook_host(c, guest), 0, 0x20);
+    else { /* the struct's words up to the channels, as the SDK's Finalize clears them */
+        memset(hook_host(c, guest), 0, s->head);
         if (s->streams) snx_st_le64(hook_host(c, guest + s->streams), 0);
     }
 }
@@ -165,7 +194,7 @@ u32 nncodec_hwopus_init(CPU* c, u64 decoder, i32 rate, i32 channels, u64 work, u
 }
 u32 nncodec_hwopus_init_timed(CPU* c, u64 decoder, i32 rate, i32 channels, u64 work, u64 size, i32 option) {
     (void)work, (void)size, (void)option;
-    return open_decoder(c, &g_timed, decoder, (u32)rate, (u32)channels, 1, (u32)channels - 1, NULL);
+    return open_decoder(c, timed(0), decoder, (u32)rate, (u32)channels, 1, (u32)channels - 1, NULL);
 }
 u32 nncodec_hwopus_multi_init(CPU* c, u64 decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams, u64 mapping,
                               u64 work, u64 size) {
@@ -175,19 +204,19 @@ u32 nncodec_hwopus_multi_init(CPU* c, u64 decoder, i32 rate, i32 channels, i32 s
 u32 nncodec_hwopus_multi_init_timed(CPU* c, u64 decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams,
                                     u64 mapping, u64 work, u64 size) {
     (void)work, (void)size;
-    return open_multi(c, &g_timed_multi, decoder, rate, channels, streams, stereo_streams, mapping);
+    return open_multi(c, timed(1), decoder, rate, channels, streams, stereo_streams, mapping);
 }
 
 void nncodec_hwopus_class_finalize(CPU* c, u64 self) { close_decoder(c, &g_class, self); }
 void nncodec_hwopus_class_multi_finalize(CPU* c, u64 self) { close_decoder(c, &g_class_multi, self); }
 /* the class from SDK 5, whose Finalize is its struct's FinalizeHardwareOpusDecoder again */
-void nncodec_hwopus_type_class_finalize(CPU* c, u64 self) { close_decoder(c, &g_type, self + CLASS_TYPE); }
-void nncodec_hwopus_type_class_multi_finalize(CPU* c, u64 self) { close_decoder(c, &g_type_multi, self + CLASS_TYPE); }
-static void nncodec_hwopus_finalize(CPU* c, u64 decoder) { close_decoder(c, &g_type, decoder); }
-void nncodec_hwopus_multi_finalize(CPU* c, u64 decoder) { close_decoder(c, &g_type_multi, decoder); }
+void nncodec_hwopus_type_class_finalize(CPU* c, u64 self) { close_decoder(c, typed(0), self + CLASS_TYPE); }
+void nncodec_hwopus_type_class_multi_finalize(CPU* c, u64 self) { close_decoder(c, typed(1), self + CLASS_TYPE); }
+static void nncodec_hwopus_finalize(CPU* c, u64 decoder) { close_decoder(c, typed(0), decoder); }
+void nncodec_hwopus_multi_finalize(CPU* c, u64 decoder) { close_decoder(c, typed(1), decoder); }
 /* ResetHardwareOpusDecoder, the SDK's own three instructions: the flag the next decode reads. Only a struct of SDK 6
    on has the function */
-static void nncodec_hwopus_reset(CPU* c, u64 decoder) { *hook_host(c, decoder + g_timed.reset) = 1; }
+static void nncodec_hwopus_reset(CPU* c, u64 decoder) { *hook_host(c, decoder + timed(0)->reset) = 1; }
 /* SetContext, the class's up to SDK 4: the session took the context and did nothing with it */
 u32 nncodec_hwopus_class_set_context(CPU* c, u64 self, u64 context, u64 size) {
     (void)c, (void)self, (void)context, (void)size;
@@ -249,7 +278,7 @@ static u32 decode(CPU* c, const Shape* s, u64 guest, u64 consumed, u64 samples, 
     SNX_PLOT("nn codec out bytes", (double)got * h->channels * 2);
     LOG_LIMIT(1, "hwopus: the first packet decoded, %lu bytes into %lu samples\n", (unsigned long)used,
               (unsigned long)got);
-    snx_st_le64(hook_host(c, consumed), used);
+    word_put(c, s, consumed, used);
     snx_st_le32(hook_host(c, samples), got);
     if (s->time) snx_st_le64(hook_host(c, guest + s->time), (plat_ns() - t) / 1000);
     return 0;
@@ -271,7 +300,7 @@ u32 nncodec_hwopus_decode(CPU* c, u64 decoder, u64 consumed, u64 samples, u64 ou
 }
 u32 nncodec_hwopus_decode_timed(CPU* c, u64 decoder, u64 consumed, u64 samples, u64 out, u64 out_size, u64 in,
                                 u64 in_size) {
-    return decode(c, &g_timed, decoder, consumed, samples, out, out_size, in, in_size, 1);
+    return decode(c, timed(0), decoder, consumed, samples, out, out_size, in, in_size, 1);
 }
 u32 nncodec_hwopus_multi_decode(CPU* c, u64 decoder, u64 consumed, u64 samples, u64 out, u64 out_size, u64 in,
                                 u64 in_size) {
@@ -279,7 +308,7 @@ u32 nncodec_hwopus_multi_decode(CPU* c, u64 decoder, u64 consumed, u64 samples, 
 }
 u32 nncodec_hwopus_multi_decode_timed(CPU* c, u64 decoder, u64 consumed, u64 samples, u64 out, u64 out_size, u64 in,
                                       u64 in_size) {
-    return decode(c, &g_timed_multi, decoder, consumed, samples, out, out_size, in, in_size, 1);
+    return decode(c, timed(1), decoder, consumed, samples, out, out_size, in, in_size, 1);
 }
 
 /* ------------------------------------------------------------ the work buffer's size */
