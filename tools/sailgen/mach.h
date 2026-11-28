@@ -126,8 +126,10 @@ typedef struct {
     SnxU64 kv[2];
     /* SGX_K_COLD of sgx_cold_fp: its call reads and writes the state's 32-bit fields at disp (FPCR) and mdisp (FPSR)
        alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
-       alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's */
-    unsigned char cstate, cfpcr, ckat, cw32, zacc;
+       alone; cw32: the arguments (bits 0-4) and the result (7) of 32 bits in XMM registers; zacc: sgx_cold_fp's (and
+       sgx_vcold_warm's, nine bits) */
+    unsigned char cstate, cfpcr, ckat, cw32;
+    unsigned short zacc;
     /* and its tests: what kind of, the float in[of], the limit in[limit] (6 or 7, 0 for none), the width */
     unsigned char ntests;
     union {
@@ -1447,7 +1449,7 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
     i->ckat = (unsigned char)(k_at + 1);
     i->imm = k;
     i->cw32 = (unsigned char)w32;
-    i->zacc = (unsigned char)zacc;
+    i->zacc = (unsigned short)zacc;
     i->kv[0] = zmask;
     i->def = cls ? sgx_xvreg(x, x->n - 1) : sgx_vreg(x, x->n - 1, 64);
     return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
@@ -1517,7 +1519,7 @@ static inline int sgx_vcold_warm(SgX* x, SgB c, int tied, const char* sym, int a
     int n = x->n, v = sgx_vcold(x, c, tied, sym, a, b, d, desc);
     if (x->n > n) {
         SgXIns* i = &x->ins[x->n - 1];
-        i->zacc = (unsigned char)zacc;
+        i->zacc = (unsigned short)zacc;
         i->disp = fpcr;
         i->mdisp = fpsr;
         i->in[6] = mask;
@@ -3229,8 +3231,9 @@ static inline size_t sgx_pack(SgX* x) {
         if (s->def2) sgx_pk_s(x, (long long)s->def2 - ref);
         if (s->cadd_k) sgx_pk_s(x, s->cadd_k);
         if (map >> SGX_PK_COLD & 1) {
-            const unsigned char six[6] = {s->cstate, s->cfpcr, s->ckat, s->cw32, s->zacc, s->ntests};
-            sgx_pk_raw(x, six, sizeof six);
+            const unsigned char seven[7] = {s->cstate, s->cfpcr, s->ckat, s->cw32, (unsigned char)s->zacc,
+                                            (unsigned char)(s->zacc >> 8), s->ntests};
+            sgx_pk_raw(x, seven, sizeof seven);
             sgx_pk_raw(x, s->test, sizeof s->test);
         }
         if (fbs) {
@@ -3322,10 +3325,10 @@ static inline void sgx_unpack(SgX* x, const unsigned char* c) {
         if (map >> SGX_PK_DEF2 & 1) s->def2 = ref + (int)sgx_un_s(&c);
         if (map >> SGX_PK_CADD_K & 1) s->cadd_k = sgx_un_s(&c);
         if (map >> SGX_PK_COLD & 1) {
-            unsigned char six[6];
-            sgx_un_raw(&c, six, sizeof six);
-            s->cstate = six[0], s->cfpcr = six[1], s->ckat = six[2], s->cw32 = six[3], s->zacc = six[4],
-            s->ntests = six[5];
+            unsigned char seven[7];
+            sgx_un_raw(&c, seven, sizeof seven);
+            s->cstate = seven[0], s->cfpcr = seven[1], s->ckat = seven[2], s->cw32 = seven[3],
+            s->zacc = (unsigned short)(seven[4] | seven[5] << 8), s->ntests = seven[6];
             sgx_un_raw(&c, s->test, sizeof s->test);
         }
         if (map >> SGX_PK_FB & 1) {

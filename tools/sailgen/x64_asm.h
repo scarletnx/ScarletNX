@@ -314,13 +314,55 @@ static inline void sgx_cold_varg(SgXAsm* a, int s, int v) {
     else
         sgx_vmem(a, &sgx_v_movdqu_ld, s, SGX_RSP, 8 * vv->slot);
 }
+/* the warm path's lanes of bad (an XMM register, its out lanes that are not normal) that are left without those where
+   FPCR.DN is clear, argument 1 or 2 is a quiet NaN and neither is a signalling one: FPProcessNaNs gives the first
+   quiet NaN as it is and raises nothing, and ADDPx, SUBPx, MULPx and DIVPx give their first operand's quiet NaN
+   (Intel SDM vol. 1, 4.8.3.5), the first argument, else the second's. In the XMM registers t and u. Of the doubled
+   bits m (no sign) with their tops flipped (signed compares as unsigned ones): a quiet NaN's are above the doubled
+   infinity's and quiet bit's less 1; m less the doubled infinity's and 2 is below the doubled quiet bit's less 2 in a
+   signalling NaN alone */
+static inline void sgx_cold_vqnan(SgXAsm* a, const SgXIns* i, int bad, int t, int u) {
+    SgXBuf* c = a->b;
+    const int dbl = (i->imm >> 4 & 15) == 8;
+    const SgXVForm* add = dbl ? &sgx_v_paddq : &sgx_v_paddd;
+    const SgXVForm* sub = dbl ? &sgx_v_psubq : &sgx_v_psubd;
+    const SgXVForm* gt = dbl ? &sgx_v_pcmpgtq : &sgx_v_pcmpgtd;
+    const SnxU64 wide = dbl ? ~0ull : 0xFFFFFFFFu, flip = dbl ? 1ull << 63 : 1ull << 31;
+    const SnxU64 inf2 = (dbl ? 0x7FF0000000000000ull : 0x7F800000u) << 1 & wide,
+                 quiet2 = dbl ? 1ull << 52 : 1ull << 23;
+    int k;
+#define SPLAT(v) ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32), ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32)
+    sgx_cold_test_state(c, i->disp, 1u << 25); /* FPCR.DN: the default NaN, the call's */
+    size_t dn = sgx_cold_jcc(c, 0x85);
+    for (k = 0; k < 2; ++k) { /* t: a quiet NaN in argument 1 or 2 */
+        const int r = k ? u : t;
+        sgx_cold_varg(a, r, i->in[1 + k]);
+        sgx_vrr(a, add, r, r);
+        sgx_vpool(a, &sgx_v_pxor, r, SPLAT(flip));
+        sgx_vpool(a, gt, r, SPLAT((inf2 + quiet2 - 1) ^ flip));
+    }
+    sgx_vrr(a, &sgx_v_por, t, u);
+    for (k = 0; k < 2; ++k) { /* and not a signalling one in either */
+        sgx_cold_varg(a, u, i->in[1 + k]);
+        sgx_vrr(a, add, u, u);
+        sgx_vpool(a, sub, u, SPLAT(inf2 + 2));
+        sgx_vpool(a, &sgx_v_pxor, u, SPLAT(flip));
+        sgx_vpool(a, gt, u, SPLAT((quiet2 - 3) ^ flip));
+        sgx_vrr(a, &sgx_v_pand, t, u);
+    }
+#undef SPLAT
+    sgx_vrr(a, &sgx_v_pandn, t, bad); /* bad's lanes without those */
+    sgx_vrr(a, &sgx_v_movaps, bad, t);
+    sgx_cold_land(c, dn);
+}
 /* the vector cold path's tests before its call (sgx_vcold_warm, x64_vec.c's guards: the warm path),
    in SSE on three XMM registers no value of them is in, kept in the frame around them (zacc bit 7 says there are such
    tests). Back to the hot code, its result out as it is, where FPSR's IXC is set (bit 5), no argument FZ flushes (the
    first ones, bits 3-4 their count) and in each of the lanes desc names (x64_vec.c's FDESC) either (bit 6) the hot
    code's mask in[6] is clear, or FPCR's mode is nearest and out is a normal number or a zero that is exact (bits 0-1:
-   0 none is, 1 every zero, 2 one where argument 1 or 2 (bit 2: 2 or 3) is a zero, 3 where argument 1 is); else on to
-   the call */
+   0 none is, 1 every zero, 2 one where argument 1 or 2 (bit 2: 2 or 3) is a zero, 3 where argument 1 is), or (bit 8,
+   with kind 1 to 3) out is the quiet NaN of argument 1 or 2 that the host and FPProcessNaNs agree on
+   (sgx_cold_vqnan); else on to the call */
 static inline void sgx_cold_vwarm(SgXAsm* a, int at, const SgXIns* i, int out, size_t back) {
     SgXBuf* c = a->b;
     const unsigned z = i->zacc, bytes = (unsigned)(i->imm >> 4 & 15), lanes = (unsigned)(i->imm >> 8 & 15);
@@ -401,6 +443,7 @@ static inline void sgx_cold_vwarm(SgXAsm* a, int at, const SgXIns* i, int out, s
                     sgx_vrr(a, &sgx_v_pand, s[1], s[0]);  /* exact: a zero out where an argument is one */
                     sgx_vrr(a, &sgx_v_pandn, s[1], s[0]); /* a zero out that is not */
                     sgx_vrr(a, &sgx_v_por, s[1], s[2]);
+                    if (z & 0x100) sgx_cold_vqnan(a, i, s[1], s[0], s[2]);
                     sgx_vpool(a, &sgx_v_ptest, s[1], mlo, mhi);
                     to_restore[nrestore++] = sgx_cold_jcc(c, 0x85);
                     sgx_cold_land(c, normal_lanes);
@@ -409,6 +452,7 @@ static inline void sgx_cold_vwarm(SgXAsm* a, int at, const SgXIns* i, int out, s
                 sgx_vrr(a, &sgx_v_pand, s[1], s[2]);
             }
             sgx_vrr(a, &sgx_v_pandn, s[1], s[0]); /* not normal, and not an exact zero */
+            if (z & 0x100) sgx_cold_vqnan(a, i, s[1], s[0], s[2]);
             sgx_vpool(a, &sgx_v_ptest, s[1], mlo, mhi);
             to_restore[nrestore++] = sgx_cold_jcc(c, 0x85);
             sgx_cold_land(c, normal_lanes);
@@ -529,7 +573,9 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
         sgx_cjump(a, b->n, a->cold.n, 0);
         sgx_imm(b, 0, 4);
     }
-    sgx_cold_room(a, 1024);
+    /* room for a warm path's tests (sgx_cold_vwarm, with the quiet NaNs') and the call's saves of every register:
+       a byte past it is lost */
+    sgx_cold_room(a, 2048);
     {
         SgXBuf* hot = a->b;
         size_t back = hot->n;
