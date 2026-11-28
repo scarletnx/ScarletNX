@@ -3465,11 +3465,12 @@ if(NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-bc7-cache PRIVATE snx_nx_flags snx_xxhash scarletnx-common scarletnx-platform)
     add_test(NAME bc7_cache COMMAND snx-test-bc7-cache)
     # the BC7 encoder's choices (gpu/vk/bc7_choices.c), without a GPU: a strip's words land at its place in its level's,
-    # the game's file gives them back in the next run, and a file of another version or cut short is said
+    # the game's file, packed by zstd, gives them back in the next run, and a file of another version, cut short or
+    # not zstd's is said
     if(NOT WIN32) # mkdtemp and truncate
         add_executable(snx-test-bc7-choices bc7_choices.c tracy_stubs.c)
         snx_test_target(snx-test-bc7-choices gnu23)
-        target_link_libraries(snx-test-bc7-choices PRIVATE snx_nx_flags scarletnx-common scarletnx-platform)
+        target_link_libraries(snx-test-bc7-choices PRIVATE snx_nx_flags snx_zstd scarletnx-common scarletnx-platform)
         add_test(NAME bc7_choices COMMAND snx-test-bc7-choices)
     endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

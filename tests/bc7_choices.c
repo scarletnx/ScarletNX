@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The BC7 encoder's choices (gpu/vk/bc7_choices.c), without a GPU: a level's words are made zero, a strip's come back
-   at its place, and a level of another count under the same key starts over. The game's file written at the exit
-   gives the same words back in the next run; a file of another encoder's version, or one that ends inside a level,
-   is said with both values, and in the second the levels before it are read. A run that kept none leaves the last
-   run's file as it was */
+   at its place, and a level of another count under the same key starts over. The game's file written at the exit,
+   packed by zstd into less than its records, gives the same words back in the next run; a file of another encoder's
+   version, one cut short and one whose frame is not zstd's are said with both values and read none. A run that kept
+   none leaves the last run's file as it was */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +68,7 @@ int main(void) {
     CHECK(!vk_bc7_choices_find(a, 100));
     g_said[0] = 0;
     CHECK(vk_bc7_choices_load(path) == 2);
-    CHECK(strstr(g_said, "choices of 2 levels (107 blocks"));
+    CHECK(strstr(g_said, "choices of 2 levels ("));
     w = vk_bc7_choices_find(a, 100);
     w2 = vk_bc7_choices_find(b, 7);
     CHECK(w && w2 && w[40] == 6 && w[41] == 0x3F1 && w[42] == 0xA05 && !w[0] && w2[6] == 0x123);
@@ -88,18 +88,33 @@ int main(void) {
     snprintf(want, sizeof want, "of BC7 encoder %llu, not this build's \"%s\" of encoder %u", (unsigned long long)other,
              BC7_CHOICES_MAGIC, (unsigned)VK_BC7_ENCODER_VERSION);
     CHECK(strstr(g_said, want));
-    /* a file that ends inside its second level: the first is read, and the line says where it ends */
+    /* the file is the records packed: a level of repeated words takes far less than its 2 bytes a block */
     forget_all();
-    w = vk_bc7_choices_take(a, 100);
-    w[5] = 6;
-    w2 = vk_bc7_choices_take(b, 7);
+    w = vk_bc7_choices_take(a, 100000);
+    for (u32 i = 0; i < 100000; i++) w[i] = (u16)(i % 7 + 1);
     vk_bc7_choices_save();
+    FILE* sized = fopen(path, "rb");
+    CHECK(sized && fseek(sized, 0, SEEK_END) == 0);
+    const long whole = ftell(sized);
+    CHECK(fclose(sized) == 0 && whole > 48 && whole < 100000 * 2 / 10);
+    forget_all();
+    CHECK(vk_bc7_choices_load(path) == 1 && (w = vk_bc7_choices_find(a, 100000)) && w[99999] == 99999 % 7 + 1);
+    /* cut short: its head says more packed bytes than follow it, so nothing is read */
     snprintf(tmp, sizeof tmp, "%s", path);
-    CHECK(truncate(tmp, 32 + 24 + 200 + 24 + 4) == 0);
+    CHECK(truncate(tmp, whole - 3) == 0);
     forget_all();
     g_said[0] = 0;
-    CHECK(vk_bc7_choices_load(path) == 1 && g_bc7_choices.used == 1);
-    CHECK(strstr(g_said, "ends inside its level 1 of 2 (7 blocks, 4 bytes left)"));
+    CHECK(vk_bc7_choices_load(path) == 0 && !g_bc7_choices.used);
+    snprintf(want, sizeof want, "but %ld follow its head", whole - 3 - 48);
+    CHECK(strstr(g_said, want));
+    /* the frame's first bytes overwritten: zstd refuses it, and the line says so with both sizes */
+    vk_bc7_choices_take(b, 7);
+    vk_bc7_choices_save();
+    f = fopen(path, "r+b");
+    CHECK(f && fseek(f, 48, SEEK_SET) == 0 && fwrite("garbage!", 8, 1, f) == 1 && fclose(f) == 0);
+    forget_all();
+    g_said[0] = 0;
+    CHECK(vk_bc7_choices_load(path) == 0 && !g_bc7_choices.used && strstr(g_said, "could not be unpacked to the"));
     remove(path);
     rmdir(dir);
     printf("PASS bc7_choices: %u checks\n", checks);
