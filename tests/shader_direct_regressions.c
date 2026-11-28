@@ -4225,9 +4225,9 @@ static void corner_textures(void) {
     const u64 tex_offset = tex | 1ull << 54;
     const u64 sized[2] = {tex, (0xdf48010200470500ull & ~(1ull << 33)) | 1ull << 31 | 1ull << 32};
     const u64* programs[5] = {&tex, &txd, sized, &tld4, &tex_offset};
-    static const int counts[5] = {1, 1, 2, 1, 1}, capable[5] = {1, 1, 1, 0, 0}, muls[5] = {2, 6, 2, 0, 0},
-                     mins[5] = {2, 2, 2, 0, 0}, sizes[5] = {0, 0, 2, 0, 0};
-    static const char* names[5] = {"TEX", "TXD", "TEX and TXQ", "TLD4", "TEX with an offset"};
+    const int counts[5] = {1, 1, 2, 1, 1}, capable[5] = {1, 1, 1, 0, 0}, muls[5] = {2, 6, 2, 0, 0},
+              mins[5] = {2, 2, 2, 0, 0}, sizes[5] = {0, 0, 2, 0, 0};
+    const char* const names[5] = {"TEX", "TXD", "TEX and TXQ", "TLD4", "TEX with an offset"};
     for (int k = 0; k < 5; k++) {
         ShaderInfo info;
         size_t words = 0, plain_words = 0;
@@ -4245,8 +4245,7 @@ static void corner_textures(void) {
             free(plain);
             continue;
         }
-        memset(&info, 0, sizeof info);
-        info.corner_slots = 1;
+        info = (ShaderInfo){.corner_slots = 1};
         u32* corner = spirv_of(code, slots * sizeof *code, ST_FS, &info, &words, 1, 1, 1, 1);
         free(code);
         if (!capable[k]) {
