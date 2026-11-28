@@ -1289,6 +1289,18 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
                     (unsigned long long)(bbuf >> 20), (unsigned long long)(usage >> 20),
                     (unsigned long long)(budget >> 20), (unsigned long long)(trimmed >> 20),
                     (unsigned long long)(vk_surf_ended_freed() >> 20));
+                /* the same textures and targets by what their images hold: where the GPU's memory goes by format */
+                VkSurfCensus census;
+                vk_surf_census(&census);
+                char kinds[1024];
+                u32 at = 0;
+                for (int k = 0; k < VK_CENSUS_KINDS && at < sizeof kinds; k++)
+                    if (census.n[k])
+                        at += (u32)snprintf(
+                            kinds + at, sizeof kinds - at, "%s%s %u, %llu MB (%llu MB in system memory)",
+                            at ? "; " : "", vk_surf_census_name(k), census.n[k],
+                            (unsigned long long)(census.bytes[k] >> 20), (unsigned long long)(census.sys[k] >> 20));
+                if (at) LOG("vulkan: the caches' textures and render targets by what their images hold: %s\n", kinds);
                 VkRtKinds k;
                 vk_rt_kinds(&k);
                 LOG("vulkan: render targets by what they hold: %u that later ones drew all over (%llu MB, %u parked), "

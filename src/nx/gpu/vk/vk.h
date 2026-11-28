@@ -1746,6 +1746,27 @@ u64 vk_tex_reclaim_superseded(u32 before, u64 want);
 /* t took pixels from a target now: only targets drawn after this cover its memory (vk_tex_reclaim_superseded) */
 void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* statistics: the caches' textures and render targets by what their images hold (vk_surf_census_kind), how many, the
+   bytes of the GPU's own memory they take and those of system memory (demoted); a target's copies are the targets'
+   line's (vk_rt_census) */
+enum {
+    VK_CENSUS_ASTC_DECODED, /* ASTC decoded (to RGBA8 for LDR) */
+    VK_CENSUS_ASTC_BC7,     /* ASTC held as BC7 */
+    VK_CENSUS_ASTC_BCN,     /* ASTC held as BC1, BC4 or BC5 by its blocks' kind */
+    VK_CENSUS_ASTC,         /* ASTC as it is, where the GPU samples it */
+    VK_CENSUS_BC,           /* BC1 to BC7 as they are */
+    VK_CENSUS_DECODED,      /* another format converted on upload (ETC2, EAC, BC the GPU lacks, 16-bit packings) */
+    VK_CENSUS_PLAIN,        /* uncompressed, as the guest has it */
+    VK_CENSUS_RT,           /* render targets */
+    VK_CENSUS_KINDS
+};
+typedef struct {
+    u32 n[VK_CENSUS_KINDS];
+    u64 bytes[VK_CENSUS_KINDS], sys[VK_CENSUS_KINDS];
+} VkSurfCensus;
+int vk_surf_census_kind(const Surf* s);
+const char* vk_surf_census_name(int kind);
+void vk_surf_census(VkSurfCensus* c);
 /* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
    (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
    the copies of them (texture.c rt_copy), which go with them */
