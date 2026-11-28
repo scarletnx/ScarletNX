@@ -136,9 +136,9 @@ typedef struct {
        machine's emitters, and whether a region or the function's end is being assembled (its bytes are not it) */
     int glue_part, glue_depth, glue_off;
     size_t glue_at;
-    /* the region being assembled ends in a piece of the machine's (region_glue): the literals' island, which went
-       between the region and the piece where there was one, is the piece's to place, not the region's end's */
-    int glue_last;
+    /* the pieces of the machine's (region_glue) the region so far begins with: they wait for the block after them,
+       or for the next flush, and are assembled with it */
+    int pieces;
 } Unit;
 
 static void* grow(void* p, size_t* cap, size_t need, size_t each) {
@@ -489,13 +489,13 @@ static void qc_pay(Unit* u) {
     u->g->qc_owed = 0;
 }
 
+static void forget(Unit* u);
 /* the region so far assembled, and the block's state forgotten: the next instruction starts a new one */
 static void flush(Unit* u) {
     SgCtx* g = u->g;
-    int k;
     qc_pay(u);
 #ifdef MG_HOST_FP_HELPER
-    for (k = 0; k < g->x.n && !u->host_fp; ++k)
+    for (int k = 0; k < g->x.n && !u->host_fp; ++k)
         u->host_fp = MG_HOST_FP_HELPER(g->x.ins[k].sym); /* only a call keeps a symbol */
 #endif
     glue_count(u);
@@ -504,8 +504,15 @@ static void flush(Unit* u) {
     u->glue_off = 0;
     u->glue_at = u->b.n;
 #ifdef MG_POOL_REACH
-    if (!u->glue_last && u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
+    if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
 #endif
+    u->pieces = 0;
+    forget(u);
+}
+/* the block's state forgotten: what the next instruction reads, it reads from the guest's state */
+static void forget(Unit* u) {
+    SgCtx* g = u->g;
+    int k;
     g->x.end_dead = 0;
     g->x.end_vdead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
@@ -655,7 +662,9 @@ static void machine_target(Unit* u, int op, SgD target) {
    when called after them */
 static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0) {
     SgXIns* i;
-    qc_pay(u); /* FPSR.QC as the region leaves it, before the piece: flush would put it after the region's last */
+    /* a block's instructions before it are a region of their own, as they were (its FPSR.QC and, where the machine
+       has them, its literals' island before the piece); the pieces in a row wait together, a few hundred at most */
+    if (u->g->x.n > u->pieces || u->pieces >= 256) flush(u);
     i = sgx_append(&u->g->x, SGX_K_MACHINE);
     i->op = (unsigned char)op;
     i->imm = imm;
@@ -667,9 +676,8 @@ static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0) {
         i->mpins = 1;
         i->kv[1] = u->cur_dirty, i->psel = u->pin_sel, i->pvdirty = u->vcur_dirty, i->pvsel = u->vpin_sel;
     }
-    u->glue_last = 1;
-    flush(u);
-    u->glue_last = 0;
+    ++u->pieces;
+    forget(u);
 }
 /* a call of the guest address target (tail: then return): call_target's code */
 static void region_call(Unit* u, SnxU64 target, int tail) { region_glue(u, SGX_FN_CALL, (long long)target, tail, 0); }
@@ -1916,7 +1924,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     int terminal = 0;
     snx_a64_decode_word(word, u->codegen->features, &insn);
     /* a long block is several regions: the guest's registers are in the state at each one's end */
-    if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
+    if (x->n - u->pieces > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 ||
+        x->nb > SGX_MAXB - SGX_MAXB / 4)
         flush_to(u, address);
     /* the branches leave the region, and MRS and MSR are FPSR's; before a compare, its flags kept for the branch */
     if (g->qc_owed && (insn.flow != SNX_A64_FLOW_PLAIN || insn.op == SNX_A64_OP_SYS || writes_nzcv(word))) qc_pay(u);
@@ -1971,7 +1980,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (insn.op != SNX_A64_OP_LDXP) g->word |= 31u << 10;
             if (insn.op != SNX_A64_OP_STXR) g->word |= 31u << 16;
         }
-        if ((word >> 25 & 7) == 7 && (x->n > SGX_MAXI / 4 || x->nv > SGX_MAXV / 4 || x->nb > SGX_MAXB / 4)) {
+        if ((word >> 25 & 7) == 7 &&
+            (x->n - u->pieces > SGX_MAXI / 4 || x->nv > SGX_MAXV / 4 || x->nb > SGX_MAXB / 4)) {
             /* an Advanced SIMD instruction by its elements may take most of a region: it begins one */
             flush_to(u, address);
             g->start = x->n;
@@ -2797,7 +2807,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     char sym[40];
     u->f = f;
     u->glue_part = GLUE_OTHER, u->glue_depth = 0, u->glue_off = 0, u->glue_at = u->b.n;
-    u->glue_last = 0; /* a function left in the middle of a region's assembly had it set */
+    u->pieces = 0; /* a function left in the middle had some waiting */
     u->index = index;
     u->at = f->count;
     u->nframe = 0;
@@ -2856,6 +2866,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     if (mg_direct(u)) {
         other = new_label(u);
         mg_check(u, f->start, other);
+        flush(u); /* the check's bytes, for where the entry past it is */
         u->syms[sym0].entry = u->b.n - u->syms[sym0].at;
     }
     pin_sel = u->pin_sel, vpin_sel = u->vpin_sel;
@@ -2960,6 +2971,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
 #ifdef MG_JTAB
     region_glue(u, SGX_FN_JTABS, 0, 0, 0);
 #endif
+    flush(u); /* the pieces still waiting */
     /* the cold paths (the FP helpers' calls), then the constant pool */
     glue_count(u);
     u->glue_off = 1;
