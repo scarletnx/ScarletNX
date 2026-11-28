@@ -558,8 +558,12 @@ static void test_hwopus_a32(void) {
     CHECK(GP(T_DEC(0))[0x29] == 0xCC);
     call32(0x0a0600, mfinal, T_DEC(0), 0, 0, 0, 0, 0, 0);
     CHECK(live_decoders() == 0 && snx_ld_le32(GP(T_DEC(0) + 0x18)) == 0 && GP(T_DEC(0))[0x28] == 0);
-    /* a 32-bit SDK between: no hook */
-    CHECK(call32(0x090300, init, T_DEC(0), 16000, 1, 0, 0, 0, 0) == 0xffffffffu && live_decoders() == 0);
+    /* from 6.0.0 below 11.0.0 alone: 9.3.0 by inference, not 5.4.0 nor 11.0.0 */
+    CHECK(call32(0x050400, init, T_DEC(0), 16000, 1, 0, 0, 0, 0) == 0xffffffffu && live_decoders() == 0);
+    CHECK(call32(0x0b0000, init, T_DEC(0), 16000, 1, 0, 0, 0, 0) == 0xffffffffu && live_decoders() == 0);
+    CHECK(call32(0x090300, init, T_DEC(0), 16000, 1, 0x6000, 0x1000, 0, 0) == 0 && live_decoders() == 1);
+    nncodec_hwopus_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0);
     g_arm_mod = NULL;
 }
 #endif

@@ -40,13 +40,12 @@ int main(void) {
        SDK's own GetPlayTimerRemainingTime stores it, and r1 is left */
     {
         static SnxArmCPU a;
-        /* each for the 32-bit SDKs read, 0.12.16, 4.4.0 and 10.6.0, a group each: a 32-bit game of another has no hook
-           here */
-        CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 57 && hook32_read_count(1) == 19 && hook32_read_count(2) == 19 &&
-              hook32_read_count(3) == 19);
-        for (int i = 0; i < HOOK32_COUNT; i++)
-            CHECK(hook32_read_entry(hook32_symbol[i], 1) >= 0 && hook32_read_entry(hook32_symbol[i], 2) >= 0 &&
-                  hook32_read_entry(hook32_symbol[i], 3) >= 0);
+        /* each below 11.0.0: read in 0.12.16, 4.4.0 and 10.6.0, and between them by inference (2.0.0 here); a 32-bit
+           game past 10.x has no hook here */
+        CHECK(HOOK_COUNT == 20 && HOOK32_COUNT == 19 && hook32_all_below(HOOK32_SDK_11));
+        CHECK(hook32_count_at(HOOK32_SDK_0) == 19 && hook32_count_at(HOOK32_SDK_4) == 19 &&
+              hook32_count_at(HOOK32_SDK_10) == 19 && hook32_count_at(0x020000) == 19 &&
+              hook32_count_at(HOOK32_SDK_11) == 0);
         for (int i = 0; i < HOOK32_COUNT; i++) {
             CHECK(!strstr(hook32_symbol[i], "DisplayInfo"));
             if (!strcmp(hook32_symbol[i], "_ZN2nn4pctl10InitializeEv")) {

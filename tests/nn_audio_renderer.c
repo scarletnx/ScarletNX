@@ -368,10 +368,14 @@ static void test_a32(void) {
     test_sdk = SDK_0;
     g_hle.audio.ren_fn_found = 0;
     memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);
-    /* each SDK read a group of its own: 0.12.16's 13 functions, the limit's setter under its two declarations;
-       4.4.0's those and the execution, SDK 3 on's declarations of the handle's; and 10.6.0's 4.4.0's but the event's
-       query, and its own update */
-    CHECK(HOOK32_COUNT == 44 && hook32_read_count(1) == 14 && hook32_read_count(2) == 15 && hook32_read_count(3) == 15);
+    /* a range for each SDK read, where the 64-bit SDKs keep one layout: below 1.0.0 0.12.16's 13 functions, the limit's
+       setter under its two declarations; from 4.0.0 below 6.0.0 4.4.0's, those and the execution, SDK 3 on's
+       declarations of the handle's; and from 9.0.0 below 11.0.0 10.6.0's, with its own update. None for 1 to 3, 6 to 8
+       or past 10.x */
+    CHECK(HOOK32_COUNT == 44 && hook32_count_at(HOOK32_SDK_0) == 14 && hook32_count_at(HOOK32_SDK_4) == 15 &&
+          hook32_count_at(0x050400) == 15 && hook32_count_at(HOOK32_SDK_10) == 15 && hook32_count_at(0x090300) == 15);
+    CHECK(hook32_count_at(0x010000) == 0 && hook32_count_at(0x030500) == 0 && hook32_count_at(0x070000) == 0 &&
+          hook32_count_at(HOOK32_SDK_11) == 0);
     parameter(&P30, 0, 0, 0x31564552);
     CHECK(call32(sdk, work, T_PARAM, 0, 0, 0, 0) ==
           (u32)nnaudio_get_renderer_work_buffer_size(&thread.cpu, &P30, T_PARAM));
@@ -533,9 +537,9 @@ static void test_a32_1060(void) {
           GP(T_FRAMES)[16] == 0xCC);
     call32(sdk, "_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", id, 0, 0, 0, 0);
     CHECK(audren_at(id) == NULL && test_states == 0);
-    /* a 32-bit SDK between 4.4.0 and 10.6.0: no open, no update */
-    CHECK(call32(0x090300, open, T_HANDLE, T_PARAM, 0, 0, 0) == 0xffffffffu);
-    CHECK(call32(0x090300, update, 1, 0, T_CONFIG, 0, 0) == 0xffffffffu);
+    /* a 32-bit SDK of 6 to 8, between the ranges: no open, no update */
+    CHECK(call32(0x070000, open, T_HANDLE, T_PARAM, 0, 0, 0) == 0xffffffffu);
+    CHECK(call32(0x070000, update, 1, 0, T_CONFIG, 0, 0) == 0xffffffffu);
     g_arm_mod = NULL;
     g_hle.audio.ren_fn_found = 0;
     memset(g_hle.audio.ren_fn, 0, sizeof g_hle.audio.ren_fn);

@@ -189,7 +189,7 @@ int main(void) {
     /* a 32-bit game of an SDK nobody read: the stop names the service it opened, then the reason and what to do, in
        place of the advice for a homebrew program */
     test_unread = "This 32-bit game's SDK is 4.4.0 (module sdk) and the runtime's declarations for a 32-bit game were "
-                  "read in SDK 0.12.16 alone, so 132 of its SDK functions run their own code (nn_fs 44)";
+                  "read in SDK 0.12.16, none for this one, so 132 of its SDK functions run their own code (nn_fs 44)";
     name = name_of("pctl", 4);
     test_expects_stop = 1;
     if (!setjmp(test_stopped)) {
@@ -197,10 +197,11 @@ int main(void) {
         test_fail("the program went on with a session of a native-only service", __LINE__);
     }
     test_expects_stop = 0;
-    CHECK(!strcmp(test_stop_text, "sm: the program opened pctl, which the runtime answers only in the SDK's own "
-                                  "functions, nn::pctl (nn/pctl.c). This 32-bit game's SDK is 4.4.0 (module sdk) and "
-                                  "the runtime's declarations for a 32-bit game were read in SDK 0.12.16 alone, so "
-                                  "132 of its SDK functions run their own code (nn_fs 44)"));
+    CHECK(!strcmp(test_stop_text,
+                  "sm: the program opened pctl, which the runtime answers only in the SDK's own "
+                  "functions, nn::pctl (nn/pctl.c). This 32-bit game's SDK is 4.4.0 (module sdk) and "
+                  "the runtime's declarations for a 32-bit game were read in SDK 0.12.16, none for this one, so "
+                  "132 of its SDK functions run their own code (nn_fs 44)"));
     /* the settings turn the native functions off: the stop names the setting and its value, and neither the SDK
        functions that are not native nor a 32-bit game's reason. Each service is asked of the family whose hooks
        answer it */

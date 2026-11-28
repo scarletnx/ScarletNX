@@ -21,7 +21,9 @@
 # the game's struct.
 # InitializeHardwareOpusMultiStreamDecoder's last argument, an option, comes on the stack and is not declared: nothing
 # of it is read.
-# A 32-bit game: read in SDK 10.6.0 alone (a32 @version), whose functions are SDK 6 to 11's over a struct of 4-byte
+# A 32-bit game: read in SDK 10.6.0, and held from 6.0.0 below 11.0.0 (a32 @version), where the 64-bit SDKs read keep
+# the struct with its time and its flag and the plain work buffer size (hwopus's Ex commands begin at 12.0.0 on
+# switchbrew); its functions are SDK 6 to 11's over a struct of 4-byte
 # pointers (codec.c's 32-bit shapes, which the handlers take in a 32-bit game): the ones with a size_t (j) have
 # another symbol there, and an a32 hook of their own; the others are marked a32. The class's Initialize, its
 # DecodeInterleaved and the single decoder's GetWorkBufferSize call the struct's functions, as in 64 bits. A 32-bit game
@@ -42,28 +44,28 @@ family nn_codec_hwopus
 @version(>= 3.0.0, < 5.0.0) hook _ZN2nn5codec30HardwareOpusMultiStreamDecoder10SetContextEPKvm(addr self, addr context, usize size) -> u32 = nncodec_hwopus_class_set_context
 @version(>= 3.0.0, < 5.0.0) hook _ZN2nn5codec30HardwareOpusMultiStreamDecoder17DecodeInterleavedEPmPiPsmPKvm(addr self, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_class_multi_decode
 @version(>= 3.0.0, < 5.0.0) hook _ZN2nn5codec30HardwareOpusMultiStreamDecoder8FinalizeEv(addr self) = nncodec_hwopus_class_multi_finalize
-@version(>= 3.0.0, < 12.0.0) hook _ZNK2nn5codec30HardwareOpusMultiStreamDecoder17GetWorkBufferSizeEiiii(addr self, i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_class_multi_work_size a32 @version(== 10.6.0)
+@version(>= 3.0.0, < 12.0.0) hook _ZNK2nn5codec30HardwareOpusMultiStreamDecoder17GetWorkBufferSizeEiiii(addr self, i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_class_multi_work_size a32 @version(>= 6.0.0, < 11.0.0)
 @version(>= 12.0.0, < 15.0.0) hook _ZNK2nn5codec30HardwareOpusMultiStreamDecoder17GetWorkBufferSizeEiiii(addr self, i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_class_multi_work_size_option
-@version(>= 5.0.0, < 15.0.0) hook _ZN2nn5codec19HardwareOpusDecoder8FinalizeEv(addr self) = nncodec_hwopus_type_class_finalize a32 @version(== 10.6.0)
-@version(>= 5.0.0, < 15.0.0) hook _ZN2nn5codec30HardwareOpusMultiStreamDecoder8FinalizeEv(addr self) = nncodec_hwopus_type_class_multi_finalize a32 @version(== 10.6.0)
+@version(>= 5.0.0, < 15.0.0) hook _ZN2nn5codec19HardwareOpusDecoder8FinalizeEv(addr self) = nncodec_hwopus_type_class_finalize a32 @version(>= 6.0.0, < 11.0.0)
+@version(>= 5.0.0, < 15.0.0) hook _ZN2nn5codec30HardwareOpusMultiStreamDecoder8FinalizeEv(addr self) = nncodec_hwopus_type_class_multi_finalize a32 @version(>= 6.0.0, < 11.0.0)
 @version(>= 5.0.0, < 6.0.0) hook _ZNK2nn5codec19HardwareOpusDecoder17GetWorkBufferSizeEii(addr self, i32 rate, i32 channels) -> usize = nncodec_hwopus_class_work_size
 @version(>= 5.0.0, < 6.0.0) hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiPvmi(addr decoder, i32 rate, i32 channels, addr work, usize size, i32 option) -> u32 = nncodec_hwopus_init
 @version(>= 5.0.0, < 6.0.0) hook _ZN2nn5codec33DecodeOpusInterleavedWithHardwareEPNS0_23HardwareOpusDecoderTypeEPmPiPsmPKvm(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_decode
 @version(>= 5.0.0, < 6.0.0) hook _ZN2nn5codec40InitializeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeEiiiiPKhPvmi(addr decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams, addr mapping, addr work, usize size) -> u32 = nncodec_hwopus_multi_init
 @version(>= 5.0.0, < 6.0.0) hook _ZN2nn5codec44DecodeOpusMultiStreamInterleavedWithHardwareEPNS0_34HardwareOpusMultiStreamDecoderTypeEPmPiPsmPKvm(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_multi_decode
 @version(>= 6.0.0, < 23.0.0) hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiPvmi(addr decoder, i32 rate, i32 channels, addr work, usize size, i32 option) -> u32 = nncodec_hwopus_init_timed
-@version(== 10.6.0) a32 hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiPvji(addr decoder, i32 rate, i32 channels, addr work, usize size, i32 option) -> u32 = nncodec_hwopus_init_timed
+@version(>= 6.0.0, < 11.0.0) a32 hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiPvji(addr decoder, i32 rate, i32 channels, addr work, usize size, i32 option) -> u32 = nncodec_hwopus_init_timed
 @version(>= 6.0.0, < 23.0.0) hook _ZN2nn5codec33DecodeOpusInterleavedWithHardwareEPNS0_23HardwareOpusDecoderTypeEPmPiPsmPKvm(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_decode_timed
-@version(== 10.6.0) a32 hook _ZN2nn5codec33DecodeOpusInterleavedWithHardwareEPNS0_23HardwareOpusDecoderTypeEPjPiPsjPKvj(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_decode_timed
+@version(>= 6.0.0, < 11.0.0) a32 hook _ZN2nn5codec33DecodeOpusInterleavedWithHardwareEPNS0_23HardwareOpusDecoderTypeEPjPiPsjPKvj(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_decode_timed
 @version(>= 6.0.0, < 23.0.0) hook _ZN2nn5codec40InitializeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeEiiiiPKhPvmi(addr decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams, addr mapping, addr work, usize size) -> u32 = nncodec_hwopus_multi_init_timed
-@version(== 10.6.0) a32 hook _ZN2nn5codec40InitializeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeEiiiiPKhPvji(addr decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams, addr mapping, addr work, usize size) -> u32 = nncodec_hwopus_multi_init_timed
+@version(>= 6.0.0, < 11.0.0) a32 hook _ZN2nn5codec40InitializeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeEiiiiPKhPvji(addr decoder, i32 rate, i32 channels, i32 streams, i32 stereo_streams, addr mapping, addr work, usize size) -> u32 = nncodec_hwopus_multi_init_timed
 @version(>= 6.0.0, < 23.0.0) hook _ZN2nn5codec44DecodeOpusMultiStreamInterleavedWithHardwareEPNS0_34HardwareOpusMultiStreamDecoderTypeEPmPiPsmPKvm(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_multi_decode_timed
-@version(== 10.6.0) a32 hook _ZN2nn5codec44DecodeOpusMultiStreamInterleavedWithHardwareEPNS0_34HardwareOpusMultiStreamDecoderTypeEPjPiPsjPKvj(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_multi_decode_timed
-@version(>= 5.0.0, < 23.0.0) hook _ZN2nn5codec38FinalizeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeE(addr decoder) = nncodec_hwopus_multi_finalize a32 @version(== 10.6.0)
-@version(>= 5.0.0, < 12.0.0) hook _ZN2nn5codec36GetHardwareOpusDecoderWorkBufferSizeEii(i32 rate, i32 channels) -> usize = nncodec_hwopus_work_size a32 @version(== 10.6.0)
+@version(>= 6.0.0, < 11.0.0) a32 hook _ZN2nn5codec44DecodeOpusMultiStreamInterleavedWithHardwareEPNS0_34HardwareOpusMultiStreamDecoderTypeEPjPiPsjPKvj(addr decoder, addr consumed, addr samples, addr out, usize out_size, addr in, usize in_size) -> u32 = nncodec_hwopus_multi_decode_timed
+@version(>= 5.0.0, < 23.0.0) hook _ZN2nn5codec38FinalizeHardwareOpusMultiStreamDecoderEPNS0_34HardwareOpusMultiStreamDecoderTypeE(addr decoder) = nncodec_hwopus_multi_finalize a32 @version(>= 6.0.0, < 11.0.0)
+@version(>= 5.0.0, < 12.0.0) hook _ZN2nn5codec36GetHardwareOpusDecoderWorkBufferSizeEii(i32 rate, i32 channels) -> usize = nncodec_hwopus_work_size a32 @version(>= 6.0.0, < 11.0.0)
 @version(>= 12.0.0, < 16.0.0) hook _ZN2nn5codec36GetHardwareOpusDecoderWorkBufferSizeEiii(i32 rate, i32 channels, i32 option) -> usize = nncodec_hwopus_work_size_option
 @version(>= 16.0.0, < 23.0.0) hook _ZN2nn5codec36GetHardwareOpusDecoderWorkBufferSizeEiii(i32 rate, i32 channels, i32 option) -> usize = nncodec_hwopus_work_size_dsp
-@version(>= 5.0.0, < 16.0.0) hook _ZN2nn5codec47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii(i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_multi_work_size a32 @version(== 10.6.0)
+@version(>= 5.0.0, < 16.0.0) hook _ZN2nn5codec47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii(i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_multi_work_size a32 @version(>= 6.0.0, < 11.0.0)
 @version(>= 16.0.0, < 23.0.0) hook _ZN2nn5codec47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiii(i32 rate, i32 channels, i32 streams, i32 stereo_streams) -> usize = nncodec_hwopus_multi_work_size_dsp
 @version(>= 12.0.0, < 16.0.0) hook _ZN2nn5codec47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiiii(i32 rate, i32 channels, i32 streams, i32 stereo_streams, i32 option) -> usize = nncodec_hwopus_multi_work_size_option
 @version(>= 16.0.0, < 23.0.0) hook _ZN2nn5codec47GetHardwareOpusMultiStreamDecoderWorkBufferSizeEiiiii(i32 rate, i32 channels, i32 streams, i32 stereo_streams, i32 option) -> usize = nncodec_hwopus_multi_work_size_option_dsp

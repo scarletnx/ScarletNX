@@ -129,10 +129,30 @@ static void unread_note(u32 family, u32 module, u32 sdk) {
     h->unread_sdk = sdk;
 }
 
+/* the 32-bit SDKs read (HOOK_A32_READ_SDKS) as a list, "a, b and c", into out: how many */
+static size_t read_sdks_text(char* out, size_t n) {
+    static const u32 read_sdks[] = HOOK_A32_READ_SDKS;
+    size_t nread = sizeof read_sdks / sizeof *read_sdks, at = 0;
+    if (n) out[0] = 0;
+    for (size_t k = 0; k < nread && at < n; k++) {
+        char v[32];
+        hook_version_text(v, sizeof v, HOOK_SDK, read_sdks[k]);
+        at += (size_t)snprintf(out + at, n - at, "%s%s", k == 0 ? "" : k + 1 == nread ? " and " : ", ", v);
+    }
+    return nread;
+}
+/* is sdk one of the 32-bit SDKs read */
+static int sdk_read(u32 sdk) {
+    static const u32 read_sdks[] = HOOK_A32_READ_SDKS;
+    for (size_t k = 0; k < sizeof read_sdks / sizeof *read_sdks; k++)
+        if (read_sdks[k] == sdk) return 1;
+    return 0;
+}
+
 void hook_unread_text(char* out, size_t n) {
     const HostHook* h = &g_host.hook;
     char sdk[32], read[96], families[384];
-    size_t used = 0;
+    size_t used = 0, nread;
     u32 i;
     if (n) out[0] = 0;
     if (!g_arm_mod || !h->unread_total) return;
@@ -145,17 +165,12 @@ void hook_unread_text(char* out, size_t n) {
         if (wrote < 0 || (size_t)wrote >= sizeof families - used) break; /* cut: the log has every function */
         used += (size_t)wrote;
     }
-    static const u32 read_sdks[] = HOOK_A32_READ_SDKS;
-    size_t nread = sizeof read_sdks / sizeof *read_sdks, at = 0;
     hook_version_text(sdk, sizeof sdk, HOOK_SDK, h->unread_sdk);
-    for (size_t k = 0; k < nread && at < sizeof read; k++) { /* "0.12.16 and 4.4.0", "a, b and c" */
-        char v[32];
-        hook_version_text(v, sizeof v, HOOK_SDK, read_sdks[k]);
-        at += (size_t)snprintf(read + at, sizeof read - at, "%s%s", k == 0 ? "" : k + 1 == nread ? " and " : ", ", v);
-    }
+    nread = read_sdks_text(read, sizeof read);
     snprintf(out, n,
              "This 32-bit game's SDK is %s (module %s) and the runtime's declarations for a 32-bit game were read in "
-             "SDK%s %s alone, so %u of its SDK functions run their own code (%s), which needs services the runtime "
+             "SDK%s %s, each family's holding for the versions around them that its services did not change in, none "
+             "for this one, so %u of its SDK functions run their own code (%s), which needs services the runtime "
              "answers only natively. A 64-bit update of the game, if it has one, plays; for this version, an SDK of "
              "%s has to be read (issue #2242)",
              sdk, g_arm_mod->mods[h->unread_module].name, nread > 1 ? "s" : "", read, (unsigned)h->unread_total,
@@ -499,7 +514,7 @@ static void install_a32(void) {
     const SnxModInfo* mods = g_arm_mod->mods;
     const char* name;
     u64 addr;
-    u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES], movie[HOOK_MODULES];
+    u32 i, count = 0, nmods = g_arm_mod->nmods, sdk[HOOK_MODULES], movie[HOOK_MODULES], inferred[HOOK_MODULES] = {0};
     unsigned char off[HOOK_FAMILIES + 1] = {0}, missed[HOOK32_COUNT + 1] = {0}, said[HOOK32_COUNT + 1] = {0};
     for (i = 0; i < HOOK_FAMILIES; i++) {
         const char* why = hook_family_unready(hook_family_name[i]);
@@ -541,6 +556,7 @@ static void install_a32(void) {
         g_host.hook.a32_addr[g_host.hook.a32_count++] = (u32)addr;
         atomic_store_explicit(slot, hook32_fn[k], memory_order_release);
         count++;
+        if (hook32_key[k] == HOOK_SDK && m < HOOK_MODULES && sdk[m] && !sdk_read(sdk[m])) inferred[m]++;
         if (hook32_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s (32-bit)\n", name, (unsigned long long)addr, hook32_handler[k]);
             continue;
@@ -553,6 +569,17 @@ static void install_a32(void) {
     LOG("hooks: %u of the 32-bit game's functions run the runtime's handlers; a function of the SDK that no hook "
         "takes for a 32-bit game of its SDK yet runs its own code\n",
         (unsigned)count);
+    /* a range's versions between the SDKs read hold by what switchbrew shows of their services, not by a reading:
+       said once a module, for a report to show at once */
+    for (i = 0; i < nmods && i < HOOK_MODULES; i++) {
+        char v[32], read[96];
+        if (!inferred[i]) continue;
+        hook_version_text(v, sizeof v, HOOK_SDK, sdk[i]);
+        read_sdks_text(read, sizeof read);
+        LOG("hooks: SDK %s of a 32-bit game (module %s) is inside the ranges read at %s: not read itself, so its %u "
+            "versioned hooks hold by inference, from switchbrew's commands of their services unchanged\n",
+            v, mods[i].name, read, (unsigned)inferred[i]);
+    }
 }
 
 void hook_install(void) {

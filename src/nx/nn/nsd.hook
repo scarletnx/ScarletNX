@@ -5,10 +5,11 @@
 # nn::nsd: the names of the console's servers, with no nsd:u session. Resolve and ResolveEx are what games call,
 # nn::oe::GetServerEnvironmentType calls GetApplicationServerEnvironmentType, and the network libraries ask
 # GetEnvironmentIdentifier for the environment's name. A 32-bit game has the same in the 32-bit SDKs read, 0.12.16,
-# 4.4.0 and 10.6.0 (the server environment type in 10.6.0 alone), so they hold for those alone there (a32 @version, a
-# group each): a 32-bit game of another has no hook here
+# 4.4.0 and 10.6.0 (the server environment type, nsd's command from 10.0.0, in 10.6.0 alone), so they hold below
+# 11.0.0 (a32 @version): between them by inference: switchbrew's nsd shows the commands they send unchanged from 1.0.0 to 10.x, and Fqdn
+# and EnvironmentIdentifier keep their 0x100 and 8 bytes; past 10.6.0 a 32-bit game has no hook here
 family nn_nsd
-hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve a32 @version(< 1.0.0) @version(== 4.4.0) @version(== 10.6.0)
-hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex a32 @version(< 1.0.0) @version(== 4.4.0) @version(== 10.6.0)
-hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type a32 @version(< 1.0.0) @version(== 4.4.0) @version(== 10.6.0)
-hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier a32 @version(< 1.0.0) @version(== 4.4.0) @version(== 10.6.0)
+hook _ZN2nn3nsd7ResolveEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve a32 @version(< 11.0.0)
+hook _ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_(addr out, addr in) -> u32 = nnnsd_resolve_ex a32 @version(< 11.0.0)
+hook _ZN2nn3nsd35GetApplicationServerEnvironmentTypeEv() -> u32 = nnnsd_server_environment_type a32 @version(< 11.0.0)
+hook _ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE(addr out) = nnnsd_get_environment_identifier a32 @version(< 11.0.0)
