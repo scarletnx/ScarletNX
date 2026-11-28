@@ -168,7 +168,9 @@ typedef struct {
     SnxU64 k;
     int g0, g1; /* cls 1: its low and high doublewords as general-purpose values, once taken out (sgx_flat) */
 } SgXV;
-enum { SGX_C_NONE, SGX_C_AND, SGX_C_OR, SGX_C_XOR, SGX_C_ADD, SGX_C_SUM }; /* SUM: src + the value k, registers */
+/* SUM: src + the value k, registers; ZEXT: src's low 32 bits zero extended, which a reader of the low 32 alone takes
+   src for (sgx_low32) */
+enum { SGX_C_NONE, SGX_C_AND, SGX_C_OR, SGX_C_XOR, SGX_C_ADD, SGX_C_SUM, SGX_C_ZEXT };
 
 enum { SGX_B_CONST, SGX_B_REG, SGX_B_CC };
 typedef struct {
@@ -224,6 +226,8 @@ typedef struct {
     long long k;   /* SGX_IN_SHL, SGX_IN_SHR: the amount */
     SgD n;         /* SGX_IN_SHLV, SGX_IN_SHRV: the amount, of 64 bits, from 0 to 255 */
     SgD dw[SGX_IDW], carry; /* ADD's and SUB's carry (borrow) out of the first, 0 or 1 of 64 bits */
+    SgD low32;              /* its value modulo 2^32, made by operations of 32 bits (sgx_int_low32), once made32 */
+    unsigned char made32;
 } SgXInt;
 
 typedef struct {
@@ -749,8 +753,10 @@ static inline SgD sgx_zext(SgX* x, SgD a, unsigned w) {
         a.w = w;
         return a;
     }
-    if (aw == 32) a = SGX_OP(x, zext32, 64, a);
-    else if (aw == 8)
+    if (aw == 32) {
+        a = SGX_OP(x, zext32, 64, a);
+        if (a.v) x->v[a.v].op = SGX_C_ZEXT, x->v[a.v].cw = 64, x->v[a.v].src = r;
+    } else if (aw == 8)
         a = SGX_OP(x, zext8, 32, a);
     else if (aw == 16)
         a = SGX_OP(x, zext16, 32, a);
@@ -1232,6 +1238,8 @@ static inline SgD sg_d_shift_dyn(SgCtx* g, SgD a, SgD amount, int kind) {
     SgD r;
     if (w != 32 && w != 64) sg_fail("a shift by a register of a value not of 32 or 64 bits", w, kind);
     if (sgx_is_const(&amount)) return sgx_shift_i(g, kind, a, (long long)(amount.k & (w - 1)));
+    /* the forms take the amount modulo w: where it is a zero extension of 32 bits, what that was made of */
+    if (amount.v && !amount.inv && x->v[amount.v].op == SGX_C_ZEXT) amount = sgx_val(32, x->v[amount.v].src);
     switch (kind) {
     case 0: r = SGX_OP(x, lslv, w, a, amount); break;
     case 1: r = SGX_OP(x, lsrv, w, a, amount); break;
@@ -1740,6 +1748,43 @@ static inline SnxU64 sgx_mulh(SnxU64 a, SnxU64 b, int is_signed);
 static inline SgD sgx_int_dw(SgCtx* g, unsigned id, unsigned k);
 /* a bool as a doubleword 0 or 1 */
 static inline SgD sgx_b_dw(SgCtx* g, SgB b) { return sg_d_zext(g, sgx_bool_bits(sgx(g), b), 64); }
+/* a value of 64 bits or fewer as what reads its low 32 bits alone takes: without the zero extension of 32 bits that
+   made it, which nothing reads then */
+static inline SgD sgx_low32(SgX* x, SgD d) {
+    if (d.x || d.nzcv || d.inv || d.wide || d.w > 64) return d;
+    if (sgx_is_const(&d)) return sgx_const(32, d.k & 0xffffffffu);
+    if (x->v[d.v].op == SGX_C_ZEXT) return sgx_val(32, x->v[d.v].src);
+    if (d.w > 32) d.w = 32;
+    return d;
+}
+/* an integer's value modulo 2^32, which the low 32 bits of its operands make: sums and products of 32 bits on what
+   the operands were extended from, not of 64 on the extensions (MADD of W registers; an element's sum). Of no width
+   (w 0) where it is not made so: an operand in a vector register, a product nothing made the low doubleword of */
+static inline SgD sgx_int_low32(SgCtx* g, unsigned id) {
+    SgX* x = sgx(g);
+    SgXInt* n = sgx_int_at(x, id);
+    SgD r = sgx_const(0, 0);
+    if (n->made32) return n->low32;
+    if (n->op == SGX_IN_ADD || n->op == SGX_IN_SUB || n->op == SGX_IN_MUL) {
+        unsigned op = n->op;
+        SgD a = sgx_int_low32(g, n->a), b = sgx_int_low32(g, n->b);
+        if (a.w != 32 || b.w != 32) {
+            n = sgx_int_at(x, id);
+            if (n->made & 1) r = sgx_low32(x, n->dw[0]);
+        } else if (op != SGX_IN_MUL)
+            r = op == SGX_IN_SUB ? sg_d_sub(g, a, b) : sg_d_add(g, a, b);
+        else if (sgx_is_const(&a) && sgx_is_const(&b))
+            r = sgx_const(32, (a.k * b.k) & 0xffffffffu);
+        else
+            r = SGX_OP(x, mul, 32, a, b);
+    } else if (n->made & 1)
+        r = sgx_low32(x, n->dw[0]);
+    if (r.w != 32) r = sgx_const(0, 0);
+    n = sgx_int_at(x, id);
+    n->low32 = r;
+    n->made32 = 1;
+    return r;
+}
 /* the carry (a difference's borrow) out of the first doubleword of a sum */
 static inline SgD sgx_int_carry(SgCtx* g, unsigned id) {
     SgXInt* n = sgx_int_at(sgx(g), id);
@@ -1971,7 +2016,8 @@ static inline SgI sg_i_mod(SgCtx* g, SgI a, long long m) {
     a.node = 0;
     return a;
 }
-static inline SgD sg_i_slice(SgCtx* g, SgI i, long long hi, long long lo) {
+/* an integer's bits hi down to lo, from its doublewords: the low one made (which a reader of the node counts on) */
+static inline SgD sgx_i_slice(SgCtx* g, SgI i, long long hi, long long lo) {
     SgX* x = sgx(g);
     if (i.kind == SGX_I_MUL && lo == 64 && hi == 127) {
         if (sgx_is_const(&i.a) && sgx_is_const(&i.b)) return sgx_const(64, sgx_mulh(i.a.k, i.b.k, i.is_signed));
@@ -1983,6 +2029,14 @@ static inline SgD sg_i_slice(SgCtx* g, SgI i, long long hi, long long lo) {
     }
     if (hi >= 64) sg_fail("an integer's bits past 64", hi, lo);
     return sg_d_slice(g, sgx_i_val(g, &i), hi, lo);
+}
+/* and as the Sail slices it: its low 32 bits or fewer by operations of 32 bits, where they can be made so */
+static inline SgD sg_i_slice(SgCtx* g, SgI i, long long hi, long long lo) {
+    if (lo == 0 && hi < 32 && i.node && i.kind != SGX_I_MOD) {
+        SgD low = sgx_int_low32(g, i.node);
+        if (low.w == 32) return hi == 31 ? low : sg_d_slice(g, low, hi, 0);
+    }
+    return sgx_i_slice(g, i, hi, lo);
 }
 /* a shift's amount, as gen.c passes it ((amount).v): a MOD left for the x86 form's count mask */
 #define SGX_AMOUNT(i) ((i).v)
@@ -3802,7 +3856,7 @@ static inline SgI sg_i_abs(SgCtx* g, SgI a) {
 static inline void sg_SatQ(SgCtx* g, SgI i, long long n, int is_unsigned, SgD* result, SgB* saturated) {
     unsigned id = sgx_i_node(g, &i), k;
     int bits = sgx_i_bits(g, &i), pos = sgx_i_pos(g, &i) != 0;
-    SgD low = sg_i_slice(g, i, n - 1, 0), ext, diff, sign, limit;
+    SgD low = sgx_i_slice(g, i, n - 1, 0), ext, diff, sign, limit;
     is_unsigned = is_unsigned != 0;
     const SgXInt* node = sgx_int_at(sgx(g), id);
     unsigned ndw = sgx_int_ndw(node);
