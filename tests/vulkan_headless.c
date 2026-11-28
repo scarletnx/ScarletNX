@@ -9370,7 +9370,6 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_draw_texture());
     CHECK(!check_texture_quiet());
     CHECK(!check_cube_take());
-    CHECK(!check_stamp_runtime());
     CHECK(!check_texture_quiet_other());
     CHECK(!check_texture_quiet_alias());
     CHECK(!check_texture_quiet_present());
@@ -9653,6 +9652,9 @@ static int run_headless(int argc, char** argv) {
                (unsigned long long)waits, (unsigned long long)wait_ms, (unsigned long long)max_ms, opt_workers);
         CHECK(opt_workers <= 1);
     }
+    /* last: once a game reports timestamps they stay on, and lavapipe's read of one waits while a submission is held
+       behind a gate, as the checks above hold theirs until they open it themselves */
+    CHECK(!check_stamp_runtime());
     CHECK(!snx_remove_tree(root));
     CHECK(!ini_dir || !snx_remove_tree(ini_dir));
     free(ini_dir);
