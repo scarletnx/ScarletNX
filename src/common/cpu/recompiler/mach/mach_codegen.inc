@@ -1447,6 +1447,25 @@ static int reverse(Unit* u, SnxU32 word) {
     return 1;
 }
 
+/* EXTR: the w bits from lsb up of Rn:Rm, by shifts of w bits and not the Sail's concatenation of 2w; a rotation where
+   the two are one register (ROR's alias) */
+static int extract(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned sf = word >> 31, lsb = word >> 10 & 63, rm = word >> 16 & 31, rn = word >> 5 & 31, rd = word & 31;
+    unsigned w = sf ? 64 : 32;
+    if ((word & 0x7FA00000u) != 0x13800000u || (word >> 22 & 1) != sf || lsb >= w) return 0;
+    SgD lo = xzr_or(g, rm), hi = xzr_or(g, rn), r;
+    if (!sf) lo = sg_d_slice(g, lo, 31, 0), hi = sg_d_slice(g, hi, 31, 0);
+    if (!lsb)
+        r = lo;
+    else if (rn == rm)
+        r = sg_d_ror(g, lo, lsb);
+    else
+        r = sg_d_or(g, sg_d_lsr(g, lo, lsb), sg_d_lsl(g, hi, w - lsb));
+    if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
+    return 1;
+}
+
 /* ---- PLT stubs the program's linker binds (SnxBoundBranch) ----
    On a machine without MG_BOUND every call of a stub runs the stub */
 
@@ -1967,8 +1986,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (!k) return 0;
             break;
         }
-        if (bitfield(u, word) || reverse(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) ||
-            simd_scalar_cvt(u, word) || simd_copy(u, word))
+        if (bitfield(u, word) || reverse(u, word) || extract(u, word) || fp_ldst(u, word, address) ||
+            simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word))
             break;
         {
             int v = struct_ldst(u, word);

@@ -105,6 +105,9 @@ static const Row k_rows[] = {
     {"bfi x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B37C1C20"},
     {"bfxil x0, x1, #4, #8", 0, 0, 56, -1, "!" RORX "|" ROR_IMM, "B3442C20"},
     {"bfi w0, w1, #4, #8", 0, 0, 55, -1, "!" RORX "|" ROR_IMM, "331C1C20"},
+    /* EXTR of W registers by shifts of 32 bits, a rotation where the two are one register */
+    {"extr w0, w1, w2, #12", 0, 0, 47, -1, NULL, "13823020"},
+    {"ror w0, w1, #12", 0, 0, 41, -1, RORX "|" ROR_IMM, "13813020"},
     {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
     {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
     {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},
