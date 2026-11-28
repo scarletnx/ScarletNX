@@ -707,9 +707,10 @@ static u32 nvmap_param(u32 h, u32 param, u32* value) {
     return r;
 }
 static u32 as_call(u32 cmd, u8* d, u32 n) { return ioctl_as(cmd, d, n, NULL, 0); }
-static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) {
+static u64 as_map_kind(u32 flags, u32 h, u64 size, u64 gva, u32 kind) {
     u8 d[40] = {0};
     snx_st_le32(d, flags);
+    snx_st_le32(d + 4, kind);
     snx_st_le32(d + 8, h);
     snx_st_le64(d + 24, size);
     snx_st_le64(d + 32, gva);
@@ -717,6 +718,7 @@ static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) {
     gva = snx_ld_le64(d + 32);
     return gva;
 }
+static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) { return as_map_kind(flags, h, size, gva, 0); }
 static void test_nvmap_as(void) {
     u8 d[64] = {0};
     u32 h, again, last = 0, v, one = 1;
@@ -814,15 +816,27 @@ static void test_nvmap_as(void) {
     snx_st_le64(d, addr);
     CHECK(as_call(0x03, d, 16) == 4); /* past the 40-bit space */
 
-    /* REMAP in big pages: map, a bad handle skipped, then handle 0 unmaps */
+    /* a mapping's PTE kind, what a copy of one line reads its pages by (maxwell/dma.c): MAP_BUFFER_EX's, its remap of
+       the kind alone (handle 0), which keeps the memory, and pitch where nothing is mapped */
+    gva = as_map_kind(0, again, 0x2000, 0, 0xFE);
+    CHECK(gmmu_kind(gva) == 0xFE && gmmu_kind(gva + 0x1FFF) == 0xFE && gmmu_translate(gva) == 0x9000);
+    CHECK(as_map_kind(NVHOST_AS_MAP_REMAP, 0, 0x1000, gva + 0x1000, 0xDB) == gva + 0x1000);
+    CHECK(gmmu_kind(gva) == 0xFE && gmmu_kind(gva + 0x1000) == 0xDB && gmmu_translate(gva + 0x1000) == 0xA000);
+    CHECK(gmmu_kind(VA_END - 0x1000) == GMMU_KIND_PITCH);
+    memset(d, 0, sizeof d);
+    snx_st_le64(d, gva);
+    CHECK(as_call(0x05, d, 8) == 0 && gmmu_kind(gva) == GMMU_KIND_PITCH);
+    /* REMAP in big pages: map with its entry's kind, a bad handle skipped, then handle 0 unmaps */
     memset(d, 0, sizeof d);
     v = (u32)((VA_BASE + 0x1000000) >> 16);
     snx_st_le32(d + 4, h);
     snx_st_le32(d + 12, v);
     snx_st_le32(d + 16, one);
+    snx_st_le16(d + 2, 0xFE);
     v = 0x1FFF; /* no such handle */
     snx_st_le32(d + 24, v);
     CHECK(as_call(0x14, d, 40) == 0 && gmmu_translate(VA_BASE + 0x1000000) == 0xC000);
+    CHECK(gmmu_kind(VA_BASE + 0x1000000) == 0xFE);
     memset(d + 4, 0, 4);
     CHECK(as_call(0x14, d, 20) == 0 && !gmmu_translate(VA_BASE + 0x1000000));
 

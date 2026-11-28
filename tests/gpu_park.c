@@ -53,6 +53,14 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     for (want = *cpu + n; n < max && gmmu_translate(gva + n) == want; want += 0x1000) n += 0x1000;
     return n < max ? n : max;
 }
+/* PTE kinds (nvdrv.c's gmmu_kind): KIND_BL's GPU page has the generic block linear kind, every other is pitch */
+#define KIND_BL 0xC000ull
+u32 gmmu_kind(u64 gva) { return gva >> 12 == KIND_BL >> 12 ? 0xFEu : GMMU_KIND_PITCH; }
+/* where the copy engine's byte v of a walk of a block linear kind's GOBs lies: Eden's convert_linear_2_blocklinear_addr
+   (maxwell_dma.cpp), written out apart from the runtime's GOB code */
+static u32 eden_bl(u32 v) {
+    return (v & ~0x1F0u) | ((v & 0x40) >> 2) | ((v & 0x10) << 1) | ((v & 0x180) >> 1) | ((v & 0x20) << 3);
+}
 /* nvdrv.c's index of mappings by guest address, by brute force over the translation above (from the middle of each
    page, as page 0 translates to 0) */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) {
@@ -188,10 +196,14 @@ static const Renderer stand_in = {.name = "stand-in",
 const Renderer* g_renderer = &stand_in;
 
 static _Atomic int warned;
+static char last_warning[512]; /* the newest warning's text */
 void logf_(int lvl, const char* fmt, ...) {
-    va_list ap;
+    va_list ap, again;
     va_start(ap, fmt);
     if (!lvl) {
+        va_copy(again, ap);
+        vsnprintf(last_warning, sizeof last_warning, fmt, again);
+        va_end(again);
         atomic_fetch_add_explicit(&warned, 1, memory_order_seq_cst);
         vfprintf(stderr, fmt, ap);
     }
@@ -996,6 +1008,68 @@ int main(int argc, char** argv) {
     expect(gmem_code_cut(0x3f8, 0x400, 0x1000), "a program whose scan ends next to the GPU's bytes lands");
     expect(!gmem_code_cut(0x200, 0x400, 0x1000), "a program that ends before the GPU's bytes doesn't land them");
     expect(!gmem_code_cut(0, 0x1000, 0x1000), "nothing lands where the CPU read the whole window");
+
+    /* A one-line copy out of memory of a block linear PTE kind walks its GOBs row by row: the copy's byte k is the GOB's
+       row k / 64, byte k % 64, where the GOB keeps it in 16-byte pieces two rows deep (eden_bl),
+       from a GOB's start or a row's, and one into such memory puts them back there; one not in whole rows goes as
+       its bytes lie, and says so with them */
+    {
+        static const struct {
+            u32 src, dst, len;
+        } copies[] = {{KIND_BL, 0xD000, 0x400}, {KIND_BL + 0x80, 0xD400, 0x100}};
+        forget_marks(); /* the timed out wait's mark */
+        for (u32 i = 0; i < 0x400; i++) g_mem[KIND_BL + i] = (u8)(i * 7 + 3);
+        for (u32 c = 0; c < 2; c++) {
+            u32 copy[] = {inc(0x100, 7) | (4u << 13),
+                          0,
+                          copies[c].src,
+                          0,
+                          copies[c].dst,
+                          0,
+                          0,
+                          copies[c].len,
+                          imm(0xC0, 0x180) | (4u << 13),
+                          imm(CLEAR, 0x920 + c)};
+            submit1(push(copy, sizeof copy / sizeof copy[0]), 41);
+            wait_marks(1);
+            expect(marks_are((u32[]){0x920 + c}, 1), "the copy's job ran");
+            forget_marks();
+            int rows = 1;
+            for (u32 k = 0; k < copies[c].len; k++) {
+                u32 v = copies[c].src - (u32)KIND_BL + k; /* the byte's place in the copy engine's walk */
+                u32 at = eden_bl(v);
+                rows &= g_mem[copies[c].dst + k] == (u8)(at * 7 + 3);
+            }
+            expect(rows, c ? "a copy from a GOB's third row reads its GOB rows from there"
+                           : "a copy of two GOBs of a block linear kind reads them row by row");
+        }
+        for (u32 i = 0; i < 0x200; i++) g_mem[0xD800 + i] = (u8)(i * 5 + 1);
+        u32 back[] = {
+            inc(0x100, 7) | (4u << 13), 0, 0xD800, 0, (u32)KIND_BL + 0x200, 0, 0, 0x200, imm(0xC0, 0x180) | (4u << 13),
+            imm(CLEAR, 0x922)};
+        submit1(push(back, sizeof back / sizeof back[0]), 41);
+        wait_marks(1);
+        forget_marks();
+        int placed = 1;
+        for (u32 v = 0; v < 0x200; v++) placed &= g_mem[KIND_BL + 0x200 + eden_bl(v)] == (u8)(v * 5 + 1);
+        expect(placed, "a copy into a block linear kind puts its rows in the GOB's pieces");
+        /* 48 bytes from a row's start, and a row's 64 bytes from the middle of one */
+        static const char* const said[2] = {"a DMA copy of 48 bytes from c040 (PTE kind 0xfe) to dc00 (PTE kind 0)",
+                                            "a DMA copy of 64 bytes from c010 (PTE kind 0xfe) to dc00 (PTE kind 0)"};
+        for (u32 c = 0; c < 2; c++) {
+            u32 len = c ? 0x40 : 0x30, from = (u32)KIND_BL + (c ? 0x10 : 0x40);
+            int before = atomic_load_explicit(&warned, memory_order_seq_cst);
+            u32 odd[] = {inc(0x100, 7) | (4u << 13), 0, from, 0, 0xDC00, 0, 0, len, imm(0xC0, 0x180) | (4u << 13),
+                         imm(CLEAR, 0x923 + c)};
+            submit1(push(odd, sizeof odd / sizeof odd[0]), 41);
+            wait_marks(1);
+            expect(marks_are((u32[]){0x923 + c}, 1), "the odd copy's job ran");
+            forget_marks();
+            expect(!memcmp(g_mem + 0xDC00, g_mem + from, len), "a copy not in whole GOB rows goes as it lies");
+            expect(atomic_load_explicit(&warned, memory_order_seq_cst) == before + 1 && strstr(last_warning, said[c]),
+                   "and says so with its bytes, addresses and kinds");
+        }
+    }
 
     if (!failures) printf("gpu_park: ok\n");
     return failures != 0;
