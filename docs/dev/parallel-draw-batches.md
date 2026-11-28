@@ -532,6 +532,22 @@ ns), and in parts that take no lock:
 - The resolve and the setup (2,867 to 4,025 ns). Each thread's caches see only its own half of the stream. The caches
   of the last draw (`g_fs_last`, the kept draws) then compare with a draw many records back, and hit less.
 
+Then the join kept the worker's record of the bound state (g_dyn, the index buffer), and a renderer-thread draw cost
+what it does in base (resolve, setup and binds 1,058, 1,874 and 352 ns, against 1,058, 1,809 and 338). Most of the 44%
+was the state bound again after each join, and its effect on the caches after it. The split still lost, in all three
+games measured, A/B/B/A with the same build:
+
+| Game | Base fps | Split fps |
+| --- | --- | --- |
+| One Switch game's town | 70.6, 68.6, 69.2 | 64.0, 63.7, 63.8 |
+| Another's open world | 101.6, 102.7 | 84.4, 83.0 |
+| A third's race (its windows) | 290 to 317 | 250 to 300 |
+
+In none of them is the renderer thread what limits the frame: in the first it is busy about 10 of 14.5 ms, and the GPU
+waits about 4 ms a frame for submissions. The worker's draws reach the ring only at each join, in bursts, where in
+base they go as they are recorded; that is the likely cost, not measured yet. So `draw_batches` stays 0. The split
+can gain only in a scene that the renderer thread limits (the 6,860-draw scene above).
+
 These are costs of cutting one stream into two halves, not of the lock. They fall when a split's runs are longer:
 the scene where the split gained had about 6,860 draws a present. The next steps, if the split goes on, are runs
 cut where the state changes anyway (a pass or a program change), not at the half; and binds the join keeps when
