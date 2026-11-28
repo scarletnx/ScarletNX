@@ -5127,6 +5127,7 @@ static void buf_frame(void) {
             (unsigned long long)(wlog[0] - wlog_was[0]), (unsigned long long)(wlog[1] - wlog_was[1]),
             (unsigned long long)(wlog[2] - wlog_was[2]));
         memcpy(wlog_was, wlog, sizeof wlog_was);
+        vk_gfx_image_report(); /* the draws' and the dispatches' storage images, without buffer_copy_stats too */
     }
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu owner_bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
@@ -5225,7 +5226,6 @@ static void buf_frame(void) {
             (unsigned long long)g_alias_why[VK_ALIAS_ALIGN], (unsigned long long)g_alias_why[VK_ALIAS_WRITE],
             (unsigned long long)g_alias_why[VK_ALIAS_READ], (unsigned long long)g_alias_why[VK_ALIAS_SPLIT],
             (unsigned long long)g_alias_why[VK_ALIAS_CHANGED]);
-        vk_gfx_image_report();
         shape_report();
         pool_report();
         vk_pages_log();

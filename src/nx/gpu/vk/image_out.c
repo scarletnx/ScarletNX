@@ -53,9 +53,9 @@ static struct {
     /* guest bytes copied on the CPU before draws, bytes copied back from the GPU, images published; and as of the
        last report */
     u64 copied, read_back, published, reported[3];
-    /* dispatches' storage images since the last report: their binds by what each did (VK_IMG_KEEP_*), and the kept
-       ones published when something read them */
-    u64 keep_why[VK_IMG_KEEP_N], compute_published;
+    /* dispatches' storage images: their binds by what each did (VK_IMG_KEEP_*), and the kept ones published when
+       something read them; and as of the last report */
+    u64 keep_why[VK_IMG_KEEP_N], compute_published, keep_reported[VK_IMG_KEEP_N + 1];
 } g_image_out;
 static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
@@ -449,10 +449,15 @@ void vk_gfx_image_stats(u64* copied, u64* read_back, u64* published) {
 void vk_gfx_image_keep_note(int why) {
     if (why >= 0 && why < VK_IMG_KEEP_N) g_image_out.keep_why[why]++;
 }
+void vk_gfx_image_keep_stats(u64 why[VK_IMG_KEEP_N], u64* compute_published) {
+    memcpy(why, g_image_out.keep_why, sizeof g_image_out.keep_why);
+    *compute_published = g_image_out.compute_published;
+}
 void vk_gfx_image_report(void) {
     u64* was = g_image_out.reported;
-    const u64* n = g_image_out.keep_why;
-    u64 published = 0;
+    u64 n[VK_IMG_KEEP_N], published = 0, *kr = g_image_out.keep_reported;
+    const u64 read_published = g_image_out.compute_published - kr[VK_IMG_KEEP_N];
+    for (int i = 0; i < VK_IMG_KEEP_N; i++) n[i] = g_image_out.keep_why[i] - kr[i];
     for (int i = VK_IMG_KEEP_TARGET; i < VK_IMG_KEEP_N; i++) published += n[i];
     if (published || n[VK_IMG_KEEP_KEPT] || n[VK_IMG_KEEP_JOINED])
         LOG("vulkan: dispatches' storage images over 600 presents: %llu kept on the GPU, %llu joined to their image's "
@@ -466,10 +471,10 @@ void vk_gfx_image_report(void) {
             (unsigned long long)n[VK_IMG_KEEP_BIG], (unsigned long long)n[VK_IMG_KEEP_NO_TRAPS],
             (unsigned long long)n[VK_IMG_KEEP_UNPUBLISHABLE], (unsigned long long)n[VK_IMG_KEEP_UNALIGNED],
             (unsigned long long)n[VK_IMG_KEEP_RUNS], (unsigned long long)n[VK_IMG_KEEP_CPU_READ],
-            (unsigned long long)n[VK_IMG_KEEP_NO_OWNER], (unsigned long long)g_image_out.compute_published,
-            (double)g_image_out.compute_published / 600.0);
-    memset(g_image_out.keep_why, 0, sizeof g_image_out.keep_why);
-    g_image_out.compute_published = 0;
+            (unsigned long long)n[VK_IMG_KEEP_NO_OWNER], (unsigned long long)read_published,
+            (double)read_published / 600.0);
+    memcpy(kr, g_image_out.keep_why, sizeof g_image_out.keep_why);
+    kr[VK_IMG_KEEP_N] = g_image_out.compute_published;
     LOG("vulkan: draws' storage images since the last report: %llu bytes copied before their draws, %llu copied back, "
         "%llu images published\n",
         (unsigned long long)(g_image_out.copied - was[0]), (unsigned long long)(g_image_out.read_back - was[1]),

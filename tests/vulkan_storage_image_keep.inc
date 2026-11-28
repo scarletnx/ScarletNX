@@ -490,6 +490,8 @@ static int check_compute_storage_image_keep(void) {
        and the second dispatch joins the first's image with nothing copied before it */
     u64 pub = g_vk_rt_watch.by[VK_PUB_OTHER];
     ImgCount was = imgkeep_since((ImgCount){0}), d;
+    u64 why_was[VK_IMG_KEEP_N], why[VK_IMG_KEEP_N], read;
+    vk_gfx_image_keep_stats(why_was, &read);
     CHECK(!cskeep_dispatch(channel, 0, 2, 3, 0x5eed0101, 0, 0));
     imgkeep_release();
     d = imgkeep_since(was);
@@ -512,6 +514,15 @@ static int check_compute_storage_image_keep(void) {
                 (unsigned long long)cskeep_published(pub), (unsigned long long)d.copied, (unsigned long long)d.back,
                 (unsigned long long)d.published);
     CHECK(!kept || (!cskeep_published(pub) && !d.copied && !d.back && !d.published));
+    /* the 600-present log's counts: the first dispatch's image kept, the second's joined to it, and nothing else */
+    vk_gfx_image_keep_stats(why, &read);
+    for (int i = 0; i < VK_IMG_KEEP_N; i++) {
+        const u64 want = i == VK_IMG_KEEP_KEPT || i == VK_IMG_KEEP_JOINED;
+        if (kept && why[i] - why_was[i] != want)
+            fprintf(stderr, "compute storage images kept: %llu binds counted as reason %d, %llu expected\n",
+                    (unsigned long long)(why[i] - why_was[i]), i, (unsigned long long)want);
+        CHECK(!kept || why[i] - why_was[i] == want);
+    }
     if (kept) CHECK(own_lookup(CSKEEP_CPU + 0x10000, IMGKEEP_SIZE, NULL, 0) == 1);
     if (kept) { /* the CPU's own read of the span, past the runtime's hooks: its landing publishes the image first */
         u32 word = snx_ld_le32(GP(CSKEEP_CPU + 0x10000 + imgkeep_at(7, 9, 64, 64)));
@@ -522,6 +533,14 @@ static int check_compute_storage_image_keep(void) {
                     "5eed0111 and 1 expected\n",
                     word, (unsigned long long)d.published);
         CHECK(word == 0x5eed0111 && d.published == 1);
+        u64 read_now;
+        vk_gfx_image_keep_stats(why, &read_now);
+        if (read_now - read != 1)
+            fprintf(stderr,
+                    "compute storage image kept, read by the CPU: %llu kept ones counted as published when read, "
+                    "1 expected\n",
+                    (unsigned long long)(read_now - read));
+        CHECK(read_now - read == 1);
     }
     CHECK(!cskeep_expect("after two releases", first, 64, 64, 8,
                          (const u32[][3]){{2, 3, 0x5eed0101}, {7, 9, 0x5eed0111}}, 2));
