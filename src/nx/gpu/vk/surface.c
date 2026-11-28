@@ -1615,7 +1615,17 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
    scratch buffer stays as big as the most asked of it: whole rows of blocks, each band's bytes where the part's layout
    has them, the next band's copy into the scratch buffer after the moves out of it (vk_bl_barrier). A volume and a
    packed depth layer go whole, as flush_parts takes them, and a scaled target too: each band would blit its layer */
+static int flush_record_(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part);
 static int flush_record(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
+    /* the console's GPU draws into guest memory: the copy that writes a target's pixels back is the runtime's own
+       work, left out of the reports' spans (stamp.c). 0.43 ms of the 13.7 ms a present a racing game's GPU timer read
+       in its race */
+    vk_stamp_runtime_begin();
+    const int recorded = flush_record_(cb, s, buf, at, part);
+    vk_stamp_runtime_end();
+    return recorded;
+}
+static int flush_record_(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, const FlushPart* part) {
     u32 row = guest_w(s) * s->f.bpp, pitch = (row + 15) & ~15u;
     u64 limit = g_vk.alloc_cap / VK_PART_SHARE, first, lo, hi;
     if (!s->bl) return flush_copy(cb, s, buf, at, row, part) != 0;
