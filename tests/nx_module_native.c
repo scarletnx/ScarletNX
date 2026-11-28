@@ -252,9 +252,13 @@ static void units(const char* folder) {
           g_nx_module_native.said);
     asked.ssa = NULL;
     const int counted = !strcmp(snx_native_name(), "x86-64") || !strcmp(snx_native_name(), "arm64");
+    SnxU64 kinds = 0; /* every instruction is of one kind; a function's code is more than its regions' */
+    for (size_t k = 0; k < sizeof split.kinds / sizeof *split.kinds; ++k) kinds += split.kinds[k];
     CHECK(!memcmp(&split, &split_again, sizeof split) && !memcmp(&split, &cut, sizeof split) &&
-              (!counted || (split.instructions >= 8 && split.packed >= 3 * split.instructions &&
-                            split.packed < split.bytes && split.bytes % split.instructions == 0)),
+              (!counted ||
+               (split.instructions >= 8 && split.region_count && split.packed >= 3 * split.instructions &&
+                split.packed < split.bytes && split.bytes % split.instructions == 0 && kinds == split.instructions &&
+                split.regions && split.regions + split.cold + split.pool < split.code)),
           "the module's SSA counted the same at each build and with the unit split: %llu, %llu and %llu instructions, "
           "%llu bytes as held, %llu packed",
           (unsigned long long)split.instructions, (unsigned long long)split_again.instructions,

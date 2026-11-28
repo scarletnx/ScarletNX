@@ -180,7 +180,13 @@ typedef struct {
                   vectors, which the operations of general-purpose registers take out of it first (sgx_flat) */
 } SgD;
 
+/* the kinds sgx_assemble_region counts past SGX_K_*: a general register's load from the state and its store, a vector
+   form on the state */
+enum { SGX_SEEN_X_LOAD = SGX_K_PSET + 1, SGX_SEEN_X_STORE, SGX_SEEN_V_STATE, SGX_SEEN_KINDS };
 #define SGX_MAXI 4096
+/* the most bytes a region's stored form takes: 280 an instruction with every field at its longest, 16 a boolean, and
+   its counts */
+#define SGX_PACK_MOST   (SGX_MAXI * 280 + 4096 * 16 + 64)
 #define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
 /* the guest's (x64_a64.h's): the state's words masks of dead registers and flags (dead) and V registers (vdead) name,
    at most 200 of them, into words[]; their count */
@@ -244,10 +250,23 @@ typedef struct {
     unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
     unsigned stamp[SGX_STATE_WORDS], now;
     int next_call[SGX_MAXI + 1]; /* sgx_assemble_region's (SgXAsm's) */
-    /* with count set, what sgx_assemble_region saw of each region once sgx_optimize had run: the instructions it kept,
-       and the bytes those would take stored packed (sgx_packed's count: nothing is written) */
-    int count;
-    SnxU64 seen, seen_packed;
+    /* with count set, what sgx_assemble_region saw of each region once sgx_optimize had run (seen): the instructions
+       it kept, by kind, the bytes of their stored form (sgx_pack's, from which the region is made again before it is
+       assembled), how many regions, and the bytes of code they became. A load or a store of the state between state_x0 and state_x1 (the guest's general
+       registers, as the machine's code says) and a vector form on the state are kinds of their own */
+    int count, state_x0, state_x1;
+    /* a region's stored form (sgx_pack): sgx_assemble_region stores each region and makes it again from that before
+       it assembles it, but with direct set (a JIT unit's, made while the game waits) */
+    int direct;
+    struct {
+        size_t n;
+        unsigned char p[SGX_PACK_MOST];
+    } pack;
+    struct SgXSeen {
+        SnxU64 ins, packed, bytes, regions;
+        SnxU64 kind[SGX_SEEN_KINDS];
+        SnxU64 code, cold, pool; /* the machine's own: its functions' bytes, their cold paths' and constants' */
+    } seen;
 } SgX;
 
 typedef int SgB;
@@ -3013,36 +3032,284 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
     }
 }
 
-/* the bytes a field of value v takes stored packed: none for 0, else the shortest of 1, 2, 4 and 8 that hold it */
-static inline unsigned sgx_packed_int(long long v) {
-    if (!v) return 0;
-    if (v >= -128 && v < 128) return 1;
-    if (v >= -32768 && v < 32768) return 2;
-    return v >= -2147483647 - 1 && v <= 2147483647 ? 4 : 8;
+/* ---- a region's stored form: what the assembler reads of a region once sgx_optimize has run, in few bytes ----
+   The instructions that stay, in their places (a dropped one is a gap, so what names an instruction by its index
+   still does), each with its kind and width in a byte, a map of the fields it has, and those fields alone: its forms
+   as the pointers they are, its result and inputs as value numbers a short way back, its constants by their length.
+   Of a value only its class is kept (the assembler gives the rest), and of the booleans only those a kept
+   instruction's flags name. sgx_pack writes x's region after x->pack's bytes; sgx_unpack makes the region again from
+   them, every instruction, value and boolean of it written anew */
+static inline void sgx_pk_room(SgX* x, size_t need) {
+    if (sizeof x->pack.p - x->pack.n < need)
+        sg_fail("a region's stored form past its room", (long long)(x->pack.n + need), (long long)sizeof x->pack.p);
 }
-/* the bytes instruction s would take stored packed, a count alone: its kind, width and condition and which fields
-   it has (3), each form it names as an index (2), each input as its distance back from the result (1, or 2 where
-   that is 128 or more, or it has no result), and only the fields it uses: its constants and displacements by their
-   length, a helper's name as an index (2), the host registers a machine's instruction fixes or changes (1 and 4), a
-   vector form's operands (1), each doubleword of a vector constant (8), a cold path's state (2) and tests (4 each),
-   and each flag it reads or carries (2) */
-static inline unsigned sgx_packed(const SgXIns* s) {
-    unsigned n = 3, k;
-    n += 2u * ((s->sel != NULL) + (s->vf != NULL) + (s->fsel && s->fsel != s->sel) + (s->alt != NULL));
-    for (k = 0; k < SGX_INS_IN; ++k)
-        if (s->in[k]) n += s->def > s->in[k] && s->def - s->in[k] < 128 ? 1u : 2u;
-    n += sgx_packed_int(s->imm) + sgx_packed_int(s->disp) + sgx_packed_int(s->mdisp);
-    n += s->cadd ? sgx_packed_int(s->cadd_k) : 0;
-    n += s->sym ? 2u : 0;
-    for (k = 0; k < SGX_MACHINE_IN; ++k) n += s->fixed[k] >= 0;
-    n += s->mclobber ? 4u : 0;
-    n += s->kind == SGX_K_VEC;
-    n += 8u * ((s->kv[0] != 0) + (s->kv[1] != 0));
-    n += s->kind == SGX_K_COLD ? 2u : 0;
-    n += 4u * s->ntests;
-    n += s->flags_from >= 0 ? 2u : 0;
-    for (k = 0; k < 8; ++k) n += s->fb[k / 2][k % 2] ? 2u : 0;
-    return n;
+static inline void sgx_pk_u(SgX* x, SnxU64 v) {
+    sgx_pk_room(x, 10);
+    do {
+        const unsigned char low = (unsigned char)(v & 0x7F);
+        v >>= 7;
+        x->pack.p[x->pack.n++] = (unsigned char)(low | (v ? 0x80 : 0));
+    } while (v);
+}
+static inline void sgx_pk_s(SgX* x, long long v) { sgx_pk_u(x, ((SnxU64)v << 1) ^ (v < 0 ? ~(SnxU64)0 : 0)); }
+static inline void sgx_pk_raw(SgX* x, const void* data, size_t size) {
+    sgx_pk_room(x, size);
+    memcpy(x->pack.p + x->pack.n, data, size);
+    x->pack.n += size;
+}
+static inline SnxU64 sgx_un_u(const unsigned char** c) {
+    SnxU64 v = 0;
+    unsigned shift = 0;
+    for (;; shift += 7) {
+        const unsigned char byte = *(*c)++;
+        v |= (SnxU64)(byte & 0x7F) << shift;
+        if (!(byte & 0x80)) return v;
+    }
+}
+static inline long long sgx_un_s(const unsigned char** c) {
+    const SnxU64 v = sgx_un_u(c);
+    return (long long)((v >> 1) ^ (v & 1 ? ~(SnxU64)0 : 0));
+}
+static inline void sgx_un_raw(const unsigned char** c, void* data, size_t size) {
+    memcpy(data, *c, size);
+    *c += size;
+}
+/* the fields an instruction's map names, the commonest in its first byte */
+enum {
+    SGX_PK_SEL,
+    SGX_PK_DEF,
+    SGX_PK_IN,
+    SGX_PK_IMM,
+    SGX_PK_DISP,
+    SGX_PK_FSEL_SAME,
+    SGX_PK_FLAGS_FROM,
+    SGX_PK_CC,
+    SGX_PK_DEF_VECTOR,
+    SGX_PK_SRC,
+    SGX_PK_MEMORY,
+    SGX_PK_ALT,
+    SGX_PK_FSEL,
+    SGX_PK_CALLS,
+    SGX_PK_VF,
+    SGX_PK_VEC,
+    SGX_PK_KV0,
+    SGX_PK_KV1,
+    SGX_PK_SYM,
+    SGX_PK_FIXED,
+    SGX_PK_MCLOBBER,
+    SGX_PK_OP,
+    SGX_PK_DEF2,
+    SGX_PK_CADD_K,
+    SGX_PK_COLD,
+    SGX_PK_FB,
+    SGX_PK_WIDTH
+};
+/* a width's code in the kind's byte: 0, 8, 16, 32, 64 and 128 bits, 7 for another (SGX_PK_WIDTH has it) */
+static inline unsigned sgx_pk_width(unsigned w) {
+    return w == 0 ? 0u : w == 8 ? 1u : w == 16 ? 2u : w == 32 ? 3u : w == 64 ? 4u : w == 128 ? 5u : 7u;
+}
+static inline size_t sgx_pack(SgX* x) {
+    static const SgXIns none = {.mplace = -1, .flags_from = -1, .fixed = {-1, -1, -1, -1, -1, -1}};
+    const size_t at = x->pack.n;
+    unsigned char* used = x->flive; /* the booleans the kept instructions name; flive's room, sgx_optimize being done */
+    int i, k, last = -1, value = 0, src = 0, nused = 0;
+    memset(used, 0, (size_t)x->nb + 1);
+    for (i = 0; i < x->n; ++i)
+        for (k = 0; !x->ins[i].dead && k < 8; ++k) {
+            const int id = x->ins[i].fb[k / 2][k % 2];
+            if (!id || used[id]) continue;
+            used[id] = 1;
+            ++nused;
+        }
+    sgx_pk_u(x, (SnxU64)x->n);
+    sgx_pk_u(x, (SnxU64)x->nv);
+    sgx_pk_u(x, (SnxU64)x->nb);
+    sgx_pk_u(x, (SnxU64)nused);
+    for (i = 1; i < x->nb; ++i) {
+        if (!used[i]) continue;
+        sgx_pk_u(x, (SnxU64)i);
+        sgx_pk_raw(x, &x->b[i].kind, 1);
+        sgx_pk_raw(x, &x->b[i].cc, 1);
+        sgx_pk_s(x, x->b[i].v);
+    }
+    for (i = 0; i < x->n; ++i) {
+        const SgXIns* s = &x->ins[i];
+        SnxU64 map = 0;
+        unsigned ins = 0, fbs = 0;
+        const int ref = s->def ? s->def : value;
+        if (s->dead) continue;
+        for (k = 0; k < SGX_INS_IN; ++k) ins |= (unsigned)(s->in[k] != 0) << k;
+        for (k = 0; k < 8; ++k) fbs |= (unsigned)(s->fb[k / 2][k % 2] != 0) << k;
+        map |= (SnxU64)(s->sel != NULL) << SGX_PK_SEL | (SnxU64)(s->def != 0) << SGX_PK_DEF |
+               (SnxU64)(ins != 0) << SGX_PK_IN;
+        map |= (SnxU64)(s->imm != 0) << SGX_PK_IMM | (SnxU64)(s->disp != 0) << SGX_PK_DISP;
+        map |= (SnxU64)(s->fsel && s->fsel == s->sel) << SGX_PK_FSEL_SAME | (SnxU64)(s->flags_from >= 0)
+                                                                                << SGX_PK_FLAGS_FROM;
+        map |= (SnxU64)(s->cc != 0) << SGX_PK_CC | (SnxU64)(s->def && x->v[s->def].cls) << SGX_PK_DEF_VECTOR;
+        map |= (SnxU64)(s->src != src) << SGX_PK_SRC | (SnxU64)(s->mplace != -1 || s->mdisp) << SGX_PK_MEMORY;
+        map |= (SnxU64)(s->alt != NULL) << SGX_PK_ALT | (SnxU64)(s->fsel && s->fsel != s->sel) << SGX_PK_FSEL;
+        map |= (SnxU64)(s->side || s->calls || s->cadd || s->jdead) << SGX_PK_CALLS | (SnxU64)(s->vf != NULL)
+                                                                                          << SGX_PK_VF;
+        map |= (SnxU64)(s->vout || s->vtied || s->vzero || s->mstate || s->mrip || s->vflags || s->vfold) << SGX_PK_VEC;
+        map |= (SnxU64)(s->kv[0] != 0) << SGX_PK_KV0 | (SnxU64)(s->kv[1] != 0) << SGX_PK_KV1;
+        map |= (SnxU64)(s->sym != NULL) << SGX_PK_SYM | (SnxU64)(memcmp(s->fixed, none.fixed, sizeof s->fixed) != 0)
+                                                            << SGX_PK_FIXED;
+        map |= (SnxU64)(s->mclobber != 0) << SGX_PK_MCLOBBER | (SnxU64)(s->op != 0) << SGX_PK_OP;
+        map |= (SnxU64)(s->def2 != 0) << SGX_PK_DEF2 | (SnxU64)(s->cadd_k != 0) << SGX_PK_CADD_K;
+        map |= (SnxU64)(s->cstate || s->cfpcr || s->ckat || s->cw32 || s->zacc || s->ntests) << SGX_PK_COLD;
+        map |= (SnxU64)(fbs != 0) << SGX_PK_FB | (SnxU64)(sgx_pk_width(s->w) == 7) << SGX_PK_WIDTH;
+        sgx_pk_u(x, (SnxU64)(i - last - 1));
+        last = i;
+        {
+            const unsigned char head = (unsigned char)(s->kind | sgx_pk_width(s->w) << 5);
+            sgx_pk_raw(x, &head, 1);
+        }
+        sgx_pk_u(x, map);
+        if (s->sel) sgx_pk_raw(x, &s->sel, sizeof s->sel);
+        if (s->def) sgx_pk_s(x, (long long)s->def - value);
+        if (ins) {
+            const unsigned char which = (unsigned char)ins;
+            sgx_pk_raw(x, &which, 1);
+            for (k = 0; k < SGX_INS_IN; ++k)
+                if (s->in[k]) sgx_pk_s(x, (long long)ref - s->in[k]);
+        }
+        if (s->imm) sgx_pk_s(x, s->imm);
+        if (s->disp) sgx_pk_s(x, s->disp);
+        if (s->flags_from >= 0) sgx_pk_s(x, (long long)i - s->flags_from);
+        if (s->cc) sgx_pk_raw(x, &s->cc, 1);
+        if (s->src != src) sgx_pk_s(x, (long long)s->src - src);
+        if (s->mplace != -1 || s->mdisp) {
+            sgx_pk_raw(x, &s->mplace, 1);
+            sgx_pk_s(x, s->mdisp);
+        }
+        if (s->alt) sgx_pk_raw(x, &s->alt, sizeof s->alt);
+        if (s->fsel && s->fsel != s->sel) sgx_pk_raw(x, &s->fsel, sizeof s->fsel);
+        if (map >> SGX_PK_CALLS & 1) {
+            const unsigned char four[4] = {s->side, s->calls, s->cadd, s->jdead};
+            sgx_pk_raw(x, four, sizeof four);
+        }
+        if (s->vf) sgx_pk_raw(x, &s->vf, sizeof s->vf);
+        if (map >> SGX_PK_VEC & 1) {
+            const unsigned char seven[7] = {
+                (unsigned char)s->vout, s->vtied, s->vzero, s->mstate, s->mrip, s->vflags, s->vfold};
+            sgx_pk_raw(x, seven, sizeof seven);
+        }
+        if (s->kv[0]) sgx_pk_raw(x, &s->kv[0], sizeof s->kv[0]);
+        if (s->kv[1]) sgx_pk_raw(x, &s->kv[1], sizeof s->kv[1]);
+        if (s->sym) sgx_pk_raw(x, &s->sym, sizeof s->sym);
+        if (map >> SGX_PK_FIXED & 1) sgx_pk_raw(x, s->fixed, sizeof s->fixed);
+        if (s->mclobber) sgx_pk_u(x, s->mclobber);
+        if (s->op) sgx_pk_raw(x, &s->op, 1);
+        if (s->def2) sgx_pk_s(x, (long long)s->def2 - ref);
+        if (s->cadd_k) sgx_pk_s(x, s->cadd_k);
+        if (map >> SGX_PK_COLD & 1) {
+            const unsigned char six[6] = {s->cstate, s->cfpcr, s->ckat, s->cw32, s->zacc, s->ntests};
+            sgx_pk_raw(x, six, sizeof six);
+            sgx_pk_raw(x, s->test, sizeof s->test);
+        }
+        if (fbs) {
+            const unsigned char which = (unsigned char)fbs;
+            sgx_pk_raw(x, &which, 1);
+            for (k = 0; k < 8; ++k)
+                if (s->fb[k / 2][k % 2]) sgx_pk_u(x, (SnxU64)s->fb[k / 2][k % 2]);
+        }
+        if (map >> SGX_PK_WIDTH & 1) sgx_pk_raw(x, &s->w, 1);
+        if (s->def) value = s->def;
+        src = s->src;
+    }
+    sgx_pk_u(x, (SnxU64)(x->n - last - 1)); /* the gap to the region's end */
+    return x->pack.n - at;
+}
+static inline void sgx_unpack(SgX* x, const unsigned char* c) {
+    static const SgXIns none = {.dead = 1, .mplace = -1, .flags_from = -1, .fixed = {-1, -1, -1, -1, -1, -1}};
+    static const unsigned char widths[8] = {0, 8, 16, 32, 64, 128, 0, 0};
+    int i, k, value = 0, src = 0;
+    x->n = (int)sgx_un_u(&c);
+    x->nv = (int)sgx_un_u(&c);
+    x->nb = (int)sgx_un_u(&c);
+    for (i = 0; i < x->n; ++i) x->ins[i] = none;
+    for (i = 0; i < x->nv; ++i)
+        x->v[i] = (SgXV){.zab = 64, .op = SGX_C_NONE, .def = -1, .last = -1, .reg = -1, .slot = -1, .xmm = -1};
+    for (i = 0; i < x->nb; ++i) x->b[i] = (SgXBool){0};
+    for (k = (int)sgx_un_u(&c); k > 0; --k) {
+        SgXBool* b = &x->b[sgx_un_u(&c)];
+        sgx_un_raw(&c, &b->kind, 1);
+        sgx_un_raw(&c, &b->cc, 1);
+        b->v = (int)sgx_un_s(&c);
+    }
+    for (i = (int)sgx_un_u(&c); i < x->n; i += 1 + (int)sgx_un_u(&c)) {
+        SgXIns* s = &x->ins[i];
+        unsigned char head, which;
+        SnxU64 map;
+        int ref;
+        sgx_un_raw(&c, &head, 1);
+        map = sgx_un_u(&c);
+        s->dead = 0;
+        s->kind = head & 0x1F;
+        s->w = widths[head >> 5];
+        if (map >> SGX_PK_SEL & 1) sgx_un_raw(&c, &s->sel, sizeof s->sel);
+        if (map >> SGX_PK_DEF & 1) s->def = value + (int)sgx_un_s(&c);
+        ref = s->def ? s->def : value;
+        if (map >> SGX_PK_IN & 1) {
+            sgx_un_raw(&c, &which, 1);
+            for (k = 0; k < SGX_INS_IN; ++k)
+                if (which >> k & 1) s->in[k] = ref - (int)sgx_un_s(&c);
+        }
+        if (map >> SGX_PK_IMM & 1) s->imm = sgx_un_s(&c);
+        if (map >> SGX_PK_DISP & 1) s->disp = (int)sgx_un_s(&c);
+        if (map >> SGX_PK_FLAGS_FROM & 1) s->flags_from = i - (int)sgx_un_s(&c);
+        if (map >> SGX_PK_CC & 1) sgx_un_raw(&c, &s->cc, 1);
+        s->src = map >> SGX_PK_SRC & 1 ? src + (int)sgx_un_s(&c) : src;
+        if (map >> SGX_PK_MEMORY & 1) {
+            sgx_un_raw(&c, &s->mplace, 1);
+            s->mdisp = (int)sgx_un_s(&c);
+        }
+        if (map >> SGX_PK_ALT & 1) sgx_un_raw(&c, &s->alt, sizeof s->alt);
+        if (map >> SGX_PK_FSEL_SAME & 1) s->fsel = s->sel;
+        if (map >> SGX_PK_FSEL & 1) sgx_un_raw(&c, &s->fsel, sizeof s->fsel);
+        if (map >> SGX_PK_CALLS & 1) {
+            unsigned char four[4];
+            sgx_un_raw(&c, four, sizeof four);
+            s->side = four[0], s->calls = four[1], s->cadd = four[2], s->jdead = four[3];
+        }
+        if (map >> SGX_PK_VF & 1) sgx_un_raw(&c, &s->vf, sizeof s->vf);
+        if (map >> SGX_PK_VEC & 1) {
+            unsigned char seven[7];
+            sgx_un_raw(&c, seven, sizeof seven);
+            s->vout = (signed char)seven[0], s->vtied = seven[1], s->vzero = seven[2], s->mstate = seven[3];
+            s->mrip = seven[4], s->vflags = seven[5], s->vfold = seven[6];
+        }
+        if (map >> SGX_PK_KV0 & 1) sgx_un_raw(&c, &s->kv[0], sizeof s->kv[0]);
+        if (map >> SGX_PK_KV1 & 1) sgx_un_raw(&c, &s->kv[1], sizeof s->kv[1]);
+        if (map >> SGX_PK_SYM & 1) sgx_un_raw(&c, &s->sym, sizeof s->sym);
+        if (map >> SGX_PK_FIXED & 1) sgx_un_raw(&c, s->fixed, sizeof s->fixed);
+        if (map >> SGX_PK_MCLOBBER & 1) s->mclobber = (unsigned)sgx_un_u(&c);
+        if (map >> SGX_PK_OP & 1) sgx_un_raw(&c, &s->op, 1);
+        if (map >> SGX_PK_DEF2 & 1) s->def2 = ref + (int)sgx_un_s(&c);
+        if (map >> SGX_PK_CADD_K & 1) s->cadd_k = sgx_un_s(&c);
+        if (map >> SGX_PK_COLD & 1) {
+            unsigned char six[6];
+            sgx_un_raw(&c, six, sizeof six);
+            s->cstate = six[0], s->cfpcr = six[1], s->ckat = six[2], s->cw32 = six[3], s->zacc = six[4],
+            s->ntests = six[5];
+            sgx_un_raw(&c, s->test, sizeof s->test);
+        }
+        if (map >> SGX_PK_FB & 1) {
+            sgx_un_raw(&c, &which, 1);
+            for (k = 0; k < 8; ++k)
+                if (which >> k & 1) s->fb[k / 2][k % 2] = (int)sgx_un_u(&c);
+        }
+        if (map >> SGX_PK_WIDTH & 1) sgx_un_raw(&c, &s->w, 1);
+        if (s->def) {
+            x->v[s->def].def = i;
+            x->v[s->def].cls = (unsigned char)(map >> SGX_PK_DEF_VECTOR & 1);
+            value = s->def;
+        }
+        if (s->def2) x->v[s->def2].def = i;
+        src = s->src;
+        for (k = 0; k < SGX_INS_IN; ++k)
+            if (s->in[k]) x->v[s->in[k]].last = i;
+    }
 }
 
 /* one region of code (the instructions in x since the last region): dropped what nothing reads, its values given
@@ -3063,8 +3330,24 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         x->v[i].pinned = 0;
     }
     sgx_optimize(x);
-    for (i = 0; x->count && i < x->n; ++i)
-        if (!x->ins[i].dead) ++x->seen, x->seen_packed += sgx_packed(&x->ins[i]);
+    for (i = 0; x->count && i < x->n; ++i) {
+        const SgXIns* s = &x->ins[i];
+        unsigned kind = s->kind;
+        if (s->dead) continue;
+        if ((kind == SGX_K_LOAD || kind == SGX_K_STORE) && s->disp >= x->state_x0 && s->disp < x->state_x1)
+            kind = kind == SGX_K_LOAD ? SGX_SEEN_X_LOAD : SGX_SEEN_X_STORE;
+        if (kind == SGX_K_VEC && s->mstate) kind = SGX_SEEN_V_STATE;
+        ++x->seen.ins;
+        ++x->seen.kind[kind];
+    }
+    if (!x->direct) {
+        /* the region as it would be held: stored, and made again from its stored form alone before its bytes */
+        x->pack.n = 0;
+        x->seen.packed += sgx_pack(x);
+        ++x->seen.regions;
+        sgx_unpack(x, x->pack.p);
+    }
+    const size_t region_at = b->n;
     a->next_call = x->next_call;
     a->next_call[x->n] = x->n;
     for (i = x->n - 1; i >= 0; --i)
@@ -3253,6 +3536,7 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         }
     }
     a->next_call = NULL;
+    if (x->count) x->seen.bytes += b->n - region_at;
     x->n = 0;
     x->nv = 1;
     x->nb = 1;

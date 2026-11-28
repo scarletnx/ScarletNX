@@ -2579,7 +2579,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
     int lab0 = u->nlabels, ok = 1, single_entry = 0;
-    const SnxU64 seen0 = u->g->x.seen, packed0 = u->g->x.seen_packed;
+    const struct SgXSeen seen0 = u->g->x.seen;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
 #ifdef MG_DIRECT_ENTRY
@@ -2754,14 +2754,19 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     jtab_emit(u);
 #endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
+    const size_t hot_end = u->b.n;
     sgx_cold_emit(&u->a);
+    const size_t cold_end = u->b.n;
     sgx_pool_emit(&u->a);
+    u->g->x.seen.cold += cold_end - hot_end;
+    u->g->x.seen.pool += u->b.n - cold_end;
     /* the frame's size, in the prologue and every epilogue; the labels' jumps */
     if (!mg_finish(u, fix0)) {
         ok = 0;
         goto out;
     }
     u->syms[sym0].size = u->b.n - u->syms[sym0].at;
+    u->g->x.seen.code += u->b.n - at0;
 out:
     g_fail = saved;
     if (!ok) {
@@ -2777,7 +2782,6 @@ out:
         u->g->x.nb = 1;
         u->g->x.unmade = 0;
         u->g->x.seen = seen0;
-        u->g->x.seen_packed = packed0;
         u->g->qc_owed = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
@@ -3088,9 +3092,12 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.nv = 1;
     u.g->x.nb = 1;
     u.g->x.count = options->ssa != NULL;
+    u.g->x.direct = options->jit;
+    u.g->x.state_x0 = (int)offsetof(CPU, x);
+    u.g->x.state_x1 = (int)(offsetof(CPU, x) + sizeof(((CPU*)0)->x));
     for (i = first; i < last; ++i) {
         size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
-        const SnxU64 seen = u.g->x.seen, packed = u.g->x.seen_packed;
+        const struct SgXSeen seen = u.g->x.seen;
         if (u.b.cap - u.b.n < codegen->functions[i].count * 400 + 4096) {
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
@@ -3105,7 +3112,6 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             for (; u.nsyms > syms; --u.nsyms) free(u.syms[u.nsyms - 1].name);
             u.b.n = before;
             u.g->x.seen = seen;
-            u.g->x.seen_packed = packed;
             u.b.cap *= 4;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
             --i;
@@ -3167,9 +3173,16 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
 #endif
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     if (options->ssa) {
-        options->ssa->instructions += u.g->x.seen;
-        options->ssa->bytes += u.g->x.seen * sizeof(SgXIns);
-        options->ssa->packed += u.g->x.seen_packed;
+        const struct SgXSeen* seen = &u.g->x.seen;
+        options->ssa->instructions += seen->ins;
+        options->ssa->bytes += seen->ins * sizeof(SgXIns);
+        options->ssa->packed += seen->packed;
+        for (i = 0; i < SGX_SEEN_KINDS; ++i) options->ssa->kinds[i] += seen->kind[i];
+        options->ssa->code += seen->code;
+        options->ssa->regions += seen->bytes;
+        options->ssa->region_count += seen->regions;
+        options->ssa->cold += seen->cold;
+        options->ssa->pool += seen->pool;
     }
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
