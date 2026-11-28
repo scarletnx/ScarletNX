@@ -148,6 +148,9 @@ typedef struct {
     u64 cpu, len, sub;
 } Seen;
 #define UMA_SOON_N 512
+/* presents a program's dispatches still go at once after a CPU reader last waited for one of its writes: the statistics'
+   window. A reader that came during a loading screen kept them going at once for the whole race after it */
+#define UMA_SOON_PRESENTS 600
 typedef struct {
     u64 gva, cpu, len, sub; /* the GPU writes guest memory [cpu, cpu + len) in place in submit sub */
     u64 prog;               /* the compute program whose dispatch writes it (vk_uma_writer), 0 for a draw's */
@@ -287,8 +290,10 @@ typedef struct {
     /* imp_let_go publishes the targets watched over a region before its pages move: meanwhile no import goes or is made
        (drop_dead, imp_get), as those would move the table under it and could let the same region go again */
     int letting;
-    /* the programs whose dispatches go to the GPU at once (vk_uma_read_soon): open addressing, 0 for a free slot */
+    /* the programs whose dispatches go to the GPU at once (vk_uma_read_soon): open addressing, 0 for a free slot, and
+       g_vk_present when a CPU reader last waited for a write of each */
     u64 soon[UMA_SOON_N];
+    u32 soon_at[UMA_SOON_N];
     u32 nsoon;
     u64 writer; /* the program whose writes vk_uma_writes_commit takes (vk_uma_writer) */
     /* the page model (above Rgn): the slots, rg[0] none, nrg used of caprg and rg_free the first free one;
@@ -2063,24 +2068,48 @@ int vk_uma_pending_cpu(u64 cpu, u64 len) {
 u64 vk_uma_writes(void) { return atomic_load_explicit(&g_uma.out_pages.adds, memory_order_relaxed); }
 u64 vk_uma_out_waits(void) { return g_uma.out_waits; }
 void vk_uma_writer(u64 prog) { g_uma.writer = prog; }
+/* prog's slot in the table, UMA_SOON_N for none */
+static u32 soon_slot(u64 prog) {
+    for (u32 i = (u32)(prog % UMA_SOON_N), k = 0; k < UMA_SOON_N; k++, i = (i + 1) % UMA_SOON_N) {
+        if (g_uma.soon[i] == prog) return i;
+        if (!g_uma.soon[i]) return UMA_SOON_N;
+    }
+    return UMA_SOON_N;
+}
+static int soon_lives(u32 i) { return g_vk_present - g_uma.soon_at[i] <= UMA_SOON_PRESENTS; }
 /* whether a dispatch of prog goes to the GPU at once: a CPU reader waited for one of its writes while it was still in
-   the submission being recorded. A full table answers yes for every program, as before there was one */
+   the submission being recorded, and one waited for a write of it in the last UMA_SOON_PRESENTS presents. A full
+   table answers yes for every program, as before there was one */
 int vk_uma_read_soon(u64 prog) {
     if (g_uma.nsoon == UMA_SOON_N) return 1;
-    for (u32 i = (u32)(prog % UMA_SOON_N), k = 0; k < UMA_SOON_N; k++, i = (i + 1) % UMA_SOON_N) {
-        if (g_uma.soon[i] == prog) return 1;
-        if (!g_uma.soon[i]) return 0;
-    }
-    return 1;
+    const u32 i = soon_slot(prog);
+    return i < UMA_SOON_N && soon_lives(i);
 }
-static void read_soon_add(u64 prog) {
-    if (!prog || vk_uma_read_soon(prog)) return;
-    for (u32 i = (u32)(prog % UMA_SOON_N);; i = (i + 1) % UMA_SOON_N)
-        if (!g_uma.soon[i]) {
-            g_uma.soon[i] = prog;
-            g_uma.nsoon++;
-            return;
-        }
+/* a CPU reader waited for a write of prog. open (the write was still in the submission being recorded): its dispatches
+   go at once from now on, in the first slot of its chain that is free or holds a program no reader waited for in that
+   time. Else (submitted, as they go at once) only while they do */
+static void read_soon_note(u64 prog, int open) {
+    if (!prog) return;
+    u32 i = soon_slot(prog);
+    if (i == UMA_SOON_N) {
+        if (!open) return;
+        for (u32 k = 0, j = (u32)(prog % UMA_SOON_N); k < UMA_SOON_N; k++, j = (j + 1) % UMA_SOON_N)
+            if (!g_uma.soon[j] || !soon_lives(j)) {
+                i = j;
+                break;
+            }
+        if (i == UMA_SOON_N) return;
+        if (!g_uma.soon[i]) g_uma.nsoon++;
+        g_uma.soon[i] = prog;
+    } else if (!open && !soon_lives(i))
+        return;
+    g_uma.soon_at[i] = g_vk_present;
+}
+/* the programs whose dispatches go at once now, for the statistics */
+static u32 soon_live_count(void) {
+    u32 n = 0;
+    for (u32 i = 0; i < UMA_SOON_N; i++) n += g_uma.soon[i] && soon_lives(i);
+    return n;
 }
 /* the newest in-place write over guest memory [cpu, cpu + n), NULL for none */
 static const Out* newest_out(u64 cpu, u64 n) {
@@ -2102,12 +2131,13 @@ static void wait_out_why(const Out* o, int why) {
     if (sub > vk_last_submit()) {
         g_uma.open_waits++;
         g_uma.wait_open[why]++;
-        read_soon_add(o->prog);
+        read_soon_note(o->prog, 1);
         if (let_go)
             vk_finish_letting_go();
         else
             vk_finish();
     } else {
+        read_soon_note(o->prog, 0); /* its dispatches went at once, and a reader still waits for them */
         const int paused = let_go && vk_lock_pause();
         vk_wait_submit(sub);
         vk_lock_resume(paused);
@@ -2392,8 +2422,9 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5]);
     memset(g_uma.imp_why, 0, sizeof g_uma.imp_why);
     LOG("vulkan: dispatches left for the stream's end over 600 presents: %llu; waits for writes in place still "
-        "unsubmitted: %llu; programs whose dispatches go at once: %u\n",
-        (unsigned long long)g_vk_cs_left, (unsigned long long)g_uma.open_waits, g_uma.nsoon);
+        "unsubmitted: %llu; programs whose dispatches go at once: %u (%u of them for a reader of the last %u presents)\n",
+        (unsigned long long)g_vk_cs_left, (unsigned long long)g_uma.open_waits, g_uma.nsoon, soon_live_count(),
+        UMA_SOON_PRESENTS);
     /* what tells why reading in place costs more than copying (uma_copies): the barriers order records, before a read
        of a page written in place in the submission being recorded or in an earlier one, or before a write; those that
        ended a rendering pass; the writes in place refused, by why; the regions merged and the waits for their writes
