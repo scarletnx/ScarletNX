@@ -8169,8 +8169,12 @@ static void render_split_join(void) {
         memcpy(r->key, w->key, w->n * sizeof *w->key);
     }
     g_rp[t_rc] = g_rp[1];
-    g_ib[t_rc].cb = VK_NULL_HANDLE;
-    g_dyn[t_rc].cb = 0;
+    /* What the command buffer has bound now is what the worker bound last, its commands being after this thread's:
+       its record of them is this thread's from here. Each split bound the whole state again otherwise, about 70 a
+       present in one game. A record of a command buffer begun since (this half submitted) fails its check at the next
+       draw (vk_cb_begun), which binds anew as before. Where the worker bound none, this thread's own holds */
+    if (g_ib[1].cb) g_ib[t_rc] = g_ib[1];
+    if (g_dyn[1].cb) g_dyn[t_rc] = g_dyn[1];
     gpu_ds_batch_end();
     gpu_ds_batch_done(g_split.n);
     g_split.pending = 0;
