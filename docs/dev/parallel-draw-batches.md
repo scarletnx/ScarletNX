@@ -513,3 +513,27 @@ the share lock's takes a draw, the ns a draw on each thread, and the fps in A/B/
 4. The lookups' hits under seqlocks.
 5. A judgement in three games, the split on against off. The split goes on by default only where it gains in each.
 
+### Where the build stands
+
+Built: step 1 (vk_drawn, the feedback statistics), step 2 (the journal), step 3 (built as a wait, not a cut: a
+worker draw that reads a target of the renderer thread's half waits for that half's end, which needs no rollback),
+and step 4's lock-free calls (the texture table, new sets, a target's read note once a present). In one Switch game
+(about 2,100 draws a present) the worker's journal held 687 writes a present with none applied early, and the worker
+waited for the other half 1.1 times a present.
+
+The share lock's takes a draw went from about 12 to 6.5 on the renderer thread and 5.7 on the worker, and its waits
+from 0.93 to 0.45 ms a present. The split did not gain from it: in A/B runs it stayed about 6 fps under the base
+(63.7 against 69.3 fps). A draw on the renderer thread still costs about 44% more than in base (4,617 against 3,205
+ns), and in parts that take no lock:
+
+- The binds and record (338 to 592 ns; the push constants 45 to 142). After each join the renderer thread binds
+  every dynamic state again (`g_dyn`, the index buffer, the sets), and the worker does at each run's start: about 70
+  splits a present each emit the whole state again.
+- The resolve and the setup (2,867 to 4,025 ns). Each thread's caches see only its own half of the stream. The caches
+  of the last draw (`g_fs_last`, the kept draws) then compare with a draw many records back, and hit less.
+
+These are costs of cutting one stream into two halves, not of the lock. They fall when a split's runs are longer:
+the scene where the split gained had about 6,860 draws a present. The next steps, if the split goes on, are runs
+cut where the state changes anyway (a pass or a program change), not at the half; and binds the join keeps when
+both halves end in the same state.
+
