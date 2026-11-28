@@ -1696,6 +1696,13 @@ void snx_ssa_code_line(char* out, size_t size, const SnxSsaCount* ssa) {
              (double)ssa->pool / 1048576.0, (double)between / 1048576.0,
              ssa->code ? 100.0 * (double)between / (double)ssa->code : 0.0);
 }
+void snx_ssa_leaders_line(char* out, size_t size, const SnxSsaCount* ssa) {
+    snprintf(out, size,
+             "ssa leaders: %llu inside functions: %llu after a call, %llu with one way in from their function, %llu "
+             "with more, %llu with none",
+             (unsigned long long)ssa->leaders, (unsigned long long)ssa->after_call, (unsigned long long)ssa->one_way,
+             (unsigned long long)ssa->more_ways, (unsigned long long)ssa->no_way);
+}
 void snx_recompile_line(char* out, size_t size, double before, double code, double after) {
     snprintf(out, size, "recompile: %.1f s in all: %.1f s before the code, %.1f s the code, %.1f s after it",
              before + code + after, before, code, after);

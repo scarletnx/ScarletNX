@@ -163,6 +163,33 @@ static void analysis_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* The functions whose words repeat another's, and of them those that are the same code wherever they sit */
+static void repeated_functions_test(void) {
+    /* 0 and 8: mov x0, #1; ret | 16 and 24: adr x0, .; ret | 32: bl 48; ret | 40: the same words, whose BL lands at 56
+       | 48: ret | 52: a nop no function has | 56: ret */
+    static const SnxU32 words[] = {0xD2800020UL, 0xD65F03C0UL, 0xD2800020UL, 0xD65F03C0UL, 0x10000000UL,
+                                   0xD65F03C0UL, 0x10000000UL, 0xD65F03C0UL, 0x94000004UL, 0xD65F03C0UL,
+                                   0x94000004UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD503201FUL, 0xD65F03C0UL};
+    static SnxU64 starts[] = {0, 8, 16, 24, 32, 40, 48, 56};
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 same[2] = {9, 9}, alike[2] = {9, 9};
+    size_t i;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    module.functions = starts;
+    module.function_count = sizeof(starts) / sizeof(starts[0]);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze functions that repeat");
+    snx_nx_repeated_functions(&codegen, same, alike);
+    /* the second of each of the four pairs repeats the first; the MOV's and the lone RET's are the same code wherever
+       they sit, the ADR's takes its own address and the BL's leaves its function */
+    check(same[0] == 4 && same[1] == 7, "four functions have another's words, seven instructions in all");
+    check(alike[0] == 2 && alike[1] == 3, "two of them are the same code wherever they sit, three instructions");
+    snx_codegen_free(&codegen);
+}
+
 /* A hooked function reached by a tail call: with no unwind information the function that ends in a B to it is explored
    first and would take its instructions as its own, so the B became a jump inside one function and never read the
    dispatch slot the hook is in. A routed function is a function of its own, whatever reaches it */
@@ -1877,6 +1904,7 @@ static void jump_table_guards_test(void) {
 int main(void) {
     decoder_test();
     analysis_test();
+    repeated_functions_test();
     routed_tail_call_test();
     address_taken_test();
     address_taken_shifted_test();
