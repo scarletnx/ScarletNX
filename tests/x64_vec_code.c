@@ -66,6 +66,9 @@
 #define ROR_IMM     "C1 C8|C1 C9|C1 CA|C1 CB|C1 CC|C1 CD|C1 CE|C1 CF"
 /* IMUL r64, r/m64 (REX.W 0F AF) */
 #define IMUL_64     "48 0F AF|49 0F AF|4C 0F AF|4D 0F AF"
+/* LOCK OR dword [rsp], 0, the full barrier, and MFENCE */
+#define LOCK_OR_RSP "F0 83 0C 24 00"
+#define MFENCE      "0F AE F0"
 
 typedef struct {
     const char* what;
@@ -117,6 +120,10 @@ static const Row k_rows[] = {
     /* a shift by a W register takes the amount as it is */
     {"lslv w0, w1, w2", 0, 0, 44, -1, NULL, "1AC22020"},
     {"rorv w0, w1, w2", 0, 0, 44, -1, NULL, "1AC22C20"},
+    /* a full barrier is a locked OR into the stack, once, and no MFENCE */
+    {"dmb ish: the locked OR", 0, 0, 33, -1, "=1 " LOCK_OR_RSP, "D5033BBF"},
+    {"dmb ish: no MFENCE", 0, 0, 33, -1, "!" MFENCE, "D5033BBF"},
+    {"stlr x0, [x1]: the locked OR after its store", 0, 0, 51, -1, "=1 " LOCK_OR_RSP, "C89FFC20"},
     {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
     {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
     {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},
