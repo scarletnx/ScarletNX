@@ -124,12 +124,13 @@
    32-bit program too: the function has the same symbol there, its arguments are these under AAPCS32 (a usize for a
    size_t) and its handler reads nothing whose layout differs, so it uses no struct. A @version after that a32 gives
    the versions it holds for there, in place of the hook's own: the 32-bit SDKs the function was read in, which are
-   not the 64-bit ones. A function that a 32-bit program has another declaration of is declared for it alone, on a
-   line that begins with a32:
+   not the 64-bit ones, one group each when they are apart (several @version, any of which holds, up to
+   MAX_RANGES32). A function that a 32-bit program has another declaration of is declared for it alone, on a line
+   that begins with a32, after its groups as one:
 
-     hook _ZN2nn4time10InitializeEv() -> u32 = initialize a32 @version(< 1.0.0)
+     hook _ZN2nn4time10InitializeEv() -> u32 = initialize a32 @version(< 1.0.0) @version(== 4.4.0)
      hook _ZN2nn4time19StandardSteadyClock3nowEv() -> i64 = steady_now
-     @version(< 1.0.0) a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = steady_now_out
+     @version(< 1.0.0) @version(== 4.4.0) a32 hook _ZN2nn4time19StandardSteadyClock3nowEv(addr out) = steady_now_out
      @version(< 1.0.0) a32 hook _ZN2nn5prepo10PlayReport4SaveEv(addr report) -> u32 = save32 uses PlayReport32
 
    one whose result AAPCS32 returns through a pointer (a class of 8 bytes, which AAPCS64 returns in x0), one whose
@@ -183,6 +184,7 @@
 #define MAX_FAMILIES 64
 #define MAX_ARGS     24 /* sceGxmTransferCopy has 20 */
 #define MAX_USES     4
+#define MAX_RANGES32 4 /* the version groups a declaration for a 32-bit program holds for */
 #define MAX_VARIANTS 256
 #define MAX_FIELDS   64
 #define MAX_NAME     256
@@ -273,7 +275,9 @@ typedef struct {
     Kind ret;
     char ret_cname[MAX_NAME];
     Range range;
-    Range range32; /* its versions in a 32-bit program: those after its a32, else range */
+    /* its versions in a 32-bit program: the groups after its a32 (or before a declaration for it alone), else range */
+    Range range32[MAX_RANGES32];
+    int nrange32;
     char use_name[MAX_USES][MAX_NAME];
     int use[MAX_USES]; /* the structs' first variants */
 } Hook;
@@ -843,11 +847,11 @@ static void assign_a32(Hook* h) {
     }
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] [a32 [@version(...)]], or for an address
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] [a32 [@version(...)...]], or for an address
    hook (at, its key BUILDID:OFFSET) hook HANDLER(TYPE NAME, ...) [-> TYPE] [uses STRUCT, ...] [pure]: a function
    without a symbol has only the name its handler gives it. alone: the line began with a32, a declaration for a 32-bit
    program alone */
-static void parse_hook(const char* p, int line, const Range* range, const char* at, int alone) {
+static void parse_hook(const char* p, int line, const Range* range, int nranges, const char* at, int alone) {
     Hook* h;
     char derived[MAX_NAME];
     int x = 0, v = 0, nstack = 0;
@@ -857,7 +861,9 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     memset(h, 0, sizeof *h);
     h->line = line;
     h->family = nfamilies - 1;
-    h->range = h->range32 = *range;
+    h->range = *range;
+    memcpy(h->range32, range, (size_t)nranges * sizeof *range);
+    h->nrange32 = nranges;
     h->at = at != NULL;
     h->a32 = alone ? FOR_A32_ALONE : 0;
     if (at && vita) {
@@ -969,9 +975,21 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
         if (h->check[0]) fail(line, "a 32-bit program's hooks have no check: drop the a32 or the check");
         h->a32 = FOR_A32_TOO;
         p = skip_space(p + 3);
-        if (!strncmp(p, "@version", 8)) p = skip_space(parse_version(p + 8, &h->range32, line));
+        if (!strncmp(p, "@version", 8)) h->nrange32 = 0;
+        while (!strncmp(p, "@version", 8)) {
+            if (h->nrange32 == MAX_RANGES32)
+                fail(line, "a 32-bit program's declaration holds for %d version groups at most", MAX_RANGES32);
+            p = skip_space(parse_version(p + 8, &h->range32[h->nrange32++], line));
+        }
     }
     if (*p) fail(line, "unexpected text after the hook's handler");
+    for (int x = 0; x < h->nrange32; x++) /* a 32-bit program's groups: one key, apart */
+        for (int y = 0; y < x; y++) {
+            const Range *a = &h->range32[y], *b = &h->range32[x];
+            if (a->key != b->key) fail(line, "%s's version groups for a 32-bit program take two keys", h->symbol);
+            if (a->lo < b->hi && b->lo < a->hi)
+                fail(line, "%s's version groups for a 32-bit program overlap", h->symbol);
+        }
     resolve_buffers(h, line);
 }
 
@@ -1129,7 +1147,7 @@ static int parse_fields(const char* p, int line) {
 static void read_spec(const char* path) {
     char buf[2048];
     int line = lines_read, versioned = 0, version_line = 0, open = 0;
-    Range range = {K_ANY, 0, UNBOUNDED}, any = {K_ANY, 0, UNBOUNDED};
+    Range range[MAX_RANGES32] = {{K_ANY, 0, UNBOUNDED}}, any = {K_ANY, 0, UNBOUNDED};
     FILE* f = fopen(path, "r");
     if (!f) fail(0, "cannot open %s", path);
     if (nspec_read == MAX_SPECS) fail(0, "more than %d specs", MAX_SPECS);
@@ -1148,12 +1166,17 @@ static void read_spec(const char* path) {
             open = !parse_fields(p, line);
             continue;
         }
-        if (!strncmp(p, "@version", 8)) {
-            if (versioned) fail(line, "two @version for one declaration (line %d)", version_line);
-            p = skip_space(parse_version(p + 8, &range, line));
-            versioned = 1, version_line = line;
-            if (!*p) continue;
+        while (!strncmp(p, "@version", 8)) { /* several only before a declaration for a 32-bit program alone */
+            if (versioned == MAX_RANGES32)
+                fail(line, "a 32-bit program's declaration holds for %d version groups at most", MAX_RANGES32);
+            p = skip_space(parse_version(p + 8, &range[versioned], line));
+            if (!versioned) version_line = line;
+            versioned++;
         }
+        if (versioned && !*p) continue;
+        if (versioned > 1 && !keyword(p, "a32"))
+            fail(version_line, "two @version for one declaration: only one for a 32-bit program alone (a32 hook) "
+                               "holds for several version groups");
         if (vita && *p != '[' && !keyword(p, "family"))
             fail(line, "expected a family, a NID hook ([NID] hook ...) or a comment: --vita takes nothing else");
         if (*p == '[' && vita) {
@@ -1161,21 +1184,21 @@ static void read_spec(const char* path) {
             if (versioned) fail(version_line, "a NID names one function of the system's: it has no @version");
             p = parse_nid(p + 1, key, line);
             if (!keyword(p, "hook")) fail(line, "expected 'hook' after the NID");
-            parse_hook(p + 4, line, &any, key, 0);
+            parse_hook(p + 4, line, &any, 1, key, 0);
         } else if (*p == '[') {
             char key[MAX_NAME];
             if (versioned) fail(version_line, "an address hook is for one build of its module: it has no @version");
             p = parse_at(p + 1, key, line);
             if (!keyword(p, "hook")) fail(line, "expected 'hook' after the address");
-            parse_hook(p + 4, line, &any, key, 0);
+            parse_hook(p + 4, line, &any, 1, key, 0);
         } else if (keyword(p, "hook")) {
-            parse_hook(p + 4, line, versioned ? &range : &any, NULL, 0);
+            parse_hook(p + 4, line, versioned ? range : &any, 1, NULL, 0);
         } else if (keyword(p, "a32")) {
             p = skip_space(p + 3);
             if (!keyword(p, "hook")) fail(line, "expected 'hook' after a32");
-            parse_hook(p + 4, line, versioned ? &range : &any, NULL, 1);
+            parse_hook(p + 4, line, versioned ? range : &any, versioned ? versioned : 1, NULL, 1);
         } else if (keyword(p, "struct")) {
-            open = !parse_fields(parse_struct(p + 6, line, versioned ? &range : &any, versioned), line);
+            open = !parse_fields(parse_struct(p + 6, line, versioned ? range : &any, versioned), line);
         } else if (keyword(p, "family")) {
             if (versioned) fail(version_line, "@version goes before a hook or a struct");
             parse_family(p + 6, line);
@@ -1352,10 +1375,12 @@ static void check_hooks(void) {
                            *b = a == &hooks[i] ? &hooks[j] : &hooks[i];
                 int both64 = a->a32 != FOR_A32_ALONE && b->a32 != FOR_A32_ALONE, both32 = a->a32 && b->a32;
                 if ((both64 && a->range.key == K_ANY && b->range.key == K_ANY) ||
-                    (both32 && a->range32.key == K_ANY && b->range32.key == K_ANY))
+                    (both32 && a->range32[0].key == K_ANY && b->range32[0].key == K_ANY))
                     fail(b->line, "%s is hooked on %s too", b->symbol, ref(a->line, b->line));
                 if (both64) check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
-                if (both32) check_ranges(b->symbol, &a->range32, a->line, &b->range32, b->line);
+                for (int x = 0; both32 && x < a->nrange32; x++)
+                    for (int y = 0; y < b->nrange32; y++)
+                        check_ranges(b->symbol, &a->range32[x], a->line, &b->range32[y], b->line);
             }
     for (i = 0; i < nroutes; i++) {
         for (j = 0; j < i; j++)
@@ -1376,7 +1401,7 @@ static void check_hooks(void) {
             h->use[u] = j;
         }
         if (h->a32 != FOR_A32_ALONE) split_hook(i, &h->range, entries, &nentries);
-        if (h->a32) split_hook(i, &h->range32, entries32, &nentries32);
+        for (j = 0; h->a32 && j < h->nrange32; j++) split_hook(i, &h->range32[j], entries32, &nentries32);
     }
 }
 
