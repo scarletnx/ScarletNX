@@ -281,6 +281,8 @@ enum {
     GLUE_ISLAND,
     GLUE_PARTS
 };
+/* a piece of the machine's as a region's last instruction (below): the checks' emitters go through it */
+static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0);
 static void glue_count(Unit* u) {
     u->g->x.seen.glue[u->glue_part] += u->b.n - u->glue_at;
     u->glue_at = u->b.n;
@@ -304,7 +306,7 @@ static void glue_out(Unit* u) {
 #define calldyn(u, tail)              (glue_in((u), GLUE_CALL), calldyn((u), (tail)), glue_out(u))
 #define set_target(u, target)         (glue_in((u), GLUE_CALL), set_target((u), (target)), glue_out(u))
 #define call_sym(u, sym, tail)        (glue_in((u), GLUE_CALL), call_sym((u), (sym), (tail)), glue_out(u))
-#define check_return(u, next)         (glue_in((u), GLUE_CHECK), check_return((u), (next)), glue_out(u))
+#define check_return(u, next)         region_glue((u), SGX_FN_CHECK_RETURN, (long long)(next), 0, 0)
 #define poll_then(u, resume)          (glue_in((u), GLUE_CALL), poll_then((u), (resume)), glue_out(u))
 #define poll_jz(u, label)             (glue_in((u), GLUE_CALL), poll_jz((u), (label)), glue_out(u))
 #define poll_slow(u, resume)          (glue_in((u), GLUE_CALL), poll_slow((u), (resume)), glue_out(u))
@@ -314,15 +316,15 @@ static void glue_out(Unit* u) {
 #define mg_svc(u, next, n, direct)    (glue_in((u), GLUE_TRAP), mg_svc((u), (next), (n), (direct)), glue_out(u))
 #define mg_brk(u, address, imm)       (glue_in((u), GLUE_TRAP), mg_brk((u), (address), (imm)), glue_out(u))
 #define mg_entry(u, index, start)     (glue_in((u), GLUE_FRAME), mg_entry((u), (index), (start)), glue_out(u))
-#define mg_check(u, start, label)     (glue_in((u), GLUE_CHECK), mg_check((u), (start), (label)), glue_out(u))
-#define mg_stale(u, index, given, s)  (glue_in((u), GLUE_CHECK), mg_stale((u), (index), (given), (s)), glue_out(u))
-#define mg_entry_stale(u, index)      (glue_in((u), GLUE_CHECK), mg_entry_stale((u), (index)), glue_out(u))
+#define mg_check(u, start, label)     region_glue((u), SGX_FN_CHECK, (long long)(start), (label), 0)
+#define mg_stale(u, index, given, s)  region_glue((u), SGX_FN_STALE, (long long)(s), (given), (SnxU64)(index))
+#define mg_entry_stale(u, index)      region_glue((u), SGX_FN_ENTRY_STALE, (long long)(index), 0, 0)
 #define mg_entry_fp(u)                (glue_in((u), GLUE_FRAME), mg_entry_fp(u), glue_out(u))
 #define mg_dispatch(u, lab0)          (glue_in((u), GLUE_DISPATCH), mg_dispatch((u), (lab0)), glue_out(u))
 #define mg_pool_island(u)             (glue_in((u), GLUE_ISLAND), mg_pool_island(u), glue_out(u))
-#define mg_if_stale(u, index, label)  (glue_in((u), GLUE_CHECK), mg_if_stale((u), (index), (label)), glue_out(u))
-#define mg_if_x_not(u, r, value, l)   (glue_in((u), GLUE_CHECK), mg_if_x_not((u), (r), (value), (l)), glue_out(u))
-#define mg_if_pc_not(u, value, label) (glue_in((u), GLUE_CHECK), mg_if_pc_not((u), (value), (label)), glue_out(u))
+#define mg_if_stale(u, index, label)  region_glue((u), SGX_FN_IF_STALE, (long long)(index), (label), 0)
+#define mg_if_x_not(u, r, value, l)   region_glue((u), SGX_FN_IF_X_NOT, (long long)(value), (l), (SnxU64)(r))
+#define mg_if_pc_not(u, value, label) region_glue((u), SGX_FN_IF_PC_NOT, (long long)(value), (label), 0)
 #define mg_target_pc(u)               (glue_in((u), GLUE_CALL), mg_target_pc(u), glue_out(u))
 
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
@@ -531,7 +533,14 @@ enum {
     SGX_FN_JTAB,
     SGX_FN_CALL,
     SGX_FN_DISPATCH,
-    SGX_FN_JTABS
+    SGX_FN_JTABS,
+    SGX_FN_CHECK_RETURN,
+    SGX_FN_CHECK,
+    SGX_FN_STALE,
+    SGX_FN_ENTRY_STALE,
+    SGX_FN_IF_STALE,
+    SGX_FN_IF_X_NOT,
+    SGX_FN_IF_PC_NOT
 };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
@@ -564,6 +573,20 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 #endif
         call_target(u, (SnxU64)i->imm, i->disp);
         break;
+    /* the checks: the emitters' own names in parentheses, as the names alone are the instructions' makers here */
+    case SGX_FN_CHECK_RETURN: (check_return)(u, (SnxU64)i->imm); break;
+#ifdef MG_DIRECT_ENTRY
+    case SGX_FN_CHECK: (mg_check)(u, (SnxU64)i->imm, i->disp); break; /* the start imm, the label disp */
+    case SGX_FN_STALE: (mg_stale)(u, (size_t)i->kv[0], i->disp, (SnxU64)i->imm); break;
+#endif
+#ifdef MG_ENTRY_STALE
+    case SGX_FN_ENTRY_STALE: (mg_entry_stale)(u, (size_t)i->imm); break;
+#endif
+#ifdef MG_BOUND
+    case SGX_FN_IF_STALE: (mg_if_stale)(u, (size_t)i->imm, i->disp); break;
+    case SGX_FN_IF_X_NOT: (mg_if_x_not)(u, (unsigned)i->kv[0], (SnxU64)i->imm, i->disp); break;
+    case SGX_FN_IF_PC_NOT: (mg_if_pc_not)(u, (SnxU64)i->imm, i->disp); break;
+#endif
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -579,22 +602,23 @@ static void machine_target(Unit* u, int op, SgD target) {
     i->calls = 1;
 }
 
-/* a piece of the code the machine writes between regions as the region's last instruction (op, its values imm and
-   disp), and the region assembled: sgx_machine_op calls the piece's emitter where the region's bytes end, as it was
+/* a piece of the code the machine writes between regions as the region's last instruction (op, its values imm, disp
+   and k0), and the region assembled: sgx_machine_op calls the piece's emitter where the region's bytes end, as it was
    when called after them */
-static void region_glue(Unit* u, int op, long long imm, int disp) {
+static void region_glue(Unit* u, int op, long long imm, int disp, SnxU64 k0) {
     SgXIns* i;
     qc_pay(u); /* FPSR.QC as the region leaves it, before the piece: flush would put it after the region's last */
     i = sgx_append(&u->g->x, SGX_K_MACHINE);
     i->op = (unsigned char)op;
     i->imm = imm;
     i->disp = disp;
+    i->kv[0] = k0;
     u->glue_last = 1;
     flush(u);
     u->glue_last = 0;
 }
 /* a call of the guest address target (tail: then return): call_target's code */
-static void region_call(Unit* u, SnxU64 target, int tail) { region_glue(u, SGX_FN_CALL, (long long)target, tail); }
+static void region_call(Unit* u, SnxU64 target, int tail) { region_glue(u, SGX_FN_CALL, (long long)target, tail, 0); }
 
 /* a branch's condition at the region's end: JCC to label on its condition code */
 static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
@@ -2862,7 +2886,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             pins(u, 0);
             u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
         }
-        region_glue(u, SGX_FN_DISPATCH, lab0, 0);
+        region_glue(u, SGX_FN_DISPATCH, lab0, 0, 0);
     }
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
@@ -2881,7 +2905,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         }
     }
 #ifdef MG_JTAB
-    region_glue(u, SGX_FN_JTABS, 0, 0);
+    region_glue(u, SGX_FN_JTABS, 0, 0, 0);
 #endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
     glue_count(u);
