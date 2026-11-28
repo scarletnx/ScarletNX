@@ -136,6 +136,9 @@ typedef struct {
        machine's emitters, and whether a region or the function's end is being assembled (its bytes are not it) */
     int glue_part, glue_depth, glue_off;
     size_t glue_at;
+    /* the region being assembled ends in a piece of the machine's (region_glue): the literals' island, which went
+       between the region and the piece where there was one, is the piece's to place, not the region's end's */
+    int glue_last;
 } Unit;
 
 static void* grow(void* p, size_t* cap, size_t need, size_t each) {
@@ -498,7 +501,7 @@ static void flush(Unit* u) {
     u->glue_off = 0;
     u->glue_at = u->b.n;
 #ifdef MG_POOL_REACH
-    if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
+    if (!u->glue_last && u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
 #endif
     g->x.end_dead = 0;
     g->x.end_vdead = 0;
@@ -542,7 +545,14 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 #ifdef MG_JTAB
     case SGX_FN_JTAB: jtab_jump(u, (int)i->imm); break; /* the target in SGX_FN_TARGET (in[0]) */
 #endif
-    case SGX_FN_CALL: call_target(u, (SnxU64)i->imm, i->disp); break; /* the guest address imm; disp: a tail call */
+    case SGX_FN_CALL: /* the guest address imm; disp: a tail call */
+#ifdef MG_POOL_REACH
+        /* where the region's own code ends: the literals' island before the call, as when the region was assembled
+           and the call written after it */
+        if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
+#endif
+        call_target(u, (SnxU64)i->imm, i->disp);
+        break;
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -558,17 +568,22 @@ static void machine_target(Unit* u, int op, SgD target) {
     i->calls = 1;
 }
 
-/* a call of the guest address target (tail: then return) as the region's last instruction, and the region assembled:
-   call_target's code where the region's bytes end, as it was when written after them */
-static void region_call(Unit* u, SnxU64 target, int tail) {
+/* a piece of the code the machine writes between regions as the region's last instruction (op, its values imm and
+   disp), and the region assembled: sgx_machine_op calls the piece's emitter where the region's bytes end, as it was
+   when called after them */
+static void region_glue(Unit* u, int op, long long imm, int disp) {
     SgXIns* i;
-    qc_pay(u); /* FPSR.QC as the region leaves it, before the call: flush would put it after the region's last */
+    qc_pay(u); /* FPSR.QC as the region leaves it, before the piece: flush would put it after the region's last */
     i = sgx_append(&u->g->x, SGX_K_MACHINE);
-    i->op = SGX_FN_CALL;
-    i->imm = (long long)target;
-    i->disp = tail;
+    i->op = (unsigned char)op;
+    i->imm = imm;
+    i->disp = disp;
+    u->glue_last = 1;
     flush(u);
+    u->glue_last = 0;
 }
+/* a call of the guest address target (tail: then return): call_target's code */
+static void region_call(Unit* u, SnxU64 target, int tail) { region_glue(u, SGX_FN_CALL, (long long)target, tail); }
 
 /* a branch's condition at the region's end: JCC to label on its condition code */
 static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
@@ -2694,6 +2709,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     char sym[40];
     u->f = f;
     u->glue_part = GLUE_OTHER, u->glue_depth = 0, u->glue_off = 0, u->glue_at = u->b.n;
+    u->glue_last = 0; /* a function left in the middle of a region's assembly had it set */
     u->index = index;
     u->at = f->count;
     u->nframe = 0;
