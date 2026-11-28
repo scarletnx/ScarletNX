@@ -381,7 +381,16 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
         default:
             if (atomic_load_explicit(&t->on_core, memory_order_relaxed) >= 0)
                 snprintf(s, n, "running on core %d", atomic_load_explicit(&t->on_core, memory_order_relaxed));
-            else
+            else if (g_host.thread.hl_key[kt_ix(t) - 1]) { /* a lock of the host's (kthread_lock_wait) */
+                u32 h = g_host.thread.hl_owner[kt_ix(t) - 1];
+                u64 at = g_host.thread.hl_key[kt_ix(t) - 1] & ~SNX_LOCK_WORD;
+                if (h)
+                    snprintf(s, n, "waiting for the lock at %llx (on the host), held by thread %llu",
+                             (unsigned long long)at, (unsigned long long)kt_at(h)->id);
+                else
+                    snprintf(s, n, "waiting for the lock at %llx (on the host), its holder not known yet",
+                             (unsigned long long)at);
+            } else
                 snprintf(s, n, "%s",
                          atomic_load_explicit(&t->in_svc, memory_order_relaxed)
                              ? "in an SVC off its core (a sleep or an IPC request)"
