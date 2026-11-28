@@ -2853,13 +2853,15 @@ static void rt_copy_present(void) {
     if (g_copy_stats.present_ended > n->most_ended) n->most_ended = g_copy_stats.present_ended;
     g_copy_stats.present = g_copy_stats.present_ended = 0;
 }
+static const char* const g_rt_copy_why[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = "another format",
+                                                        [VK_RT_COPY_CROP] = "a corner",
+                                                        [VK_RT_COPY_FORMAT_CROP] = "a corner in another format",
+                                                        [VK_RT_COPY_FEEDBACK] = "a draw sampling its target",
+                                                        [VK_RT_COPY_GUEST] = "the guest's size",
+                                                        [VK_RT_COPY_TAKE] = "a target taking another's pixels"};
+const char* vk_rt_copy_why(int why) { return why >= 0 && why < VK_RT_COPY_N ? g_rt_copy_why[why] : "none"; }
 void vk_rt_copy_log(void) {
-    static const char* const why[VK_RT_COPY_N] = {[VK_RT_COPY_FORMAT] = "another format",
-                                                  [VK_RT_COPY_CROP] = "a corner",
-                                                  [VK_RT_COPY_FORMAT_CROP] = "a corner in another format",
-                                                  [VK_RT_COPY_FEEDBACK] = "a draw sampling its target",
-                                                  [VK_RT_COPY_GUEST] = "the guest's size",
-                                                  [VK_RT_COPY_TAKE] = "a target taking another's pixels"};
+    const char* const* why = g_rt_copy_why;
     const VkRtCopyCounts* n = &g_copy_stats.n;
     const double presents = n->presents ? (double)n->presents : 1;
     u64 all = 0;
@@ -2909,15 +2911,10 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         Surf* x = *pp;
         if (!x->predraw && x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
             c = x;
-        else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
+        else if ((i32)(g_vk_present - (u32)x->last_used) > (i32)VK_RT_COPY_PRESENTS) {
+            /* the table's epoch at the copy's address moves (vk_rt_copy_free), so that no memo keeps it after this */
             *pp = x->next;
-            for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
-            if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
-            if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
-            vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
-            vk_defer_bytes(x->bytes);
-            SNX_MEM_FREE_D(x, "render targets"); /* crop: rt_copy allocated it with this kind; surf_free reports it too */
-            free(x);
+            vk_rt_copy_free(x);
             continue;
         }
         pp = &x->next;
@@ -2937,6 +2934,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         c->fkey = rt->fkey;
         c->type = rt->type;
         c->is_rt = 1;       /* sampled like one; not in the table, so never found as one */
+        c->copy_why = (u8)why;
         c->msaa = rt->msaa; /* a multisampled target's copy has its samples, which a copy takes as they are */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (c->msaa &&
@@ -3119,6 +3117,7 @@ Surf* vk_rt_save(Surf* rt, u32 set) {
         c->type = VK_IMAGE_VIEW_TYPE_2D;
         c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
         c->predraw = (u8)(set + 1);
+        c->copy_why = VK_RT_COPY_FEEDBACK;
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                   VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
@@ -4022,6 +4021,10 @@ static Surf* tex_check(Surf* t, u64 gva) {
     SNX_ZONE(z, "vk mem texture check");
     [[maybe_unused]] char fname[64];
     g_tex_checks.checks++;
+    /* a storage image kept over t's memory (image_out.c), stored into since t's check: a store kept over an owner
+       already there moves nothing the check asks (memory's GPU write generation, the CPU's writes), and t kept its
+       old texels. Published first, it does */
+    if (vk_gfx_image_pending_besides(gva, t->size, t)) vk_gfx_image_mem_need(gva, t->size);
     int why = 0;
     /* what can change t outside a check (a failed load, a level given up, Auto's read again) */
     if (t->quiet && gva == t->gva && t->upload_valid && !t->bc7_reread) {

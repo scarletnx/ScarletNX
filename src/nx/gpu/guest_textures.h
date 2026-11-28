@@ -21,7 +21,7 @@ u32 gpu_textures(GpuTexture* out, u32 cap);
 /* whether an object is live at gva */
 int gpu_texture_live(u64 gva);
 /* the addresses whose last object ended since the last call, into out, cap at most: how many it gave. The rest stay
-   for the next call. More than the list holds between two calls are dropped: the cache then learns nothing of those */
+   for the next call, however many end between two calls */
 u32 gpu_textures_ended(u64* out, u32 cap);
 /* the objects added since the start: 0 while no front end has texture objects */
 u64 gpu_textures_added(void);

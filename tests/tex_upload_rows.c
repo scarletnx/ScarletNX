@@ -293,6 +293,15 @@ int vk_release_pending(u64 gva, u64 len) {
     (void)gva, (void)len;
     abort();
 }
+/* no storage image is kept in the model: a texture's check has none to publish */
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
+    (void)gva, (void)size, (void)self;
+    return 0;
+}
+void vk_gfx_image_mem_need(u64 gva, u64 size) {
+    (void)gva, (void)size;
+    abort();
+}
 const Renderer* g_renderer; /* read by the stream's check alone */
 /* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
 int vk_astc_keep(Surf* t) {
@@ -710,6 +719,15 @@ u64 vk_surf_reclaim(int list, u32 before, u64 want, int lossy) {
 u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
+}
+/* surface.c's: a copy's views and image go when the frames are done, and its bytes with them */
+void vk_rt_copy_free(Surf* x) {
+    for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+    if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+    if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
+    vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_bytes(x->bytes);
+    free(x);
 }
 u64 vk_tex_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;

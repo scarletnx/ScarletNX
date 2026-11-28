@@ -930,6 +930,52 @@ static void check_cap(void) {
     check_counts(0);
 }
 
+/* The heap at its cap with room in its blocks, but in pieces: every other 4 MiB buffer let go leaves holes of 4 MiB
+   and no longer run. A request of 12 MiB, no larger than the room and larger than any piece, gets memory of its own
+   past the cap, the driver called once, and the report counts it, up to DM_OVER_MAX at once: the request that would
+   take more finds none until one of them goes. One larger than the room still finds none, and so does one where the
+   heap is full with no room in its blocks */
+static void check_fragmented(void) {
+    enum { CAP = 512 };
+    static Held held[CAP];
+    const u64 budget = GIB;
+    DevMemWant gpu = {.at = DM_DEVICE};
+    u32 n = 0;
+    device(0, 1024, 64, budget);
+    while (n < CAP && make(0, 4 * MIB, 4096, ~0u, 0, gpu, &held[n]) == VK_SUCCESS) n++;
+    CHECK(n < CAP);
+    Held none;
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY); /* no room: none */
+    u64 room = 0;
+    for (u32 i = 0; i < n; i += 2)
+        if (drv_heap(held[i].info.type) == 0 && !alone_of(&held[i])) {
+            unmake(&held[i]);
+            room += 4 * MIB;
+        }
+    CHECK(room >= 64 * MIB);
+    const u64 past = g_devmem.past;
+    const u32 calls = g_drv.allocations;
+    enum { FIT = DM_OVER_MAX / (12 * MIB) };
+    static Held big[FIT + 1];
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[0]) == VK_SUCCESS);
+    CHECK(alone_of(&big[0]) && drv_heap(big[0].info.type) == 0 && g_drv.allocations == calls + 1);
+    CHECK(g_devmem.past == past + 1 && g_devmem.past_bytes >= 12 * MIB && g_devmem.over_bytes == 12 * MIB);
+    for (u32 i = 1; i < FIT; i++) CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[i]) == VK_SUCCESS);
+    CHECK(g_devmem.over_bytes == FIT * 12 * MIB);
+    /* past DM_OVER_MAX: none, counted; one of them gone, the next gets its own */
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[FIT]) == VK_ERROR_OUT_OF_DEVICE_MEMORY &&
+          g_devmem.over_refused == 1);
+    unmake(&big[0]);
+    CHECK(g_devmem.over_bytes == (FIT - 1) * 12 * MIB);
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[0]) == VK_SUCCESS && g_devmem.over_bytes == FIT * 12 * MIB);
+    CHECK(make(0, room + 64 * MIB, 4096, ~0u, 0, gpu, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    for (u32 i = 0; i < FIT; i++) unmake(&big[i]);
+    CHECK(!g_devmem.over_bytes);
+    for (u32 i = 0; i < n; i++)
+        if (held[i].mem) unmake(&held[i]);
+    check_counts(0);
+}
+
 /* An image whose size follows the game's (DevMemWant.sized: a render target at a dynamic resolution, a copy of one)
    takes a run of its size class: with the heap at its cap and no other room, one of 11 MiB takes the run one of 10.9
    MiB let go, both of the 11 MiB class. Without the class that run held 10.9 MiB, and the bigger request found none
@@ -1175,10 +1221,10 @@ static void check_threads(void) {
    of a higher class is repaired: those alone move, to blocks of their class. Without it, no block is repaired */
 enum { DEFRAG_N = 256 };
 static Held g_dh[DEFRAG_N];
-static int defrag_round(u64 budget) {
+static int defrag_step(u64 budget, u64 dt) {
     DevMem mems[64];
     void* owners[64];
-    g_devmem.frame += 31;
+    g_devmem.frame += dt;
     const u32 n = vk_devmem_moving(mems, owners, 64, budget);
     /* the moves' frees count toward the forced trim (vk_defer_moved) only out of a block closed to requests: one
        emptied, not one repaired */
@@ -1197,7 +1243,7 @@ static int defrag_round(u64 budget) {
         }
         const Rec* r = &g_devmem.rec[to.mem - 1];
         const Block* k = &g_devmem.block[r->block - 1];
-        CHECK(r->block != from && !k->drain && k->allocs >= 2); /* a block in use, which held something before */
+        CHECK(r->block != from && !k->drain && k->allocs >= 2);        /* a block in use, which held something before */
         if (g_vk.has_pageable) CHECK(k->low == (prio == DM_PRIO_LOW)); /* of its own class */
         /* the block that took it settles: 120 presents, 600 after a repair's move, as a class can change back */
         CHECK(k->drain_skip >= g_devmem.frame + (g_devmem.drain.repair ? 600 : 120));
@@ -1212,14 +1258,14 @@ static int defrag_round(u64 budget) {
     /* while a block is emptied, no request takes its runs */
     if (g_devmem.drain.slot && !g_devmem.drain.repair) {
         Held probe; /* of the class of the block being emptied, which its blocks are */
-        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low,
-                          .moves = 1};
+        DevMemWant gpu = {.at = DM_DEVICE, .image = 1, .low = g_devmem.block[g_devmem.drain.slot - 1].low, .moves = 1};
         CHECK(make(1, 64 * KIB, 4096, ~0u, 0, gpu, &probe) == VK_SUCCESS);
         CHECK(g_devmem.rec[probe.mem - 1].block != g_devmem.drain.slot || !g_devmem.drain.slot);
         unmake(&probe);
     }
     return moved;
 }
+static int defrag_round(u64 budget) { return defrag_step(budget, 31); }
 static void check_defrag(int pageable) {
     const u64 budget = 4 * GIB;
     device(0, 1024, 64, budget);
@@ -1498,6 +1544,244 @@ static void check_no_settings(void) {
         for (u32 a = 0; a < sizeof args / sizeof args[0]; a++) CHECK(strcmp(g_setting_args[i], args[a]));
 }
 
+/* Once a block finishes emptying, the next present picks the next eligible block without waiting 30 presents; once
+   nothing needs emptying, the idle scan rests 30 presents, unless a request fails or goes past the budget while the
+   GPU heap's blocks hold free space in pieces */
+static void check_drain_pace(void) {
+    const u64 budget = 4 * GIB;
+    device(0, 1024, 64, budget);
+    g_vk.has_pageable = 0;
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    for (u32 i = 0; i < DEFRAG_N; i++) {
+        CHECK(make(1, MIB, 4096, ~0u, 0, tex, &g_dh[i]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[i].mem, &g_dh[i]);
+    }
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    /* first block emptied at present 30; the second must start on the very next present, not 30 presents later */
+    CHECK(defrag_step(budget, 30) > 0 && g_devmem.drain.emptied + g_devmem.drain.kept == 1);
+    CHECK(defrag_step(budget, 1) > 0 && g_devmem.drain.emptied + g_devmem.drain.kept == 2);
+    /* drain the rest without 30-present gaps, then check that an idle scan does not re-scan every present */
+    u32 rounds = 0;
+    while (defrag_step(budget, 1) > 0) CHECK(++rounds < 32);
+    CHECK(g_devmem.drain.emptied + g_devmem.drain.kept >= 3 && g_devmem.drain.next == g_devmem.frame + 30);
+    for (u32 i = 0; i < DEFRAG_N; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+    /* a fragmented failure wakes the drain during its 30-present idle rest, and heap_usage past budget counts as over
+       even when this process's own blocks are within it */
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0;
+    while (n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS) {
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        n++;
+    }
+    CHECK(n > 64);
+    /* idle scan finds nothing on full blocks and rests 30 presents */
+    CHECK(defrag_step(GIB, 30) == 0 && !g_devmem.drain.slot);
+    /* free 3 of every 4 allocations in the first four blocks, leaving holes in pieces while the rest stay full */
+    for (u32 i = 0; i < 64; i++)
+        if (i % 4) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    /* inside the 30-present rest, a 20 MiB request hits the cap in pieces and wakes the drain */
+    Held big;
+    CHECK(make(1, 20 * MIB, 4096, ~0u, 0, tex, &big) == VK_SUCCESS);
+    unmake(&big);
+    CHECK(defrag_step(GIB, 1) > 0);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+    /* another process pushing heap_usage past the budget counts as over in drain_pick and returns an emptied block
+       to the driver even while this process's own blocks are within the budget */
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    const u64 cap = GIB - DM_MARGIN;
+    u32 first = 0, second = 0;
+    n = 0;
+    for (;;) {
+        CHECK(n < DEFRAG_N && make(1, MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS);
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        const u32 b = g_devmem.rec[g_dh[n++].mem - 1].block;
+        if (!first) first = b;
+        if (b != first && !second) second = b;
+        if (second && g_devmem.block[second - 1].free.used == g_devmem.block[second - 1].free.units) break;
+    }
+    /* leave 1 MiB in the first block and 3 MiB free in the second: within the budget the 1/8 + block rule skips it */
+    u32 drop1 = 0, drop2 = 0;
+    for (u32 i = 0; i < n; i++) {
+        const u32 b = g_devmem.rec[g_dh[i].mem - 1].block;
+        if (b == first && drop1 < (g_devmem.block[first - 1].size / MIB) - 1) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop1++;
+        } else if (b == second && drop2 < 3) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop2++;
+        }
+    }
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(cap) == 0);
+    pm_unlock(&g_devmem.lk);
+    g_drv.used[0] += cap;
+    vk_devmem_frame();
+    CHECK(g_devmem.block_bytes[0] <= cap);
+    pm_lock(&g_devmem.lk);
+    CHECK(drain_pick(cap) == first);
+    pm_unlock(&g_devmem.lk);
+    CHECK(defrag_step(cap, 30) == 1 && g_devmem.drain.emptied == 1 && !g_devmem.drain.kept);
+    g_drv.used[0] -= cap;
+    vk_devmem_frame();
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
+/* A request that cannot fit in the block being emptied (larger than a block, or larger than its longest free run) does
+   not stop the drain; one whose run fits in it still stops the drain and takes that run */
+static void check_drain_unfit(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0;
+    while (n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS) {
+        vk_devmem_owner(g_dh[n].mem, &g_dh[n]);
+        n++;
+    }
+    CHECK(n > 64);
+    /* pick three 64 MiB blocks: free every other 4 MiB image in the first (32 MiB free, largest run 4 MiB) and 24 MiB
+       in each of the next two so drain_pick chooses the first */
+    u32 blk[3] = {0}, nb = 0;
+    for (u32 i = 0; i < g_devmem.nblock && nb < 3; i++)
+        if (g_devmem.block[i].mem && !g_devmem.block[i].own && g_devmem.block[i].size == 64 * MIB) blk[nb++] = i + 1;
+    CHECK(nb == 3);
+    u32 seen = 0, drop_b = 0, drop_c = 0;
+    for (u32 i = 0; i < n; i++) {
+        const u32 b = g_devmem.rec[g_dh[i].mem - 1].block;
+        if (b == blk[0] && (seen++ % 2)) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        } else if (b == blk[1] && drop_b < 6) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop_b++;
+        } else if (b == blk[2] && drop_c < 6) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+            drop_c++;
+        }
+    }
+    DevMem mems[64];
+    void* owners[64];
+    g_devmem.frame += 31;
+    CHECK(vk_devmem_moving(mems, owners, 64, 64 * MIB) > 0 && g_devmem.drain.slot == blk[0]);
+    CHECK(g_devmem.block[blk[0] - 1].free.largest * DM_UNIT == 4 * MIB);
+    /* refill the 12 holes in the other two blocks so only the draining block has free runs left */
+    Held fill[12];
+    u32 nf = 0;
+    while (nf < 12) {
+        CHECK(make(1, 4 * MIB, 4096, ~0u, 0, tex, &fill[nf]) == VK_SUCCESS);
+        CHECK(g_devmem.rec[fill[nf].mem - 1].block != blk[0]);
+        nf++;
+    }
+    /* larger than a block (75 MiB > 64 MiB): fails, drain stays on */
+    Held h;
+    CHECK(make(1, 75 * MIB, 4096, ~0u, 0, tex, &h) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    CHECK(g_devmem.drain.slot == blk[0] && g_devmem.block[blk[0] - 1].drain && !g_devmem.drain.gave_up);
+    /* larger than the draining block's longest run (8 MiB > 4 MiB): goes past budget in pieces, drain stays on */
+    CHECK(make(1, 8 * MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS && alone_of(&h));
+    CHECK(g_devmem.drain.slot == blk[0] && g_devmem.block[blk[0] - 1].drain && !g_devmem.drain.gave_up);
+    unmake(&h);
+    /* fits in the draining block's 4 MiB run: stops the drain and takes a run there */
+    CHECK(make(1, 4 * MIB, 4096, ~0u, 0, tex, &h) == VK_SUCCESS);
+    CHECK(!g_devmem.drain.slot && g_devmem.drain.gave_up == 1 && g_devmem.rec[h.mem - 1].block == blk[0]);
+    unmake(&h);
+    while (nf) unmake(&fill[--nf]);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) {
+            vk_devmem_owner(g_dh[i].mem, NULL);
+            unmake(&g_dh[i]);
+        }
+    check_counts(0);
+}
+
+/* A request larger than half a block (> 32 MiB on a 64 MiB block cap) takes dedicated memory from the start even when
+   a block has a free run that large, so freeing it returns its memory straight to the driver instead of leaving a huge
+   hole pinned by smaller allocations; one of half a block or less still takes a block's free run */
+static void check_half_block(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, 4 * GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0, blk = 0;
+    for (;;) {
+        CHECK(n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS);
+        const u32 b = g_devmem.rec[g_dh[n++].mem - 1].block;
+        if (!blk && g_devmem.block[b - 1].size == 64 * MIB) blk = b;
+        if (blk && g_devmem.block[blk - 1].free.used == g_devmem.block[blk - 1].free.units) break;
+    }
+    /* free the last 12 of 16 images in the 64 MiB block: 16 MiB stays, 48 MiB contiguous free */
+    u32 kept = 0;
+    for (u32 i = 0; i < n; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == blk && ++kept > 4) unmake(&g_dh[i]);
+    CHECK(g_devmem.block[blk - 1].free.largest * DM_UNIT == 48 * MIB);
+    const u64 used0 = g_drv.used[0];
+    Held big, mid;
+    CHECK(make(1, 40 * MIB, 4096, ~0u, 0, tex, &big) == VK_SUCCESS);
+    CHECK(alone_of(&big) && g_drv.used[0] == used0 + 40 * MIB);
+    unmake(&big);
+    CHECK(g_drv.used[0] == used0);
+    /* half a block or less (20 MiB <= 32 MiB) still takes the block's free run with no driver allocation */
+    const u32 calls = g_drv.allocations;
+    CHECK(make(1, 20 * MIB, 4096, ~0u, 0, tex, &mid) == VK_SUCCESS);
+    CHECK(!alone_of(&mid) && g_drv.allocations == calls && g_devmem.rec[mid.mem - 1].block == blk);
+    unmake(&mid);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) unmake(&g_dh[i]);
+    check_counts(0);
+}
+
+/* An empty spare block kept in a heap is given back when a request in that heap finds no room (such as a dedicated
+   allocation larger than half a block), letting the request succeed within the budget instead of spilling past it */
+static void check_empty_spare_give(void) {
+    DevMemWant tex = {.at = DM_DEVICE, .image = 1, .moves = 1};
+    device(0, 1024, 64, GIB);
+    g_vk.has_pageable = 0;
+    u32 n = 0;
+    while (n < DEFRAG_N && make(1, 4 * MIB, 4096, ~0u, 0, tex, &g_dh[n]) == VK_SUCCESS) n++;
+    CHECK(n > 64);
+    /* empty one 64 MiB block: kept as the kind's one empty spare while the heap stays at its cap */
+    u32 blk = 0;
+    for (u32 i = 0; i < g_devmem.nblock && !blk; i++)
+        if (g_devmem.block[i].mem && !g_devmem.block[i].own && g_devmem.block[i].size == 64 * MIB) blk = i + 1;
+    CHECK(blk);
+    for (u32 i = 0; i < n; i++)
+        if (g_devmem.rec[g_dh[i].mem - 1].block == blk) unmake(&g_dh[i]);
+    CHECK(g_devmem.block[blk - 1].mem && !g_devmem.block[blk - 1].allocs);
+    /* a 54 MiB request (> half a block) needs dedicated memory: giving back the 64 MiB spare makes room under cap */
+    Held big;
+    CHECK(make(1, 54 * MIB, 4096, ~0u, 0, tex, &big) == VK_SUCCESS);
+    CHECK(alone_of(&big) && !g_devmem.past && !g_devmem.over_bytes);
+    unmake(&big);
+    for (u32 i = 0; i < n; i++)
+        if (g_dh[i].mem) unmake(&g_dh[i]);
+    check_counts(0);
+}
+
 int main(void) {
     vkGetPhysicalDeviceMemoryProperties = memory_properties;
     vkGetPhysicalDeviceMemoryProperties2 = memory_properties2;
@@ -1524,10 +1808,15 @@ int main(void) {
     check_repair_end();
     check_drain_alone();
     check_drain_room();
+    check_drain_pace();
+    check_drain_unfit();
+    check_half_block();
+    check_empty_spare_give();
     check_kinds();
     check_kind_fallback();
     check_keep();
     check_cap();
+    check_fragmented();
     check_size_class();
     check_atoms(64);
     check_atoms(4096);

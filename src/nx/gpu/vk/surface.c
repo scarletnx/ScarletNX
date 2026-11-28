@@ -212,6 +212,7 @@ void vk_surf_touch(Surf* s) {
     lru_link(r, kind);
 }
 static int lossless(const Surf* s);
+static u64 rt_copies_let_go(Surf* s, u32 before, u64 want);
 /* s's pixels can be had again now (written back, loaded, or left undefined) and are taken out of the aged list, else
    a lossless eviction wouldn't find it and the idle one would keep it for five minutes. Into its first list in order
    of last use: near the old end, as everything there was used after everything aged, past only the others relisted */
@@ -2498,17 +2499,20 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     u64 size = rt_bytes(s), cpu = 0;
     VkOwnRes* r;
     *k = (VkImageKeep){0};
-    if (!own_traps() || !size || (s->gva >> 63) || ((s->gva | size) & 0xFFF) || !surf_publishable(s) ||
-        gmmu_run(s->gva, size, &cpu) != size || vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS))
-        return 0;
+    if (!own_traps()) return k->why = VK_IMG_KEEP_NO_TRAPS, 0;
+    if (!size || (s->gva >> 63)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if ((s->gva | size) & 0xFFF) return k->why = VK_IMG_KEEP_UNALIGNED, 0;
+    if (!surf_publishable(s)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if (gmmu_run(s->gva, size, &cpu) != size) return k->why = VK_IMG_KEEP_RUNS, 0;
+    if (vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS)) return k->why = VK_IMG_KEEP_CPU_READ, 0;
     if ((r = span_owner(cpu, size, &k->off)))
         vk_own_res_ref(r);
     else { /* memory's bytes, with the targets pending over them, as a release's publish stages them */
         u32 mem_wgen = s->mem_wgen;
-        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return 0;
+        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
         if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
@@ -2517,7 +2521,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         vk_own_publish(cpu, size, r, 0);
         if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         k->made = 1;
         if (!s->is_rt) vk_tex_note_writeback(s); /* its image is memory's bytes, by their owner */
@@ -2930,6 +2934,10 @@ void vk_rt_note_read(Surf* s) {
     vk_surf_touch(s);
     if (!s->is_rt) return;
     if (s->aside) rt_aside_check(s);
+    /* a storage image kept over the target's memory (image_out.c), stored into since: a store kept over an owner
+       already there moves nothing asked below, and the target kept its old pixels. Published first, it does, as
+       texture.c's tex_check does for a texture */
+    if (vk_gfx_image_pending_besides(s->gva, rt_bytes(s), s)) vk_gfx_image_mem_need(s->gva, rt_bytes(s));
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
     if (s->gw == gpu_mem_generation()) return;
@@ -3245,8 +3253,9 @@ static int tex_superseded(const Surf* s) {
     return !s->is_rt && s->took_drawn && s->size && span_drawn_over(s, s->gva, s->size, s->took_wseq);
 }
 void vk_tex_took(Surf* t) { t->took_wseq = g_wseq; }
+static u64 g_copies_gone, g_copies_gone_bytes; /* rt_copies_let_go's, so far: for the statistics */
 void vk_rt_kinds(VkRtKinds* k) {
-    *k = (VkRtKinds){0};
+    *k = (VkRtKinds){.copies_gone = g_copies_gone, .copies_gone_bytes = g_copies_gone_bytes};
     for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
         for (u32 r = g_rows.lists[lru].head; r; r = g_rows.lru[r].next) {
             const Surf* s = g_rows.surf[r];
@@ -3257,6 +3266,10 @@ void vk_rt_kinds(VkRtKinds* k) {
             for (const Surf* c = s->crop; c; c = c->next) {
                 k->copies++;
                 k->copy_bytes += c->bytes;
+                if (c->copy_why < VK_RT_COPY_N) {
+                    k->copies_by[c->copy_why]++;
+                    k->copy_bytes_by[c->copy_why] += c->bytes;
+                }
             }
         }
 }
@@ -3517,7 +3530,11 @@ static u64 rt_give_way(Surf* s, int lossy) {
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch());
         return surf_evict(s);
     }
-    if (s->demoted) return 0;
+    /* its copies go whichever way it stays: a bind that asks for one makes it again from s (rt_copy), and none asked
+       while s went unused this long. They stayed in the GPU's memory with s set aside or moved: a game at a dynamic
+       resolution held 1.9 GB of copies while its heap was at the budget */
+    const u64 copies = rt_copies_let_go(s, g_vk_present + 1, ~0ull);
+    if (s->demoted) return copies;
     const char* no = "";
     const u64 moved = rt_demote(s, &no);
     if (moved || lossy != VK_RECLAIM_ANY) {
@@ -3525,7 +3542,7 @@ static u64 rt_give_way(Surf* s, int lossy) {
         SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: %s", s->w, s->h,
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch(),
                    moved ? "moved to system memory, set aside" : "idle, set aside");
-        return moved;
+        return moved + copies;
     }
     g_rt_sys.lost++;
     g_rt_sys.lost_bytes += s->bytes;
@@ -3536,7 +3553,7 @@ static u64 rt_give_way(Surf* s, int lossy) {
         s->w, s->h, (unsigned long long)(s->gva & ~(1ull << 63)), s->fkey, (unsigned long long)(s->bytes >> 10), no);
     SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: under budget pressure, pixels only here", s->w,
                s->h, (unsigned long long)(s->bytes >> 10), vk_ww_epoch());
-    return surf_evict(s);
+    return copies + surf_evict(s);
 }
 static u64 surf_evict(Surf* s) {
     if (s->row && lru_kind(s->row) == VK_LRU_TEX) vk_tex_evicted(s); /* statistics: one made again later counts */
@@ -3631,6 +3648,45 @@ static u64 rt_reclaim_superseded(u32 before, u64 want) {
             if (s->layout != VK_IMAGE_LAYOUT_UNDEFINED && rt_superseded(s) && !vk_gfx_image_holds(s))
                 freed += surf_evict(s);
         }
+    return freed;
+}
+void vk_rt_copy_free(Surf* x) {
+    surf_changed(x->gva); /* the table's epoch at its address moves: no texture memo keeps the copy after this */
+    for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+    if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+    if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
+    vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_bytes(x->bytes);
+    SNX_MEM_FREE_D(x, "render targets"); /* rt_copy allocated it with this kind */
+    free(x);
+}
+/* rt_copy lets a target's old copies go only when a bind asks it for another copy, and a game at a dynamic resolution
+   that samples its targets whole again at full size asks for none: the copies of its corners at the 15 to 20 sizes
+   it went through stayed until the targets went, 270 of them and 848 MB where three were in use each frame. A trim
+   under pressure lets go of those no bind asked for in VK_RT_COPY_TRIM_PRESENTS, as a lossless step */
+/* s's copies no bind asked for since `before`, up to want bytes: their bytes. Not a feedback draw's save copy
+   (predraw) */
+static u64 rt_copies_let_go(Surf* s, u32 before, u64 want) {
+    u64 freed = 0;
+    for (Surf** pp = &s->crop; *pp && freed < want;) {
+        Surf* x = *pp;
+        if (x->predraw || (i32)((u32)x->last_used - before) >= 0) {
+            pp = &x->next;
+            continue;
+        }
+        *pp = x->next;
+        freed += x->bytes;
+        g_copies_gone++;
+        g_copies_gone_bytes += x->bytes;
+        vk_rt_copy_free(x);
+    }
+    return freed;
+}
+static u64 rt_copies_reclaim(u32 before, u64 want) {
+    u64 freed = 0;
+    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED && freed < want; lru += LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head; r && freed < want; r = g_rows.lru[r].next)
+            freed += rt_copies_let_go(g_rows.surf[r], before, want - freed);
     return freed;
 }
 u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
@@ -3858,10 +3914,10 @@ static u64 trim_head(u64 budget) {
     if (head > (256ull << 20)) head = 256ull << 20;
     return head > budget / 4 ? budget / 4 : head;
 }
-static u32 g_forced;    /* the present a failed allocation last forced a trim (+1) */
-static u32 g_heap_swept; /* the present the heap's own use last freed the superseded targets (+1) */
-static u32 g_oom;       /* the present an image allocation last found no memory (+1) */
-static u64 g_oom_bytes; /* the smallest size that found none in that present */
+static u32 g_forced;     /* the present a failed allocation last forced a trim (+1) */
+static u32 g_heap_swept; /* the present the heap's own use last swept dead entries (+1) */
+static u32 g_oom;        /* the present an image allocation last found no memory (+1) */
+static u64 g_oom_bytes;  /* the smallest size that found none in that present */
 static u32 g_oom_target; /* the same of render targets */
 static u64 g_oom_target_bytes;
 u64 vk_mem_trimmed(void) { return g_trimmed; }
@@ -4044,24 +4100,30 @@ void vk_mem_trim(u64 extra, int force) {
     vk_mem_use(&usage, &budget);
     usage += extra;
     const u64 head = trim_head(budget);
-    if (force) { /* the allocation's size, less what evictions before it are releasing already: not what moves
-                    release, which goes back to a block no request takes while it is emptied */
-        u64 gone = vk_deferred_bytes() - vk_deferred_moved();
-        need = extra > gone ? extra - gone : 0;
+    if (force) {
+        /* An allocation found no memory: the heap is at its budget, or the free space inside its blocks is in pieces
+           no run of the request's fits. The use the caches count leaves those pieces out (vk_mem_use), and in a
+           racing game at a dynamic resolution it stayed 0.4 to 1.1 GB under the steps' marks while the heap was at
+           its budget: each forced trim then freed nothing, 1,101 allocations found none and the draws that needed them
+           went without, the scene flickering. The heap's own use then, and the whole allocation: what evictions
+           before it release goes back to the blocks as more pieces, which need not hold its run */
+        const u64 heap = vk_mem_heap_use() + vk_deferred_bytes() + extra;
+        if (heap > usage) usage = heap;
+        need = extra;
     } else if (usage <= vk_mem_trim_start(budget)) {
-        /* The caches count the free space inside the blocks as room, but a request takes only a run of its own kind
-           and size, and the driver's heap can be at its budget while that space is in pieces no request takes. Then
-           the render targets later ones drew all over go after two presents, once a present, though the hold below
-           would keep them for a second: they are lossless. A game at a dynamic resolution that places its frame's
-           targets in one pool, at offsets that move each frame, made about 30 targets a frame at 30 frames a
-           second. A second of them held 5 to 8 GB of a 14.6 GB budget while the caches counted 3 GB of room in the
-           blocks, so no trim ran until an image found no memory, every second and a half: the forced trim then freed
-           5 to 8 GB of targets, too late for that image, and its draws went without it. The textures that took
-           targets' pixels where later targets drew all over go with them (tex_superseded) */
+        /* The caches count the free space inside the blocks as room, so freeing live entries inside them only widens
+           the holes without lowering vk_mem_heap_use until whole blocks empty: running the trim's steps here thrashed
+           live textures and targets and oscillated Auto ASTC while vk_mem_use fell to 4 GB of an 11 GB budget. Sweep
+           only what is already dead (superseded surfaces, ended texture objects and stale copies), once a present,
+           and leave live entries until vk_mem_use passes the start or an allocation fails */
         if (g_heap_swept != g_vk_present + 1 && vk_mem_heap_use() + extra > vk_mem_trim_start(budget)) {
             g_heap_swept = g_vk_present + 1;
-            g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
-            g_trimmed += vk_tex_reclaim_superseded(vk_present_before(0, 2), ~0ull);
+            const u32 before = vk_present_before(0, 2);
+            g_trimmed += vk_rt_reclaim_superseded(before, ~0ull);
+            g_trimmed += vk_tex_reclaim_superseded(before, ~0ull);
+            g_trimmed += rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
+            ended_collect();
+            g_trimmed += ended_reclaim(~0ull, before);
         }
         return;
     }
@@ -4089,9 +4151,11 @@ void vk_mem_trim(u64 extra, int force) {
        presents (21% in a quieter one) had the shape of one freed in the 120 presents before. Each was a new image
        and, for the large ones, memory of its own: a call to the driver of 0.64 ms where it moves memory, 0.29 ms
        where it doesn't. A trim for an allocation (force) still takes them after two presents */
-    const u32 superseded_before = g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8)
-                                                               : vk_present_before(0, 2);
-    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull);
+    const u32 superseded_before =
+        g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8) : vk_present_before(0, 2);
+    /* the copies of targets no bind asked for lately go with them: made again from their targets */
+    const u32 copy_before = vk_present_before(0, force ? VK_RT_COPY_PRESENTS : VK_RT_COPY_TRIM_PRESENTS);
+    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) + rt_copies_reclaim(copy_before, ~0ull);
     const u64 tex_superseded_bytes = vk_tex_reclaim_superseded(superseded_before, ~0ull);
     static const struct {
         u32 ms, presents;

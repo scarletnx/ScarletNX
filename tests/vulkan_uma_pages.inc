@@ -297,3 +297,149 @@ static int check_uma_pages_partial(void) {
            vk_uma_can_dmabuf() ? "imports and dma-bufs" : "imports");
     return 0;
 }
+
+/* A write in place on a page in no region (a region of part of a window, as above) is stamped in the tables of before,
+   and the next read of it waits for it behind a barrier (order). Once a barrier came after it, the reads in place
+   elsewhere walk those tables no more: a flag set at the first such page made each read of every region walk them, in
+   each of the 6000 reads a present of one game's race. Then the page is written in place again, and its next read
+   walks them and gets its barrier */
+#define UPG_O  (HEAP_BASE + 0x2a000000)
+#define UPG_GO 0x5fc000000ull
+static int check_uma_pages_old(void) {
+    VkBuffer b, w;
+    u64 o, wo;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int copies = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 1;
+    CHECK(mem_map(UPG_O + 0x1f0000, 0x20000, MS_NORMAL, PERM_RW) == 0); /* no window whole */
+    gmmu_map(UPG_GO, UPG_O + 0x1f0000, 0x20000);
+    CHECK(mem_map(UPG_O + 0x400000, 0x200000, MS_NORMAL, PERM_RW) == 0); /* a window whole: a region's */
+    gmmu_map(UPG_GO + 0x400000, UPG_O + 0x400000, 0x200000);
+    memset(GP(UPG_O + 0x1f0000), 0x31, 0x20000);
+    memset(GP(UPG_O + 0x400000), 0x32, 0x10000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    /* the write in place on the region of part of a window, and the read of it after a barrier */
+    CHECK(vk_buf_copy_writable(UPG_GO + 0xf000, 0x100, &w, &wo, 1));
+    const int inplace = !vk_buf_pending(UPG_GO + 0xf000, 0x100);
+    vk_buf_writable_commit();
+    u64 walks = vk_uma_old_walks(), bars = vk_uma_barrier_count();
+    CHECK(vk_buf_get_strict(UPG_GO + 0xf000, 0x100, &b, &o));
+    const int first = vk_uma_old_walks() > walks && vk_uma_barrier_count() > bars;
+    /* the region's reads, through the chain at the first, after that barrier */
+    CHECK(vk_buf_get_input(UPG_GO + 0x400000, 0x100, 4, &b, &o));
+    walks = vk_uma_old_walks();
+    u64 hits, blk, hits0;
+    vk_uma_fast_counts(&hits0, &blk);
+    for (u32 i = 0; i < 64; i++) CHECK(vk_buf_get_input(UPG_GO + 0x400000 + i * 0x100, 0x100, 4, &b, &o));
+    vk_uma_fast_counts(&hits, &blk);
+    const u64 region_walks = vk_uma_old_walks() - walks;
+    const int fast = hits - hits0 == 64;
+    /* written in place again: its read walks them and waits behind a barrier */
+    CHECK(vk_buf_copy_writable(UPG_GO + 0xf000, 0x100, &w, &wo, 1));
+    vk_buf_writable_commit();
+    walks = vk_uma_old_walks();
+    bars = vk_uma_barrier_count();
+    CHECK(vk_buf_get_strict(UPG_GO + 0xf000, 0x100, &b, &o));
+    const int again = vk_uma_old_walks() > walks && vk_uma_barrier_count() > bars;
+    vk_finish();
+    vk_unlock();
+    CHECK(mem_unmap(UPG_O + 0x1f0000, 0x20000) == 0 && mem_unmap(UPG_O + 0x400000, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    g_settings.guest_buffers_copied = copies;
+    if (!inplace || !first || !fast || region_walks || !again)
+        fprintf(stderr,
+                "page model, the tables of before: written in place %d, its read walked them behind a barrier %d; 64 "
+                "reads of a region bound by the fast path %d, walked them %llu times after a barrier (0 expected); "
+                "written again, read behind a barrier %d\n",
+                inplace, first, fast, (unsigned long long)region_walks, again);
+    CHECK(inplace && first && fast && !region_walks && again);
+    printf("in place, the page model: a region's reads walk the tables of the pages in no region only while a write "
+           "there waits for its barrier\n");
+    return 0;
+}
+
+/* A program whose write in place a CPU reader waited for while it was still in the submission being recorded has its
+   dispatches go to the GPU at once (vk_uma_read_soon), each in a submission of its own, for as long as a reader waited
+   for one of its writes in the last 600 presents. Kept for good, a reader that came once, as in a game's loading,
+   kept a race's programs going at once after it, with no reader left. A reader of a write already submitted keeps
+   the program going at once */
+#define UPG_S  (HEAP_BASE + 0x2a800000)
+#define UPG_GS 0x5fb000000ull
+/* prog's write of 256 bytes in place, recorded; submit: submitted, behind 4 GiB of fills in its submission, so a
+   reader that comes next waits for a submission the GPU has not done (as usr_busy has a load wait for a store) */
+static int upg_soon_write(u64 prog, int submit) {
+    VkBuffer w, b;
+    u64 wo, at;
+    vk_lock();
+    if (submit) {
+        vk_render_end();
+        CHECK(vk_stage_device(16u << 20, 16, &b, &at));
+        for (u32 i = 0; i < 256; i++) {
+            vk_all_barrier(vk_cmd()); /* each fill after the one before */
+            rec_CmdFillBuffer(vk_cmd(), b, at, 16u << 20, i);
+        }
+    }
+    vk_uma_writer(prog);
+    CHECK(vk_buf_copy_writable(UPG_GS + 0x100, 256, &w, &wo, 1));
+    const int inplace = !vk_buf_pending(UPG_GS + 0x100, 256);
+    CHECK(!owned_test_fill(w, wo, 256, 0x51));
+    vk_buf_writable_commit();
+    vk_uma_writer(0);
+    if (submit) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_unlock();
+    CHECK(inplace);
+    return 0;
+}
+static int check_uma_soon(void) {
+    const u64 prog = 0x5eedc0de5eedull;
+    const u32 present = g_vk_present;
+    u8 bytes[16];
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    const int copies = g_settings.guest_buffers_copied;
+    g_settings.guest_buffers_copied = 1;
+    CHECK(mem_map(UPG_S, 0x200000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UPG_GS, UPG_S, 0x200000);
+    memset(GP(UPG_S), 0x50, 0x1000);
+    g_renderer->mem_may_have_changed();
+    /* the reader waits for the write still in the submission being recorded */
+    const int before = vk_uma_read_soon(prog);
+    CHECK(!upg_soon_write(prog, 0));
+    CHECK(!gmem_read(UPG_GS + 0x100, bytes, sizeof bytes));
+    const int added = vk_uma_read_soon(prog) && bytes[0] == 0x51;
+    g_vk_present = present + 601;
+    const int expired = !vk_uma_read_soon(prog);
+    /* a reader that waits for a submitted write, 500 presents on, keeps it 600 more */
+    g_vk_present = present + 500;
+    CHECK(!upg_soon_write(prog, 1));
+    const u64 waits = vk_uma_out_waits();
+    CHECK(!gmem_read(UPG_GS + 0x100, bytes, sizeof bytes));
+    const int waited = vk_uma_out_waits() > waits;
+    g_vk_present = present + 1100;
+    const int kept = vk_uma_read_soon(prog);
+    g_vk_present = present + 1101;
+    const int gone = !vk_uma_read_soon(prog);
+    g_vk_present = present;
+    vk_lock();
+    vk_finish();
+    vk_unlock();
+    CHECK(mem_unmap(UPG_S, 0x200000) == 0);
+    g_renderer->mem_may_have_changed();
+    g_settings.guest_buffers_copied = copies;
+    if (before || !added || !expired || !waited || !kept || !gone)
+        fprintf(stderr,
+                "dispatches at once: before any reader %d, after one waited %d, gone 601 presents later %d (1 "
+                "expected); a reader of a submitted write 500 presents on: waited %d, still there 600 later %d, "
+                "gone 601 later %d\n",
+                before, added, expired, waited, kept, gone);
+    CHECK(!before && added && expired && waited && kept && gone);
+    printf("in place: a program's dispatches go at once while a CPU reader waited for its writes in the last 600 "
+           "presents\n");
+    return 0;
+}

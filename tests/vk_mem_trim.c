@@ -10,7 +10,10 @@
    target whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
-   nowhere (flush_land). No Vulkan loader, device or GPU is used:
+   nowhere (flush_land). The copies of a live target that no bind asked for in VK_RT_COPY_TRIM_PRESENTS go under the
+   trims' pressure, and stay with none (rt_copies_reclaim). A trim for an allocation counts the heap's own use, where
+   the caches count the free space inside its blocks as room. A target set aside or moved into system memory lets its
+   copies go, but a save copy. No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -236,6 +239,8 @@ int vk_bc1_tight(const char* why) { return 0; }
 void vk_tex_later_forget(Surf* s) {}
 /* no draw recorded and not submitted holds an image */
 int vk_gfx_image_holds(const Surf* s) { return 0; }
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) { return 0; }
+void vk_gfx_image_mem_need(u64 gva, u64 size) { stub_hit("vk_gfx_image_mem_need"); }
 /* a target's image and views go when the frames are done, and the pages its pixels cover with it */
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {}
 void pend_add_va(PendPages* t, u64 gva, u64 size, int delta) {}
@@ -258,8 +263,9 @@ void vk_mem_use(u64* usage, u64* budget) {
 u64 vk_mem_heap_use(void) { return g_heap_use; }
 /* the present `presents` ago, or 60 more where a time is asked too: a second is 60 presents here */
 u32 vk_present_before(u64 ago_ns, u32 presents) { return g_vk_present - presents - (ago_ns ? 60 : 0); }
-u64 vk_deferred_bytes(void) { return 0; }
-u64 vk_deferred_moved(void) { return 0; }
+/* what evictions before now are releasing, which the frames in flight still hold (cmd.c) */
+static u64 g_releasing;
+u64 vk_deferred_bytes(void) { return g_releasing; }
 void vk_defer_bytes(u64 bytes) { g_deferred += bytes; }
 void logf_(int lvl, const char* fmt, ...) {}
 
@@ -342,6 +348,68 @@ static int heap_full_takes(int heap_full, u32 ago) {
     CHECK(targets_held() == 0 && !g_ndrawn);
     g_heap_use = 0;
     return held == 1;
+}
+
+/* A live target that the game samples whole again holds the copies rt_copy made of its corners at sizes it went
+   through, which rt_copy lets go only when a bind asks it for another copy. A trim under pressure lets go of those no
+   bind asked for in VK_RT_COPY_TRIM_PRESENTS presents, with their bytes: a trim for headroom (how 1), and a trim while
+   the heap is at its budget though the caches count room in the blocks (2). The copy a bind asked for 100 presents
+   ago, a feedback draw's save copy (predraw) and the target stay. With no pressure (0) none goes: a game at a dynamic
+   resolution asks again for the copies of the sizes it goes back to. 1 when it went so */
+static int copies_go(int how) {
+    static const u32 ago[] = {VK_RT_COPY_TRIM_PRESENTS + 100, VK_RT_COPY_TRIM_PRESENTS + 200,
+                              VK_RT_COPY_TRIM_PRESENTS + 400, 100, VK_RT_COPY_TRIM_PRESENTS + 100};
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* rt = target(0x60000000, 8 << 20, 1);
+    rt->last_used = g_vk_present;
+    Surf* kept[2] = {NULL, NULL};
+    for (int i = 0; i < 5; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = rt->gva;
+        c->bytes = (u64)(i + 1) << 20;
+        c->last_used = g_vk_present - ago[i];
+        c->predraw = i == 4;
+        c->next = rt->crop;
+        rt->crop = c;
+        if (i >= 3) kept[i - 3] = c;
+    }
+    VkRtKinds was, now;
+    vk_rt_kinds(&was);
+    g_deferred = 0;
+    if (how == 0) {
+        g_use = vk_mem_trim_start(g_budget) - trim_head(g_budget);
+        g_heap_use = g_use;
+        vk_mem_trim(0, 0);
+        g_heap_use = 0;
+    }
+    if (how == 1) {
+        g_use = g_budget - trim_head(g_budget) * 3 / 4;
+        vk_mem_trim(0, 0);
+    }
+    if (how == 2) {
+        g_use = vk_mem_trim_start(g_budget) - trim_head(g_budget);
+        g_heap_use = g_budget;
+        vk_mem_trim(0, 0);
+        g_heap_use = 0;
+    }
+    u32 left = 0;
+    for (const Surf* x = rt->crop; x; x = x->next) left++;
+    vk_rt_kinds(&now); /* the report's counts: the copies held, and those let go */
+    const u64 gone = now.copies_gone - was.copies_gone, gone_bytes = now.copies_gone_bytes - was.copies_gone_bytes;
+    const int went = how ? left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 &&
+                               now.copies == 2 && now.copy_bytes == 9 << 20 && gone == 3 && gone_bytes == 6 << 20
+                         : left == 5 && !g_deferred && now.copies == 5 && !gone;
+    if (!went || targets_held() != 1)
+        fprintf(stderr,
+                "copies_go(%d): %u copies left, %llu bytes deferred, %u targets; the report: %u held, %llu let go\n",
+                how, left, (unsigned long long)g_deferred, targets_held(), now.copies, (unsigned long long)gone);
+    const int target_stays = targets_held() == 1;
+    surf_evict(rt);
+    CHECK(targets_held() == 0);
+    return went && target_stays;
 }
 
 /* A texture of 1 MB at 0x50000000 that took pixels from targets when the surfaces' write count was 10, last used
@@ -474,6 +542,216 @@ static int sys_heap_short(void) {
     return oldest && hot_stays && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
 }
 
+/* A trim for an allocation that found no memory while the free space inside the heap's blocks is in pieces: the use
+   the caches count (vk_mem_use, without those pieces) is under every step's mark, while the heap's own use is at its
+   budget. A superseded target satisfies `need`, so only counting the heap's own use reaches the lossy step and takes
+   the target with pixels memory lacks. 1 when both targets went */
+static int forced_in_pieces(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* s = target(0x70000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    Surf* old = target(0x70800000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x70800000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(s));
+    g_use = g_budget - 3 * trim_head(g_budget); /* under every step's mark */
+    g_heap_use = g_budget;
+    g_releasing = 0;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 1 && g_deferred == 32 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_in_pieces: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    return went;
+}
+
+/* A trim for an allocation while both vk_mem_use and the raw heap use are under every step's mark, and evictions
+   before it are releasing more than the allocation: `need` stays the full allocation rather than subtracting what is
+   releasing, so the lossy step still runs and takes the target. 1 when the target went */
+static int forced_need_ignores_deferred(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* s = target(0x70000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    CHECK(!lossless(s));
+    const u64 low = g_budget - 3 * trim_head(g_budget); /* raw heap + releasing + extra stays under every mark */
+    g_use = low;
+    g_heap_use = low;
+    g_releasing = 64 << 20; /* more than the allocation */
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 0 && g_deferred == 16 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_need_ignores_deferred: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    g_releasing = 0;
+    return went;
+}
+
+/* A target with pixels memory lacks that the age's walk sets aside (VK_RECLAIM_IDLE; its image can't move here) lets
+   its copies go, a corner's and a feedback draw's snapshot: a bind makes them again from the target. Its save copy
+   (predraw) stays, as the trim's sweep leaves it (rt_copies_reclaim). The report counts the copies held by what they
+   were made for. Copies of a target set aside or moved into system memory stayed in the GPU's memory: 1.9 GB of them
+   in a racing game whose heap was at its budget. 1 when the two went and the save copy stayed */
+static int copies_go_aside(void) {
+    g_vk.mem_model = VK_MEM_SMALL_BAR;
+    g_vk_present += 1000;
+    Surf* s = target(0x71000000, 4 << 20, 1);
+    s->last_used = g_vk_present - 100;
+    static const int why[3] = {VK_RT_COPY_CROP, VK_RT_COPY_FEEDBACK, VK_RT_COPY_FEEDBACK};
+    Surf* save = NULL;
+    for (int i = 0; i < 3; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = s->gva;
+        c->bytes = (u64)(i + 1) << 20;
+        c->last_used = g_vk_present - 100;
+        c->copy_why = (u8)why[i];
+        c->predraw = i == 2;
+        c->next = s->crop;
+        s->crop = c;
+        if (i == 2) save = c;
+    }
+    VkRtKinds was, now;
+    vk_rt_kinds(&was);
+    const int counted = was.copies == 3 && was.copies_by[VK_RT_COPY_CROP] == 1 &&
+                        was.copy_bytes_by[VK_RT_COPY_CROP] == 1 << 20 && was.copies_by[VK_RT_COPY_FEEDBACK] == 2 &&
+                        was.copy_bytes_by[VK_RT_COPY_FEEDBACK] == 5 << 20;
+    g_deferred = 0;
+    g_guest = 1;
+    vk_surf_reclaim(VK_LRU_RT, g_vk_present, ~0ull, VK_RECLAIM_IDLE);
+    g_guest = 0;
+    vk_rt_kinds(&now);
+    const int went = targets_held() == 1 && s->aside && s->crop == save && !save->next && g_deferred == 3 << 20 &&
+                     now.copies == 1 && now.copies_by[VK_RT_COPY_FEEDBACK] == 1 && !now.copies_by[VK_RT_COPY_CROP] &&
+                     now.copies_gone - was.copies_gone == 2;
+    if (!counted || !went)
+        fprintf(stderr,
+                "copies_go_aside: %u copies held before (%u corners), %u after, %llu bytes deferred, set aside %d\n",
+                was.copies, was.copies_by[VK_RT_COPY_CROP], now.copies, (unsigned long long)g_deferred, s->aside);
+    surf_evict(s);
+    CHECK(targets_held() == 0);
+    return counted && went;
+}
+
+/* A trim for headroom while the free space inside the heap's blocks is in pieces: vk_mem_use is under the trim's
+   start, while vk_mem_heap_use is at its budget. Freeing live entries inside blocks only widens the holes without
+   lowering vk_mem_heap_use until whole blocks empty, so a non-forced trim sweeps only dead entries (superseded
+   surfaces, stale copies, ended textures) once a present and leaves live non-superseded targets alone, even when
+   called again on the same or a later present with vk_mem_heap_use still at the budget. 1 when the superseded target
+   went, the live target stayed, and a second call freed nothing */
+static int headroom_in_pieces(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* live = target(0x72000000, 16 << 20, 1);
+    live->last_used = g_vk_present - 1000;
+    Surf* old = target(0x72800000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x72800000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(live));
+    g_use = g_budget - 3 * trim_head(g_budget); /* under the trim's start and every step's mark */
+    g_heap_use = g_budget;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(0, 0);
+    const int first = targets_held() == 2 && g_deferred == 16 << 20 && g_rt_sys.lost == lost;
+    /* a second call in the same present, and another on a later present with the heap still at the budget, free no
+       live target */
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    g_vk_present += 10;
+    vk_mem_trim(0, 0);
+    const int quiet = targets_held() == 2 && g_deferred == 0 && g_rt_sys.lost == lost;
+    if (!first || !quiet)
+        fprintf(stderr, "headroom_in_pieces: first=%d quiet=%d, %u targets held, %llu bytes deferred\n", first, quiet,
+                targets_held(), (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    return first && quiet;
+}
+
+/* A trim for an allocation while deferred frees hold enough bytes to pull vk_mem_heap_use under the lossy steps'
+   marks: those frees return to the blocks as pieces that need not hold the failed request's run. Even after a
+   superseded target satisfies `need`, the forced trim still counts the deferred bytes in the heap's use so the
+   lossy steps run. 1 when the lossy target went */
+static int forced_counts_deferred_heap(void) {
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    const u64 head = trim_head(g_budget);
+    Surf* s = target(0x74000000, 16 << 20, 1);
+    s->last_used = g_vk_present - 1000;
+    Surf* old = target(0x73000000, 16 << 20, 2);
+    old->last_used = g_vk_present - 10;
+    Surf* over = target(0x73000000, 16 << 20, 3);
+    drawn_over(over);
+    CHECK(rt_superseded(old) && !lossless(s));
+    g_use = g_budget - 3 * head;
+    g_heap_use = g_budget - head - (16 << 20); /* below steps[2].mark until deferred bytes are added back */
+    g_releasing = head;
+    g_deferred = 0;
+    const u64 lost = g_rt_sys.lost;
+    vk_mem_trim(8 << 20, 1);
+    const int went = targets_held() == 1 && g_deferred == 32 << 20 && g_rt_sys.lost == lost + 1;
+    if (!went)
+        fprintf(stderr, "forced_counts_deferred_heap: %u targets held, %llu bytes deferred\n", targets_held(),
+                (unsigned long long)g_deferred);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_heap_use = 0;
+    g_releasing = 0;
+    return went;
+}
+
+/* A trim for an allocation that found no memory (force) lets go of target copies unused for VK_RT_COPY_PRESENTS
+   presents before the lossy steps take targets, while keeping recent copies and save copies (predraw). 1 when the
+   copy unused for 100 presents went and the 50-present copy and save copy stayed */
+static int forced_copies_go(void) {
+    static const u32 ago[3] = {VK_RT_COPY_PRESENTS + 40, VK_RT_COPY_PRESENTS - 10, VK_RT_COPY_PRESENTS + 40};
+    static const u64 bytes[3] = {4 << 20, 2 << 20, 5 << 20};
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* rt = target(0x75000000, 8 << 20, 1);
+    rt->last_used = g_vk_present;
+    Surf* kept[2] = {NULL, NULL};
+    for (int i = 0; i < 3; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = rt->gva;
+        c->bytes = bytes[i];
+        c->last_used = g_vk_present - ago[i];
+        c->predraw = i == 2;
+        c->next = rt->crop;
+        rt->crop = c;
+        if (i >= 1) kept[i - 1] = c;
+    }
+    g_use = g_budget - 3 * trim_head(g_budget);
+    g_heap_use = g_budget;
+    g_deferred = 0;
+    vk_mem_trim(8 << 20, 1);
+    u32 left = 0;
+    for (const Surf* x = rt->crop; x; x = x->next) left++;
+    const int went =
+        left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 4 << 20 && targets_held() == 1;
+    if (!went)
+        fprintf(stderr, "forced_copies_go: %u copies left, %llu bytes deferred, %u targets\n", left,
+                (unsigned long long)g_deferred, targets_held());
+    surf_evict(rt);
+    CHECK(targets_held() == 0);
+    g_heap_use = 0;
+    return went;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -499,12 +777,27 @@ int main(void) {
     CHECK(aside_hash());
     CHECK(parked_lands_nothing());
     CHECK(sys_heap_short());
+    CHECK(copies_go(0) && copies_go(1) && copies_go(2));
+    /* a trim for an allocation with the heap's free space in pieces reaches the lossy steps */
+    CHECK(forced_in_pieces());
+    CHECK(forced_need_ignores_deferred());
+    /* a target set aside lets its copies go, but its save copy */
+    CHECK(copies_go_aside());
+    /* a trim for headroom with the heap's free space in pieces reaches the trim's steps */
+    CHECK(headroom_in_pieces());
+    /* a forced trim counts deferred releases in the heap's use */
+    CHECK(forced_counts_deferred_heap());
+    /* a forced trim takes copies unused for VK_RT_COPY_PRESENTS */
+    CHECK(forced_copies_go());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
         "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
         "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
-        "target's storage result landed nothing\n");
+        "target's storage result landed nothing; the copies of a live target that no bind asked for in 600 presents "
+        "went under the trims' pressure, the others stayed, and none went with no pressure; a trim for an allocation "
+        "took a target with pixels memory lacks though the heap's free space was in pieces, and a target set aside "
+        "let its copies go but its save copy\n");
     return 0;
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */

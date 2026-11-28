@@ -17,6 +17,10 @@
    with blocks of 256 MiB, one game's city held 1887 MB for 922 MB handed out, 448 MB of it in three blocks that
    three 16 MiB chunks of the staging ring were left in after loading */
 #define DM_BLOCK_MAX (64ull << 20)
+/* The most memory of their own the requests a heap's blocks hold only in pieces take past its cap at once (alloc).
+   With no bound a racing game's race took 6 to 8.5 GB of it in each ten seconds, the driver moved the GPU's memory
+   into the system's (its GTT at 15.7 GB) and the race fell to 2 frames a second */
+#define DM_OVER_MAX      (64ull << 20)
 /* A request of more than this share of a block gets memory of its own. A ring's 16 MiB chunk is a quarter of a
    block and stays in one: the rings take and give back chunks all the time (cmd.c's pool), and with memory of its
    own each chunk was a call to the driver, 13 to 15 allocations and as many frees in 600 presents of one game, 7 ms
@@ -76,6 +80,7 @@ typedef struct {
     /* memory of its own with no resource named, kept when let go for a request of its size (own_keep) */
     u8 reuse;
     u32 idle; /* kept, unused since this present plus one: 0 in use */
+    u8 over;  /* memory of its own made past the heap's cap for a request its blocks held only in pieces (alloc) */
 } Block;
 /* an allocation: DevMem is its index plus one */
 typedef struct {
@@ -143,17 +148,25 @@ static struct {
     /* requests that found no memory since the last report: all of them, those no larger than the free space inside
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
+    /* requests that found no free run that large in the capped heap's blocks while those have more free than they ask,
+       given memory of their own past the budget since the last report, and their bytes (alloc). past_budget: set
+       while such a request asks, so block_new lets it past the heap's cap */
+    u64 past, past_bytes;
+    int past_budget;
+    /* the bytes of the blocks made past the cap that are there now (Block.over), at most DM_OVER_MAX, and the
+       requests since the last report that would have taken more and found none */
+    u64 over_bytes, over_refused;
     u64 priorities; /* calls that gave a block a new priority since the last report (block_prio) */
     /* The block being emptied (vk_devmem_moving), as DXVK defragments its chunks: no request takes its runs, and the
        owners of its allocations move them to the runs of other blocks on the GPU. Once it has none it is an empty
-       block (vk_devmem_free). slot: its index plus one, 0 for none. since: the present it started. picked: the present
-       of the last search for one. The counts are since the last report */
+       block (vk_devmem_free). slot: its index plus one, 0 for none. since: the present it started. next: the earliest
+       present for the next search. The counts are since the last report */
     struct {
         int on; /* a GPU with memory of its own: integrated and mobile GPUs (UMA) keep their blocks as they are */
         u32 slot;
         int moving; /* a move asks for memory (DevMemWant.existing): only blocks that hold something take it */
         int repair; /* the block is repaired, not emptied (repair_pick): only its allocations of the wrong class move */
-        u64 since, picked;
+        u64 since, next;
         u64 emptied, kept, gave_up, moved, moved_bytes, repaired;
     } drain;
     int coherent;  /* every memory type the CPU maps is coherent: a flush has nothing to do */
@@ -240,6 +253,7 @@ int vk_devmem_init(int bda) {
        cost the bandwidth that GPU shares with the CPU for nothing it lacks. DXVK likewise keeps no budget there
        (DxvkMemoryAllocator: enforceBudget only on a discrete GPU that is not UMA), and the old behaviour stays */
     g_devmem.drain.on = g_devmem.main_heap >= 0 && heap_capped((u32)g_devmem.main_heap);
+    g_devmem.drain.next = 30;
     g_devmem.coherent = 1;
     for (u32 t = 0; t < g_devmem.mp.memoryTypeCount; t++) {
         VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[t].propertyFlags;
@@ -426,8 +440,9 @@ static u32 block_add(u32 type, u64 size, int image, int low, u32 units, VkDevice
 static u32 block_new(u32 type, u64 size, int image, int low, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
     SNX_ZONE_T(z, "vk mem block new", "%s %u MB, type %u", units ? "block" : "own", (unsigned)(size >> 20), type);
     u32 heap_of = g_devmem.mp.memoryTypes[type].heapIndex;
-    /* the capped heap takes no more past its budget: full for this request, as if the driver had said so */
-    if (heap_capped(heap_of) && heap_usage(heap_of) + size > heap_budget(heap_of)) {
+    /* the capped heap takes no more past its budget: full for this request, as if the driver had said so. But for a
+       request whose bytes the blocks' free space holds, in pieces (alloc) */
+    if (heap_capped(heap_of) && !g_devmem.past_budget && heap_usage(heap_of) + size > heap_budget(heap_of)) {
         *res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
         return 0;
     }
@@ -455,6 +470,7 @@ static void block_gone(Block* k) {
         vk_ledger_free(g_vk.dev, k->mem, NULL);
     }
     g_devmem.gave[heap]++;
+    if (k->over) g_devmem.over_bytes -= k->size;
     space_destroy(&k->free);
     g_devmem.block_bytes[heap] -= k->size;
     g_devmem.blocks[heap]--;
@@ -726,6 +742,19 @@ static int own_give_all(void) {
         }
     return gave;
 }
+/* every empty spare block of heap goes: a request that cannot use a block (dedicated, or larger than half a block)
+   found no room under the cap while an unused spare block held it */
+static int empty_give_all(u32 heap) {
+    int gave = 0;
+    for (u32 i = 0; i < g_devmem.nblock; i++) {
+        Block* k = &g_devmem.block[i];
+        if (k->mem && !k->own && !k->allocs && !k->reserve && g_devmem.mp.memoryTypes[k->type].heapIndex == heap) {
+            block_gone(k);
+            gave = 1;
+        }
+    }
+    return gave;
+}
 /* k, memory of its own let go: kept when it can be, at the low class's priority, so that the driver moves it out of
    the GPU's memory first where that is short */
 static void own_keep(Block* k) {
@@ -817,14 +846,14 @@ static DevMem alloc_in(u32 type, const VkMemoryRequirements* req, const DevMemWa
        being emptied (drain_can). A move goes to the blocks of what moves */
     if (g_devmem.drain.on && heap_capped(g_devmem.mp.memoryTypes[type].heapIndex) && !want->moves && !want->existing)
         image |= DM_KIND_FIXED | (want->brief ? DM_KIND_BRIEF : 0);
-    /* a request that a block holds takes a free run of one, whatever its size: one of more than a block's share went
-       to the driver each time, on the thread that asked, and failed at the heap's cap while the blocks had room. Only
-       a request of a block's share or less opens a new block */
-    int fits = !alone && cap && req->size <= cap && align <= cap;
+    /* a request of up to half a block takes a free run of one, and only one of a block's share or less opens a new
+       block: one larger than half a block cannot share a block with another its size, keeps its block past
+       drain_pick's half-full limit while live, and leaves a large hole pinned by smaller allocations when freed */
+    int fits = !alone && cap && req->size <= cap / 2 && align <= cap;
     int shared = fits && req->size <= cap / DM_OWN_SHARE;
     if (fits) {
         units = (u32)units64;
-        slot = block_find(type, image, low, units, (u32)align_units, &at); /* a block of its class */
+        slot = block_find(type, image, low, units, (u32)align_units, &at);             /* a block of its class */
         if (!slot) slot = block_adopt(type, image, low, units, (u32)align_units, &at); /* an empty one of the other */
         u32 heap = g_devmem.mp.memoryTypes[type].heapIndex;
         int full = g_devmem.full_frame[type] && g_devmem.frame + 1 - g_devmem.full_frame[type] < 120 &&
@@ -929,6 +958,24 @@ static void info_of(DevMem m, DevMemInfo* info) {
                          .tag = r->tag};
 }
 
+/* whether the block being emptied has a free run that could hold (req, want): stopping the drain for a request it
+   cannot hold (larger than a block, larger than its longest run, or of another type) gains nothing and puts the block
+   off for 600 presents */
+static int drain_holds(const Block* d, const VkMemoryRequirements* req, const DevMemWant* want) {
+    if (!((req->memoryTypeBits >> d->type) & 1) || type_pick(1u << d->type, want) < 0) return 0;
+    if (g_devmem.apart && (d->image & DM_KIND_IMAGE) != (want->image ? DM_KIND_IMAGE : 0)) return 0;
+    const u64 cap = block_cap(d->type);
+    u64 align = req->alignment ? req->alignment : 1;
+    const VkMemoryPropertyFlags f = g_devmem.mp.memoryTypes[d->type].propertyFlags;
+    if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+        align < g_vk.props.limits.nonCoherentAtomSize)
+        align = g_vk.props.limits.nonCoherentAtomSize;
+    if (!cap || req->size > cap / 2 || align > cap) return 0;
+    u64 units = (req->size + DM_UNIT - 1) / DM_UNIT;
+    const u64 align_units = align > DM_UNIT ? align / DM_UNIT : 1;
+    if (want->sized) units = class_units(units, cap);
+    return d->free.largest >= units && d->free.largest >= align_units;
+}
 /* alone: the driver's word on the resource, 2 when it must have memory of its own, 1 when it would rather. A request
    that no memory type has a block for gets memory of its own in the end, in the first type that has any */
 static void drain_stop(void);
@@ -977,10 +1024,15 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         }
         /* a preference is not a need: when the driver has no memory for the resource alone, a block may have */
         if (!*mem && own == DM_OWN_RATHER) *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
-        /* memory kept for reuse in this type's heap takes room the request has none of: it goes, and the request is
-           tried again in this type before the next, which may be a worse one (the mapped window, system memory) */
-        if (!*mem && g_devmem.kept_heap[g_devmem.mp.memoryTypes[type].heapIndex] && own_give_all())
-            *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, &res);
+        /* memory kept for reuse or empty spare blocks in this type's heap take room the request has none of: they go,
+           and the request is tried again in this type before the next, which may be a worse one (the mapped window,
+           system memory) */
+        if (!*mem) {
+            const u32 h = g_devmem.mp.memoryTypes[type].heapIndex;
+            int gave = g_devmem.kept_heap[h] ? own_give_all() : 0;
+            if (empty_give_all(h)) gave = 1;
+            if (gave) *mem = alloc_in((u32)type, req, want, own == DM_OWN_RATHER ? 0 : own, buf, img, &res);
+        }
     }
     bits = req->memoryTypeBits;
     for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
@@ -989,7 +1041,8 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
        to the requests: the drain stops (drain_stop), and the request looks again. Emptying a block is never why a
        request finds no memory. One that must have memory of its own takes no run: its look again would bind it into
        a block, against the driver or the caller */
-    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair && !want->own && alone != 2) {
+    if (!*mem && g_devmem.drain.slot && !g_devmem.drain.repair && !want->own && alone != 2 &&
+        drain_holds(&g_devmem.block[g_devmem.drain.slot - 1], req, want)) {
         const Block* d = &g_devmem.block[g_devmem.drain.slot - 1];
         LOG_LIMIT(16,
                   "vulkan: a request for %.1f MB of device memory found no room but in the block being emptied (%.1f "
@@ -1001,14 +1054,56 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
             *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
-    if (!*mem) {
-        u64 room = 0, piece = 0;
+    u64 room = 0, piece = 0;
+    if (!*mem)
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             const Block* k = &g_devmem.block[i];
             if (!k->mem || k->own || (int)g_devmem.mp.memoryTypes[k->type].heapIndex != g_devmem.main_heap) continue;
             room += (u64)(k->free.units - k->free.used) * DM_UNIT;
             if ((u64)k->free.largest * DM_UNIT > piece) piece = (u64)k->free.largest * DM_UNIT;
         }
+    /* The blocks' free space holds the request, but no free run of one does: the heap is in pieces, not full, and
+       what the resources in it hold, with the request, stays within the budget. Memory of its own then, past the
+       heap's cap by what its pieces leave unused, as long as the driver gives it. In a racing game's race, requests
+       of 9 to 16 MB for its targets found none with 1.1 GB free in the blocks and the largest piece 9 MB, and the
+       draws that needed a depth target went without it */
+    const int main_heap = g_devmem.main_heap >= 0 && (u32)g_devmem.main_heap < VK_MAX_MEMORY_HEAPS;
+    int in_pieces = !*mem && main_heap && room >= req->size && !want->existing &&
+                    heap_usage((u32)g_devmem.main_heap) - room + req->size <= heap_budget((u32)g_devmem.main_heap);
+    /* past the bound: the request finds none, as before, and its caller's trim makes room for it to ask again */
+    if (in_pieces && g_devmem.over_bytes + req->size > DM_OVER_MAX) {
+        in_pieces = 0;
+        g_devmem.over_refused++;
+        LOG_LIMIT(16,
+                  "vulkan: a request for %.1f MB of device memory the GPU heap's blocks hold only in pieces would take "
+                  "memory past the budget where %.1f MB of the %llu MB allowed are taken: it finds none until a trim\n",
+                  (double)req->size / 1048576.0, (double)g_devmem.over_bytes / 1048576.0,
+                  (unsigned long long)(DM_OVER_MAX >> 20));
+    }
+    if (in_pieces) {
+        g_devmem.past_budget = 1;
+        bits = req->memoryTypeBits;
+        for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
+            if ((int)g_devmem.mp.memoryTypes[type].heapIndex == g_devmem.main_heap)
+                *mem = alloc_in((u32)type, req, want, DM_OWN_MUST, buf, img, &res);
+        g_devmem.past_budget = 0;
+        if (*mem) {
+            Block* k = &g_devmem.block[g_devmem.rec[*mem - 1].block - 1];
+            k->over = 1;
+            g_devmem.over_bytes += k->size;
+            g_devmem.past++;
+            g_devmem.past_bytes += req->size;
+            LOG_LIMIT(16,
+                      "vulkan: a request for %.1f MB of device memory found no free run that large in the GPU heap's "
+                      "blocks, which have %.1f MB free (the largest piece %.1f MB): memory of its own, past the "
+                      "budget, %.1f of %.1f MB in use, %.1f of the %llu MB allowed past it taken\n",
+                      (double)req->size / 1048576.0, (double)room / 1048576.0, (double)piece / 1048576.0,
+                      (double)heap_usage((u32)g_devmem.main_heap) / 1048576.0,
+                      (double)heap_budget((u32)g_devmem.main_heap) / 1048576.0, (double)g_devmem.over_bytes / 1048576.0,
+                      (unsigned long long)(DM_OVER_MAX >> 20));
+        }
+    }
+    if (!*mem) {
         g_devmem.failed++;
         g_devmem.failed_room += req->size <= room;
         if (req->size > g_devmem.failed_max) g_devmem.failed_max = req->size;
@@ -1020,6 +1115,11 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
                   (double)piece / 1048576.0, (double)heap_usage((u32)g_devmem.main_heap) / 1048576.0,
                   (double)heap_budget((u32)g_devmem.main_heap) / 1048576.0);
     }
+    /* a GPU heap request that failed or went past the budget while blocks hold free space wakes the next drain at once
+       instead of waiting out its 30-present idle rest */
+    if ((in_pieces || (!*mem && main_heap && room && want->at == DM_DEVICE)) && !g_devmem.drain.slot &&
+        g_devmem.drain.next > g_devmem.frame)
+        g_devmem.drain.next = g_devmem.frame;
     if (*mem && info) info_of(*mem, info);
     pm_unlock(&g_devmem.lk);
     return *mem ? VK_SUCCESS : res;
@@ -1073,6 +1173,8 @@ void vk_devmem_free(DevMem m) {
         const int emptied = k->drain && g_devmem.drain.slot == slot;
         if (emptied) {
             g_devmem.drain.slot = 0;
+            /* another nearly-empty block may be waiting: pick at the next present instead of resting 30 */
+            g_devmem.drain.next = g_devmem.frame;
             k->drain = 0;
         } else if (g_devmem.drain.slot == slot) { /* a block under repair that its frees emptied: nothing to repair */
             g_devmem.drain.slot = 0;
@@ -1087,7 +1189,7 @@ void vk_devmem_free(DevMem m) {
         int keep = 1;
         if (keep && !k->reserve) {
             u64 budget = heap_budget(heap);
-            if (g_devmem.block_bytes[heap] > budget) keep = 0;
+            if (g_devmem.block_bytes[heap] > budget || heap_usage(heap) > budget) keep = 0;
             for (u32 i = 0; keep && i < g_devmem.nblock; i++) {
                 const Block* o = &g_devmem.block[i];
                 if (o != k && o->mem && !o->own && !o->allocs && o->type == k->type &&
@@ -1132,7 +1234,7 @@ static int drain_can(const Block* k, u32 h) {
 static u32 drain_pick(u64 budget) {
     if (!g_devmem.drain.on) return 0;
     const u32 h = (u32)g_devmem.main_heap;
-    const int over = g_devmem.block_bytes[h] > budget;
+    const int over = g_devmem.block_bytes[h] > budget || heap_usage(h) > budget;
     u32 best = 0;
     u64 best_used = ~0ull;
     for (u32 i = 0; i < g_devmem.nblock; i++) {
@@ -1201,6 +1303,7 @@ static void drain_stop(void) {
     k->drain_skip = g_devmem.frame + 600;
     g_devmem.drain.slot = 0;
     g_devmem.drain.repair = 0;
+    if (g_devmem.drain.next < g_devmem.frame + 30) g_devmem.drain.next = g_devmem.frame + 30;
     g_devmem.drain.gave_up++;
 }
 u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
@@ -1209,8 +1312,8 @@ u32 vk_devmem_moving(DevMem* mems, void** owners, u32 max, u64 budget) {
     pm_lock(&g_devmem.lk);
     /* one that takes more than 600 presents to empty has an owner that does not move its allocation */
     if (g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.since > 600) drain_stop();
-    if (!g_devmem.drain.slot && g_devmem.frame - g_devmem.drain.picked >= 30) {
-        g_devmem.drain.picked = g_devmem.frame;
+    if (!g_devmem.drain.slot && g_devmem.frame >= g_devmem.drain.next) {
+        g_devmem.drain.next = g_devmem.frame + 30;
         g_devmem.drain.slot = drain_pick(budget);
         /* with no block to empty, one whose classes are mixed is repaired: it stays open to requests */
         if (!g_devmem.drain.slot && (g_devmem.drain.slot = repair_pick())) {
@@ -1415,6 +1518,8 @@ void vk_devmem_log(void) {
     }
     u64 failed = g_devmem.failed, failed_room = g_devmem.failed_room, failed_max = g_devmem.failed_max;
     g_devmem.failed = g_devmem.failed_room = g_devmem.failed_max = 0;
+    const u64 past = g_devmem.past, past_bytes = g_devmem.past_bytes, over_refused = g_devmem.over_refused;
+    g_devmem.past = g_devmem.past_bytes = g_devmem.over_refused = 0;
     u64 emptied = g_devmem.drain.emptied, kept = g_devmem.drain.kept, gave_up = g_devmem.drain.gave_up,
         moved = g_devmem.drain.moved, moved_bytes = g_devmem.drain.moved_bytes;
     g_devmem.drain.emptied = g_devmem.drain.kept = g_devmem.drain.gave_up = 0;
@@ -1449,6 +1554,12 @@ void vk_devmem_log(void) {
         LOG("vulkan: %llu requests for device memory found none since the last report, %llu of them no larger than "
             "the free space inside the GPU heap's blocks; the largest was %.1f MB\n",
             (unsigned long long)failed, (unsigned long long)failed_room, (double)failed_max / 1048576.0);
+    if (past || over_refused)
+        LOG("vulkan: %llu requests the GPU heap's blocks had room for only in pieces got memory of their own past the "
+            "budget since the last report, %.1f MB, and %llu found none at the %llu MB allowed; %.1f MB of it there "
+            "now\n",
+            (unsigned long long)past, (double)past_bytes / 1048576.0, (unsigned long long)over_refused,
+            (unsigned long long)(DM_OVER_MAX >> 20), (double)g_devmem.over_bytes / 1048576.0);
     if (emptied || kept || gave_up || moved || repaired)
         LOG("vulkan: device memory blocks emptied since the last report: %llu given back, %llu kept as their kind's "
             "empty block, %llu left as they were; %llu repaired to one priority class; %llu allocations moved, "

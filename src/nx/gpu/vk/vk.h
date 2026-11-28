@@ -568,8 +568,8 @@ enum {
 void vk_uma_refused(int why);
 void vk_uma_writes_commit(void);                         /* the draw or dispatch was recorded */
 /* the compute program whose writes vk_uma_writes_commit takes next, 0 for a draw's (compute.c sets it around the
-   commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, so its dispatches
-   go to the GPU at once */
+   commit); vk_uma_read_soon(prog): a CPU reader waited for its writes while they were unsubmitted, and one waited for
+   a write of it in the last 600 presents, so its dispatches go to the GPU at once */
 void vk_uma_writer(u64 prog);
 int vk_uma_read_soon(u64 prog);
 void vk_uma_writes_abort(void);                          /* it wasn't */
@@ -596,6 +596,9 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
    place is pending over the range: no barrier then */
 int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
 void vk_uma_fast_counts(u64* hits, u64* blk); /* the fast path's reads bound, and those a blk page sent to the chain */
+/* the questions about the pages read or written in place (order's, the hazard count's, front_write's) that walked the
+   tables of the pages in no region, since the last statistics: for the tests */
+u64 vk_uma_old_walks(void);
 /* draw_state_check=1, for a read the fast path bound at buf, off: uma.c's own reason the old chain would not have,
    NULL for none; a difference found (counted, and said in the log), and their count */
 const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
@@ -1359,6 +1362,8 @@ typedef struct Surf {
     struct Surf* fb_snap;
     u64 fb_draw;
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
+    u8 copy_why;    /* a copy in crop: the VK_RT_COPY_ reason it was made for (a later bind may reuse it), a feedback
+                       draw's save copy VK_RT_COPY_FEEDBACK */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
        recency list and its place in the list of ended textures */
@@ -1575,13 +1580,38 @@ void vk_surf_batch_end(void);
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
-/* A draw's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the bind on, with a
-   reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the span */
+/* A draw's or a dispatch's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the
+   bind on, with a reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the
+   span. why: what the bind did with it (VkImageKeepWhy), a refusal's reason where held is NULL. compute: a dispatch's,
+   whose publishes when read are counted apart */
 typedef struct {
     struct VkOwnRes* held;
     u64 off;
-    int made;
+    int made, why, compute;
 } VkImageKeep;
+/* what a bind did with a storage image (vk_gfx_image_report counts a dispatch's): kept, or joined to the write-back of
+   its image that waits; else published at the dispatch, as before, because it is a render target, over another image
+   of the same dispatch, under another's write-back, over 4 GB, or what vk_surf_keep_begin refused: no traps of guest
+   memory, a parked or unpublishable surface, a span of part pages or of more than one run, a span the CPU read lately,
+   no owner to be had (or memory landed over it) */
+enum {
+    VK_IMG_KEEP_KEPT,
+    VK_IMG_KEEP_JOINED,
+    VK_IMG_KEEP_TARGET,
+    VK_IMG_KEEP_OVERLAP,
+    VK_IMG_KEEP_PENDING,
+    VK_IMG_KEEP_BIG,
+    VK_IMG_KEEP_NO_TRAPS,
+    VK_IMG_KEEP_UNPUBLISHABLE,
+    VK_IMG_KEEP_UNALIGNED,
+    VK_IMG_KEEP_RUNS,
+    VK_IMG_KEEP_CPU_READ,
+    VK_IMG_KEEP_NO_OWNER,
+    VK_IMG_KEEP_N
+};
+void vk_gfx_image_keep_note(int why); /* a dispatch's storage image's bind, counted for vk_gfx_image_report */
+/* the binds counted so far by what each did, and the kept dispatches' images published since when something read them */
+void vk_gfx_image_keep_stats(u64 why[VK_IMG_KEEP_N], u64* compute_published);
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
    (the queue frees it), or over the bytes the write-back after leaves; or kept (keep, its held reference the
    queue's), published at the release */
@@ -1740,20 +1770,47 @@ VkImageAspectFlags vk_aspect(const VkFmt* f);
 u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
+/* the presents a copy of a render target (texture.c rt_copy) stays with no bind asking for it, before rt_copy lets it
+   go when its target is asked for another copy */
+#define VK_RT_COPY_PRESENTS 60u
+/* the presents a copy of a live render target stays with no bind asking for it, before a trim under pressure lets it
+   go (surface.c rt_copies_reclaim): a game at a dynamic resolution asks again for the copies of the sizes it goes back
+   to, and at 60 presents one racing game's copies were let go and made again 5,792 times in five minutes, 12 GB */
+#define VK_RT_COPY_TRIM_PRESENTS 600u
+/* a copy of a render target, already off its target's list: its image and views go when the frames are done */
+void vk_rt_copy_free(Surf* x);
 /* the textures that took pixels from targets and whose memory later targets drew all over since, last used before
    `before`, up to `want` bytes */
 u64 vk_tex_reclaim_superseded(u32 before, u64 want);
 /* t took pixels from a target now: only targets drawn after this cover its memory (vk_tex_reclaim_superseded) */
 void vk_tex_took(Surf* t);
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked);
+/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
+   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
+   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
+   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
+   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
+   and in rendering passes ended, decides whether targets take other formats' views */
+enum {
+    VK_RT_COPY_FORMAT,
+    VK_RT_COPY_CROP,
+    VK_RT_COPY_FORMAT_CROP,
+    VK_RT_COPY_FEEDBACK,
+    VK_RT_COPY_GUEST,
+    VK_RT_COPY_TAKE,
+    VK_RT_COPY_N
+};
 /* statistics: the caches' render targets by what they hold: [0] nothing, as later ones drew all over them
    (rt_superseded), [1] what memory holds or nothing at all, [2] pixels memory lacks; how many of each are parked; and
-   the copies of them (texture.c rt_copy), which go with them */
+   the copies of them (texture.c rt_copy), which go with them, also by the reason each was made for, and those let go so
+   far as no bind asked for them (surface.c rt_copies_let_go) */
 typedef struct {
     u32 n[3], parked[3];
     u64 bytes[3];
     u32 copies;
-    u64 copy_bytes;
+    u64 copy_bytes, copies_gone, copies_gone_bytes;
+    u32 copies_by[VK_RT_COPY_N]; /* the copies by the reason they were made for (Surf.copy_why) */
+    u64 copy_bytes_by[VK_RT_COPY_N];
 } VkRtKinds;
 void vk_rt_kinds(VkRtKinds* k);
 /* statistics: each texture (VK_LRU_TEX) or render target (VK_LRU_RT) of the caches given to fn, which changes none */
@@ -2628,6 +2685,7 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 /* the cache lines vk_buf_get(gva, len) will read, fetched ahead: step 0 its index slot, step 1 (after step 0 for every
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
 void vk_buf_prefetch(u64 gva, u64 len, int step);
+u64 vk_buf_prefetched(void);       /* the entries it fetched ahead (step 1) so far, for the tests */
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
 /* vk_buf_get_uniform for a binding that takes any offset that is a multiple of align: a constant buffer bound through
@@ -3632,6 +3690,9 @@ enum { VK_GENS_HEADERS_KEPT, VK_GENS_HEADERS_CHECKED, VK_GENS_RESULTS_KEPT, VK_G
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
+/* A windowed constant buffer bank's binding (render.c's cb_window_place): in a window, or bound alone; and the searches
+   of the rings' chunks for the buffer a window would be in */
+enum { VK_CBW_PLACED, VK_CBW_ALONE, VK_CBW_SEARCHED, VK_CBW_N };
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3646,6 +3707,7 @@ typedef struct {
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
     u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
+    u64 cb_window[VK_CBW_N];
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
                       before them, bank 2, the root tables */
@@ -3661,21 +3723,6 @@ extern u64 g_vk_targets_kept;
    through a copy instead (gpu/vk/render.c); the times a target's pixels were copied into a copy of it, for those draws
    and for textures that read a target as another size or format (gpu/vk/texture.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies, g_vk_rt_copy_writes;
-/* Why a render target's pixels were copied into another image: a texture reads its bytes as another color format of
-   the same texel size, a corner of it, or both (texture.c rt_crop); a draw samples the target it renders to where no
-   feedback loop takes it (vk_rt_snapshot); a program that counts texels reads a scaled target at the guest's size
-   (rt_guest); a target taking an address starts from the pixels of the one in another format that it parks there
-   (surface.c rt_take_pixels). Which of them a view of the target could replace, and what each costs a frame in copies
-   and in rendering passes ended, decides whether targets take other formats' views */
-enum {
-    VK_RT_COPY_FORMAT,
-    VK_RT_COPY_CROP,
-    VK_RT_COPY_FORMAT_CROP,
-    VK_RT_COPY_FEEDBACK,
-    VK_RT_COPY_GUEST,
-    VK_RT_COPY_TAKE,
-    VK_RT_COPY_N
-};
 #define VK_RT_COPY_PAIRS 8
 typedef struct {
     u64 written[VK_RT_COPY_N]; /* copies whose pixels were copied (a copy reused as it is counts nothing) */
@@ -3698,6 +3745,7 @@ typedef struct {
    and not after); bytes its texels'; from and to the formats it went between */
 void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to);
 void vk_rt_copy_counts(VkRtCopyCounts* out); /* since the last stats line */
+const char* vk_rt_copy_why(int why);         /* a VK_RT_COPY_ reason's name for the log */
 void vk_rt_copy_log(void);                   /* a stats line of them, a present, then counted again from 0 */
 /* statistics: the guest's full barriers not recorded, as no command came after the one before them in the submission
    (renderer.c vkr_method_barrier) */
