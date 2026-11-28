@@ -48,11 +48,11 @@ static int cbown_case(GpuChannel* channel, u32 cb, u32 own, u32 cpu_word, u8 fil
     CHECK(owner && !owned_test_fill(owner->buf, 0, 16, fill));
     vk_own_publish_owned(OPR_CPU + own, 16, owner, 0);
     CHECK(own_lookup(OPR_CPU + own, 16, NULL, 0) == 1);
-    u64 lands = own_landings(), drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 lands = own_landings(), drawn = vk_drawn(), skipped = g_vk_skipped;
     DrawCall call = {.topology = 0, .count = 1, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_finish();
-    int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
+    int drew = vk_drawn() == drawn + 1 && g_vk_skipped == skipped;
     int kept = own_lookup(OPR_CPU + own, 16, NULL, 0) == 1, landed = own_landings() != lands;
     vk_unlock();
     CHECK(!gmem_read(result, bytes, sizeof bytes));

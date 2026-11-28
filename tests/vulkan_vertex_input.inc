@@ -409,9 +409,9 @@ static int check_vertex_input_layouts(void) {
         channel->r3d_dirty = ~0u;
         mx_draw_state_sync(channel);
         DrawCall call = {.topology = 4, .count = 3, .instances = 1};
-        u64 before = g_vk_drawn;
+        u64 before = vk_drawn();
         vk_render_draw(&channel->ds, &call, &channel->owner);
-        CHECK(g_vk_drawn == before + 1);
+        CHECK(vk_drawn() == before + 1);
     }
     vk_render_end();
     VkBuffer buffer;

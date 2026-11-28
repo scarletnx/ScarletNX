@@ -77,7 +77,7 @@ Settings g_settings;
 ShCaps g_spirv_translate;
 VkState g_vk;
 u64 g_vk_dispatches;
-u64 g_vk_drawn;
+u64 vk_drawn(void) { return 0; }
 u32 g_vk_present;
 VkResourceStats g_vk_resource_stats;
 u8* gmem_host(u64 gva, u64 size) { abort(); }

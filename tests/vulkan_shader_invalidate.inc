@@ -86,12 +86,12 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 	rt_clear(channel, address + 0x30000, 4, 4, 0, 0);
 	vk_unlock();
 
-	drawn = g_vk_drawn;
+	drawn = vk_drawn();
 	invalidate_draw(channel);
-	CHECK(g_vk_drawn == drawn + 1);
+	CHECK(vk_drawn() == drawn + 1);
 	kept = g_vk_draw_kept;
 	invalidate_draw(channel);
-	CHECK(g_vk_drawn == drawn + 2 && g_vk_draw_kept == kept + 1);
+	CHECK(vk_drawn() == drawn + 2 && g_vk_draw_kept == kept + 1);
 	kept = g_vk_draw_kept;
 	epoch = vk_ww_epoch();
 
@@ -100,9 +100,9 @@ static int check_kept_shader_invalidation(GpuChannel *channel, u64 address,
 	maxwell3d_method(channel, 0x369, 1, 1);
 	CHECK(vk_ww_epoch() == epoch);
 	invalidate_draw(channel);
-	CHECK(g_vk_drawn == drawn + 3 && g_vk_draw_kept == kept);
+	CHECK(vk_drawn() == drawn + 3 && g_vk_draw_kept == kept);
 	invalidate_draw(channel);
-	CHECK(g_vk_drawn == drawn + 4 && g_vk_draw_kept == kept + 1);
+	CHECK(vk_drawn() == drawn + 4 && g_vk_draw_kept == kept + 1);
 	puts("shader invalidation: held draw state expires and reuse resumes");
 	return 0;
 }
@@ -135,16 +135,16 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	g_settings.async_pipelines = 1;
 	vk_pipeline_hold(1);
 	early = g_vk_async_early;
-	drawn = g_vk_drawn;
+	drawn = vk_drawn();
 	invalidate_draw(channel); /* its new pipeline queued: the recording thread drops it */
 	kept = g_vk_draw_kept;
 	invalidate_draw(channel); /* the same state, kept: dropped before its setup */
 	held_early = g_vk_async_early - early;
 	held_kept = g_vk_draw_kept - kept;
-	held_drawn = g_vk_drawn - drawn;
+	held_drawn = vk_drawn() - drawn;
 	vk_pipeline_hold(0);
 	vk_pipeline_quiesce();
-	drawn = g_vk_drawn;
+	drawn = vk_drawn();
 	invalidate_draw(channel); /* made now: drawn */
 	vk_async_every(0);
 	g_settings.async_pipelines = async;
@@ -153,7 +153,7 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	 * recording thread drops both */
 	CHECK(held_early == !check && held_kept == 1 &&
 	      held_drawn == 1u + check);
-	CHECK(g_vk_drawn == drawn + 1 && g_vk_async_early == early + !check);
+	CHECK(vk_drawn() == drawn + 1 && g_vk_async_early == early + !check);
 
 	/* a target the game doesn't regenerate every frame (never cleared here):
 	 * neither draw of a new pipeline is dropped before its setup */
@@ -163,11 +163,11 @@ static int check_async_kept_drop(GpuChannel *channel, u64 address,
 	g_settings.async_pipelines = 1;
 	vk_pipeline_hold(1);
 	early = g_vk_async_early;
-	drawn = g_vk_drawn;
+	drawn = vk_drawn();
 	invalidate_draw(channel);
 	invalidate_draw(channel);
 	held_early = g_vk_async_early - early;
-	held_drawn = g_vk_drawn - drawn;
+	held_drawn = vk_drawn() - drawn;
 	vk_pipeline_hold(0);
 	vk_pipeline_quiesce();
 	g_settings.async_pipelines = async;

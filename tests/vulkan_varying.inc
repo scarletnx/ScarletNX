@@ -23,7 +23,7 @@ static int varying_program(u64 address, const u64* ops, u32 count, int fragment)
    which its pixel gives. The largest difference, in pixels of the target, over the rows the plane covers whole, for
    each generic */
 static int varying_error(GpuChannel* channel, u64 target, u32 topology, float error[2]) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     const u32 bytes = VARYING_W * VARYING_H * 16;
     vk_lock();
     rt_clear_format(channel, target, VARYING_W, VARYING_H, 0, 0, 0xC0); /* RGBA32F */
@@ -31,7 +31,7 @@ static int varying_error(GpuChannel* channel, u64 target, u32 topology, float er
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = topology, .count = topology == 7 ? 4 : 6, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;

@@ -90,7 +90,7 @@ static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun,
     g_renderer->mem_may_have_changed();
     rt_clear(ch, target, 4, 4, 0, 1);
     vk_lock();
-    u64 passes = g_vk_passes, drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 passes = g_vk_passes, drawn = vk_drawn(), skipped = g_vk_skipped;
     pb_stream(ch, red, PB_LEN);
     pb_draw(ch, PB_LEFT);
     u64 submit = vk_submit_number();
@@ -98,10 +98,10 @@ static int pb_frame(GpuChannel* ch, u64 target, u64 red, u64 second, u64* begun,
     pb_stream(ch, second, PB_LEN);
     pb_draw(ch, PB_RIGHT);
     *begun = vk_submit_number() == submit ? g_vk_passes - passes : 0;
-    if (g_vk_drawn != drawn + 2)
+    if (vk_drawn() != drawn + 2)
         fprintf(stderr, "pass breaks: %llu of the frame's 2 draws recorded, %llu skipped\n",
-                (unsigned long long)(g_vk_drawn - drawn), (unsigned long long)(g_vk_skipped - skipped));
-    CHECK(g_vk_drawn == drawn + 2);
+                (unsigned long long)(vk_drawn() - drawn), (unsigned long long)(g_vk_skipped - skipped));
+    CHECK(vk_drawn() == drawn + 2);
     CHECK(!pb_halves(target, half));
     vk_unlock();
     return 0;

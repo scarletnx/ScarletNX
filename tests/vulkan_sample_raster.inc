@@ -70,9 +70,9 @@ static int check_custom_sample_locations(void) {
                      .multisample_flags = DS_MS_SAMPLE_LOCATIONS};
     call.sample_locations[0] = call.sample_locations[1] = 0x22;
     call.sample_locations[2] = call.sample_locations[3] = 0xee;
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_render_draw(&channel->ds, &call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     Surf *surface = vk_rt_find(target), *depth = vk_rt_find(zeta);
     CHECK(surface && depth && depth->sample_locations_compatible);
@@ -181,10 +181,10 @@ static int sample_raster_single_coverage(GpuChannel* channel, u64 gpu) {
                     state->rkey.sample_mask = 0;
                     state->gen[DS_RASTER_KEY] = ds_generation_next();
                 }
-                u64 drawn = g_vk_drawn;
+                u64 drawn = vk_drawn();
                 if (mode == 3) vk_render_draw_texture(state, &rectangle);
                 else vk_render_draw(state, &call, &channel->owner);
-                CHECK(g_vk_drawn == drawn + 1);
+                CHECK(vk_drawn() == drawn + 1);
                 vk_render_end();
                 Surf* surface = vk_rt_find(mode == 1 ? second : target);
                 CHECK(surface && !surface->msaa);
@@ -260,9 +260,9 @@ static int check_coverage_to_color(void) {
         state->rkey.sample_mask = ~0u;
         state->gen[DS_DYNAMIC] = state->gen[DS_RASTER_KEY] = ds_generation_next();
         call.multisample_flags = DS_MS_COVERAGE_TO_COLOR;
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         CHECK(surface);

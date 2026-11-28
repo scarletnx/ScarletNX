@@ -107,9 +107,9 @@ static int check_mixed_coverage_portable(void) {
                         state->blend.sc[0] = state->blend.sa[0] = blend == 2 ? DS_FACTOR_SRC_ALPHA : DS_FACTOR_ONE;
                         state->blend.dc[0] = state->blend.da[0] = blend == 2 ? DS_FACTOR_ONE_MINUS_SRC_ALPHA : DS_FACTOR_ONE;
                         state->gen[DS_BLEND] = ds_generation_next();
-                        u64 before = g_vk_drawn;
+                        u64 before = vk_drawn();
                         vk_render_draw(state, &call, &channel->owner);
-                        CHECK(g_vk_drawn == before + 1);
+                        CHECK(vk_drawn() == before + 1);
                         CHECK(capture->mixed_set && capture->mixed_frame == vk_frame_id());
                         if (mode == 3 && !custom && mask == 1 && !blend) {
                             VkDescriptorSet immutable = capture->mixed_set;
@@ -118,9 +118,9 @@ static int check_mixed_coverage_portable(void) {
                             changed.coverage_table_enable = 1;
                             for (u32 i = 0; i < 16; i++) changed.coverage_table[i] = (u8)((3 * i + 2) % 17);
                             changed.coverage_table[0] = (u8)(16 / raster); /* same observed factor, different table data */
-                            before = g_vk_drawn;
+                            before = vk_drawn();
                             vk_render_draw(state, &changed, &channel->owner);
-                            CHECK(g_vk_drawn == before + 1 && capture->mixed_set == immutable && capture->mixed_frame == frame);
+                            CHECK(vk_drawn() == before + 1 && capture->mixed_set == immutable && capture->mixed_frame == frame);
                             draws++;
                         }
                         vk_render_end();
@@ -190,9 +190,9 @@ static int check_mixed_coverage_portable(void) {
             DrawClear clear = {.color_mask = 15, .color = {0, 0x3f800000u, 0, 0x3f800000u}};
             vk_render_clear(state, &clear, &channel->owner);
             DrawCall call = {.topology = 4, .count = 3 * primitives, .instances = 1, .raster_samples = first_raster};
-            u64 before = g_vk_drawn;
+            u64 before = vk_drawn();
             vk_render_draw(state, &call, &channel->owner);
-            CHECK(g_vk_drawn == before + 1);
+            CHECK(vk_drawn() == before + 1);
             vk_render_end();
             VkBuffer buffer;
             u8* data = vk_readback_buffer(64, &buffer);

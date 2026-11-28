@@ -552,7 +552,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     p->bytes = g_rec_buf_bytes - g_bytes_at_end;
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->ops.pool, g->ops.used);
     g->ops.used += 2; /* its two, kept for the end */
-    g_draws_at_begin = g_vk_drawn;
+    g_draws_at_begin = vk_drawn();
     g_in_pass = 1;
     p->q0 = p->q1 = 0;
     if (snx_tracy_attached()) {
@@ -572,7 +572,7 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
     g_in_pass = 0;
     if (!(g = gp_slot())) return;
     p = &g->pass[g->npass];
-    p->draws = (u32)(g_vk_drawn - g_draws_at_begin);
+    p->draws = (u32)(vk_drawn() - g_draws_at_begin);
     gp_stamp(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->ops.pool, p->qi + 1);
     g->npass++;
     g_x_at_end = g_rec_xfers;

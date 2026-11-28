@@ -47,9 +47,9 @@ static int advanced_target_variants(GpuChannel* channel, u64 target) {
         state->blend.mask[0] = 15;
         state->gen[DS_DYNAMIC] = state->gen[DS_RASTER_KEY] = state->gen[DS_BLEND] = ds_generation_next();
         call.advanced_blend[0] = packed;
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         Surf* surface = vk_rt_find(address);
         CHECK(surface && surface->layers == (u32)(array ? 2 : 1));

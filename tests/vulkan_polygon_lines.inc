@@ -32,14 +32,14 @@ static int pl_pixels(u64 target, u8* out) {
 }
 /* call drawn in the polygon mode mode (both faces) over a blue clear, into px */
 static int pl_draw(GpuChannel* channel, u64 target, const DrawCall* call, u32 mode, u8* px) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_lock();
     rt_clear(channel, target, PL_SIDE, PL_SIDE, 0, 1);
     channel->r3d[MAXWELL3D_POLYGON_MODE_FRONT] = channel->r3d[MAXWELL3D_POLYGON_MODE_BACK] = mode;
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
     vk_render_draw(&channel->ds, call, &channel->owner);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     CHECK(!pl_pixels(target, px));
     vk_unlock();
     return 0;

@@ -39,9 +39,9 @@ static int coverage_ratio_one(GpuChannel* channel, u64 target, u64 stream, const
                                  .coverage_mode = mode, .coverage_table_enable = 1};
                 memset(call.coverage_table, 13, sizeof call.coverage_table);
                 call.coverage_table[0] = coefficients[coefficient];
-                u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+                u64 drawn = vk_drawn(), skipped = g_vk_skipped;
                 vk_render_draw(state, &call, &channel->owner);
-                CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
+                CHECK(vk_drawn() == drawn + 1 && g_vk_skipped == skipped);
                 vk_render_end();
                 Surf* surface = vk_rt_find(target);
                 CHECK(surface && surface->msaa == DS_MSAA_2X2 && surface->w == 4 && surface->h == 4);
@@ -103,9 +103,9 @@ static int coverage_r1_state_cases(GpuChannel* channel, u64 target, u64 stream, 
             CHECK(!gmem_write(stream, infinite, sizeof infinite));
             g_renderer->method_barrier(5);
         }
-        u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+        u64 drawn = vk_drawn(), skipped = g_vk_skipped;
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
+        CHECK(vk_drawn() == drawn + 1 && g_vk_skipped == skipped);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         CHECK(surface);
@@ -228,9 +228,9 @@ static int check_nvn_coverage(void) {
                     if (count && coefficient != 17) call.coverage_table[(count - 1) * 16 / raster] = (u8)coefficient;
                     channel->ds.rkey.sample_mask = count ? (1u << count) - 1 : 0;
                     channel->ds.gen[DS_RASTER_KEY] = ds_generation_next();
-                    u64 drawn = g_vk_drawn;
+                    u64 drawn = vk_drawn();
                     vk_render_draw(&channel->ds, &call, &channel->owner);
-                    CHECK(g_vk_drawn == drawn + 1);
+                    CHECK(vk_drawn() == drawn + 1);
                     vk_render_end();
                     Surf* surface = vk_rt_find(target);
                     VkBuffer buffer;
@@ -339,9 +339,9 @@ static int check_nvn_depth_coverage(void) {
             if (packed_stencil)
                 vk_render_clear(state, &stencil, &channel->owner); /* all samples become A7, retaining the high nibble */
             DrawCall call = {.topology = 4, .count = 3, .instances = 1, .raster_samples = 4};
-            u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+            u64 drawn = vk_drawn(), skipped = g_vk_skipped;
             vk_render_draw(state, &call, &channel->owner); /* lower rows: samples0/2 depth0.5 and stencilA9 */
-            CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
+            CHECK(vk_drawn() == drawn + 1 && g_vk_skipped == skipped);
             clear = (DrawClear){.color_mask = 5};
             memcpy(clear.color, destination, sizeof clear.color);
             vk_render_clear(state, &clear, &channel->owner); /* masked color clear must preserve Z */
@@ -361,9 +361,9 @@ static int check_nvn_depth_coverage(void) {
             call.coverage_table_enable = 1;
             memset(call.coverage_table, 3, sizeof call.coverage_table);
             call.coverage_table[4] = 5; /* two of four surviving samples */
-            drawn = g_vk_drawn;
+            drawn = vk_drawn();
             vk_render_draw(state, &call, &channel->owner);
-            CHECK(g_vk_drawn == drawn + 1 && g_vk_skipped == skipped);
+            CHECK(vk_drawn() == drawn + 1 && g_vk_skipped == skipped);
             vk_render_end();
             Surf *color = vk_rt_find(target), *zeta = vk_rt_find(state->tgt.depth.gva);
             CHECK(color && zeta && !color->msaa && color->w == 4 && color->h == 4 &&
@@ -440,9 +440,9 @@ static int check_nvn_depth_coverage(void) {
         state->dyn.depth_test = (u8)tested;
         state->gen[DS_DYNAMIC] = ds_generation_next();
         DrawCall call = {.topology = 4, .count = 3, .instances = 1, .raster_samples = tested ? 4u : 0};
-        u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+        u64 drawn = vk_drawn(), skipped = g_vk_skipped;
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + !tested && g_vk_skipped == skipped + tested);
+        CHECK(vk_drawn() == drawn + !tested && g_vk_skipped == skipped + tested);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         CHECK(surface);

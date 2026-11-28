@@ -61,9 +61,9 @@ static int check_ounce_integer_targets(void) {
         state->dyn.depth_test = state->dyn.depth_write = state->dyn.stencil_test = state->dyn.alpha_test = 0;
         state->rkey.sample_mask = ~0u;
         DrawCall call = {.topology = 4, .count = 3, .instances = 1};
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(state, &call, &channel->owner);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_render_end();
         Surf* surface = vk_rt_find(target);
         CHECK(surface && surface->f.is_int && surface->f.bpp == cases[i].bytes);

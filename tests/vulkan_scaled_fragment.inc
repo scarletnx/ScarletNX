@@ -108,7 +108,7 @@ static int sf_maxwell_fragment(u32 at, u32 handle, int table) {
 /* the triangle over all of the w x h target of the 3D engine's format, cleared first, with the fragment program at
    SF_GPU + program: every pixel of the target's image into pixels, texel bytes each. Under vk_lock */
 static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u32 program, u8* pixels, u32 texel) {
-    u64 drawn = g_vk_drawn, bytes = 4ull * w * h * texel;
+    u64 drawn = vk_drawn(), bytes = 4ull * w * h * texel;
     const float transform[6] = {(float)w / 2, (float)h / 2, 0.5f, (float)w / 2, (float)h / 2, 0.5f};
     memcpy(channel->r3d + 0x280, transform, sizeof transform);
     channel->r3d[0x3fd] = w << 16;
@@ -136,7 +136,7 @@ static int sf_draw(GpuChannel* channel, u64 target, u32 w, u32 h, u32 format, u3
     u8* data = vk_readback_buffer(bytes, &buffer);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {2 * w, 2 * h, 1}};
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     CHECK(surface && surface->sw == 2 * w && surface->sh == 2 * h && surface->f.bpp == texel && data);
     vk_surf_use(vk_cmd(), surface, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);

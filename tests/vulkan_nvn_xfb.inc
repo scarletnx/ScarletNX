@@ -73,9 +73,9 @@ static int check_nvn_xfb(void) {
         state->gen[DS_VBUF] = ds_generation_next();
         CHECK(g_renderer->xfb_control(owner_a, control_a, 0, 16, &a));
         DrawCall draw = {.topology = 0, .count = 3, .instances = 1};
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         g_renderer->draw(state, &draw, &a);
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         CHECK(g_renderer->xfb_control(owner_a, temporary ? 0 : control_a, 2, 16, &a));
         state->owner = owner_b;
         state->bind.xfb[0].addr = output_b;

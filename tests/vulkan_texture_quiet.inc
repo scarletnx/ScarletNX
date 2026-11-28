@@ -50,7 +50,7 @@ static int tq_draws(GpuChannel* ch, u32 n, u8 px[4], u64* checks, u64* quiet) {
     state->rkey.sample_mask = ~0u;
     state->dyn.alpha_test = 0;
     vk_tex_check_counts(&c0, &q0, &w0);
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     for (u32 i = 0; i < n; i++) {
         DrawTexture rectangle = {.w = 4, .h = 4, .sx0 = 0.5f, .sy0 = 0.5f};
         rectangle.state.multisample_flags = DS_MS_A2C_DITHER;
@@ -59,7 +59,7 @@ static int tq_draws(GpuChannel* ch, u32 n, u8 px[4], u64* checks, u64* quiet) {
     vk_tex_check_counts(&c1, &q1, &w1);
     vk_render_end();
     Surf* target = vk_rt_find(TQ_TARGET);
-    int ok = g_vk_drawn == drawn + n && target && !read_pixel_at(target, 0, 0, px);
+    int ok = vk_drawn() == drawn + n && target && !read_pixel_at(target, 0, 0, px);
     vk_unlock();
     *checks = c1 - c0;
     *quiet = q1 - q0;

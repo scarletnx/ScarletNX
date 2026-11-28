@@ -119,10 +119,10 @@ static int check_shader_stage_images(void) {
         rt_clear(channel, target, 4, 4, 0, 1);
         channel->r3d_dirty = ~0u;
         mx_draw_state_sync(channel);
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_render_draw(&channel->ds, &call, &channel->owner);
         vk_render_end();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         vk_finish();
         vk_unlock();
         u8 actual[32], original[32];

@@ -51,7 +51,8 @@ u8* g_mem = g_t.mem;
 u64 g_as_size = 1ull << 39;
 MemLayout g_layout;
 u32 g_vk_present = 1;
-u64 g_vk_drawn, g_vk_dispatches;
+u64 g_vk_dispatches;
+u64 vk_drawn(void) { return 0; }
 PFN_vkCreateBuffer vkCreateBuffer;
 PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements;
 PFN_vkDestroyBuffer vkDestroyBuffer;

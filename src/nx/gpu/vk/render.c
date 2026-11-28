@@ -1604,29 +1604,43 @@ u64 g_vk_predraws, g_vk_predraw_refused;
 static alignas(64) typeof(g_vk_predraws) w_g_vk_predraws;
 static alignas(64) typeof(g_vk_predraw_refused) w_g_vk_predraw_refused;
 /* why feedback draws stayed in place, counted by reason (each a literal) for vk_predraw_report, and the save draws
-   and guest draws whose target or save attachment was not sampled in place (read from a copy, and not ordered) */
+   and guest draws whose target or save attachment was not sampled in place (read from a copy, and not ordered). Each
+   draw slot's own (t_rc): draw_batches=2's two threads added to one copy with no lock, a race */
 static struct {
-    const char* why[12];
+    alignas(64) const char* why[12];
     u64 count[12];
     u64 target_copied, save_copied;
-} g_predraw_stats;
+} g_predraw_stats[RC_SLOTS];
 static void predraw_refuse(const char* why) {
     CNT(g_vk_predraw_refused)++;
+    typeof(g_predraw_stats[0])* const st = &g_predraw_stats[t_rc];
     u32 i = 0;
-    while (i < 12 && g_predraw_stats.why[i] && g_predraw_stats.why[i] != why) i++;
+    while (i < 12 && st->why[i] && st->why[i] != why) i++;
     if (i == 12) return;
-    g_predraw_stats.why[i] = why;
-    if (!g_predraw_stats.count[i]++)
+    st->why[i] = why;
+    if (!st->count[i]++)
         LOG("vulkan: a draw that samples a target it writes at its own pixel stays in place: it %s\n", why);
 }
 void vk_predraw_report(void) {
-    for (u32 i = 0; i < 12 && g_predraw_stats.why[i]; i++)
-        LOG("vulkan: %llu feedback draws stayed in place, each because it %s\n", (unsigned long long)g_predraw_stats.count[i],
-            g_predraw_stats.why[i]);
-    if (g_predraw_stats.target_copied || g_predraw_stats.save_copied)
+    const char* why[12 * RC_SLOTS] = {0};
+    u64 count[12 * RC_SLOTS] = {0}, target_copied = 0, save_copied = 0;
+    u32 n = 0;
+    for (u32 slot = 0; slot < RC_SLOTS; slot++) { /* the slots' reasons merged */
+        for (u32 i = 0; i < 12 && g_predraw_stats[slot].why[i]; i++) {
+            u32 k = 0;
+            while (k < n && why[k] != g_predraw_stats[slot].why[i]) k++;
+            if (k == n) why[n++] = g_predraw_stats[slot].why[i];
+            count[k] += g_predraw_stats[slot].count[i];
+        }
+        target_copied += g_predraw_stats[slot].target_copied;
+        save_copied += g_predraw_stats[slot].save_copied;
+    }
+    for (u32 i = 0; i < n; i++)
+        LOG("vulkan: %llu feedback draws stayed in place, each because it %s\n", (unsigned long long)count[i], why[i]);
+    if (target_copied || save_copied)
         LOG("vulkan: %llu save draws read their target from a copy, %llu guest draws read their save attachment from a "
             "copy (not in place)\n",
-            (unsigned long long)g_predraw_stats.target_copied, (unsigned long long)g_predraw_stats.save_copied);
+            (unsigned long long)target_copied, (unsigned long long)save_copied);
 }
 static void predraw_probe(u32 i, const TexRes* x, Surf* t) {
     if (!g_predraw[t_rc].probe || i >= 64) return;
@@ -1842,7 +1856,7 @@ void vk_render_stats_log(void) {
         "draw's, %llu one from the table), %llu found one that a later check made again; %llu kept in the table "
         "(%llu putting another out), %llu groups hashed. A present: %.1f submissions (%.1f periodic), %.1f write "
         "tracking epochs (%.1f with draws)\n",
-        (unsigned long long)presents, (unsigned long long)(g_vk_drawn - g_stats.drawn),
+        (unsigned long long)presents, (unsigned long long)(vk_drawn() - g_stats.drawn),
         (unsigned long long)(g_vk_draw_kept - g_stats.kept), (unsigned long long)(n->last - w->last),
         (unsigned long long)(n->table - w->table), (unsigned long long)(n->late - w->late),
         (unsigned long long)(n->made - w->made), (unsigned long long)(n->evicted - w->evicted),
@@ -1927,7 +1941,7 @@ void vk_render_stats_log(void) {
         g_stats.heap_image_hits = h.image_hits;
     }
     {
-        double k[4][2], d = (double)(g_vk_drawn - g_stats.drawn);
+        double k[4][2], d = (double)(vk_drawn() - g_stats.drawn);
         for (int b = 0; b < 4; b++)
             for (int j = 0; j < 2; j++) k[b][j] = (double)(n->inl[b][j] - w->inl[b][j]) / (double)presents;
         LOG("vulkan: inline blocks a present (%.1f draws), kept and staged again: bank 0 to its base vertex words %.1f "
@@ -1973,7 +1987,7 @@ void vk_render_stats_log(void) {
     g_stats.restrides = g_stats.restrided;
     g_stats.was = g_stats.n;
     g_stats.present = g_vk_present;
-    g_stats.drawn = g_vk_drawn;
+    g_stats.drawn = vk_drawn();
     g_stats.kept = g_vk_draw_kept;
     g_stats.dset_new = g_vk_dset_new;
     g_stats.dset_reused = g_vk_dset_reused;
@@ -5167,8 +5181,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (written && !(s->si.predraw_slots >> i & 1) && g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK) slots = 0;
         }
         if (g_predraw[t_rc].phase && stage == ST_FS && t && !slots) {
-            if (t->predraw) g_predraw_stats.save_copied++;
-            else if (predrawn) g_predraw_stats.target_copied++;
+            if (t->predraw) g_predraw_stats[t_rc].save_copied++;
+            else if (predrawn) g_predraw_stats[t_rc].target_copied++;
         }
         g_stats.n.slot[VK_SLOT_FEEDBACK] += slots != 0;
         if (slots && predrawn) {
@@ -5519,7 +5533,21 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
         });
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
-u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
+/* the draws recorded by each thread that sets up draws (t_rc), each on a line of its own and written by that thread
+   alone: one count that both of draw_batches=2's threads added to was a race, and a line that their cores passed
+   between them at each draw */
+static struct {
+    alignas(64) _Atomic u64 n;
+} g_drawn_n[RC_SLOTS];
+static u64 drawn_mine(void) { return atomic_load_explicit(&g_drawn_n[t_rc].n, memory_order_relaxed); }
+static void drawn_set_mine(u64 v) { atomic_store_explicit(&g_drawn_n[t_rc].n, v, memory_order_relaxed); }
+void vk_drawn_one(void) { drawn_set_mine(drawn_mine() + 1); }
+u64 vk_drawn(void) {
+    u64 n = 0;
+    for (u32 i = 0; i < RC_SLOTS; i++) n += atomic_load_explicit(&g_drawn_n[i].n, memory_order_relaxed);
+    return n;
+}
+u64 g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
 static alignas(64) typeof(g_vk_skipped) w_g_vk_skipped;
 static alignas(64) typeof(g_vk_mesh_draws) w_g_vk_mesh_draws;
 static alignas(64) typeof(g_vk_mesh_drawn) w_g_vk_mesh_drawn;
@@ -7341,15 +7369,15 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     memset(pre.blend.en, 0, sizeof pre.blend.en);
     DrawCall call = *dc;
     call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
-    u64 drawn = g_vk_drawn;
+    u64 drawn = drawn_mine();
     g_predraw[t_rc].phase = 1;
     render_draw(&pre, &call, o, NULL, NULL);
-    int saved = g_vk_drawn != drawn;
+    int saved = drawn_mine() != drawn;
     if (saved) {
-        g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
+        drawn_set_mine(drawn); /* the guest's draw is counted, not the save draw */
         g_predraw[t_rc].phase = 2;
         render_draw(ds, dc, o, NULL, NULL);
-        if (g_vk_drawn != drawn) CNT(g_vk_predraws)++;
+        if (drawn_mine() != drawn) CNT(g_vk_predraws)++;
     }
     g_predraw[t_rc].phase = 0;
     g_predraw[t_rc].n = g_predraw[t_rc].in_place = 0;
@@ -9959,7 +9987,7 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
          (ds->dyn.stencil_test && ((ds->dyn.face[0].wmask & 0xFF) || (ds->dyn.face[1].wmask & 0xFF)))) &&
         zt_written(zt, o->pred, zt_undefined))
         target_written(zt);
-    g_vk_drawn++;
+    vk_drawn_one();
     if (mesh) CNT(g_vk_mesh_drawn)++;
     if (sh->task_compute) CNT(g_vk_mesh_task_compute)++;
 }
@@ -9983,7 +10011,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     u32 vertices = dc->topology == 0 ? 1 : dc->topology == 1 ? 2 : 3;
     slice.count = vertices;
     slice.instances = 1;
-    u64 before = g_vk_drawn;
+    u64 before = drawn_mine(); /* this thread's count, which it sets below */
     g_capture_draw.images = images;
     g_capture_draw.snapshot = NULL;
     int complete = 1;
@@ -9996,9 +10024,9 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
             if (first > UINT32_MAX || !vk_capture_clear(images)) { complete = 0; break; }
             slice.first = (u32)first;
             g_capture_draw.primitive = primitive;
-            u64 drawn = g_vk_drawn;
+            u64 drawn = drawn_mine();
             render_draw(ds, &slice, owner, NULL, NULL);
-            if (g_vk_drawn != drawn + 1) { complete = 0; break; }
+            if (drawn_mine() != drawn + 1) { complete = 0; break; }
             u32 flags = images->flags | (ds->blend.mask[0] & 15);
             if (ds->tgt.srgb_write && target->f.vk != vk_srgb_as(target->f.vk, 0)) flags |= SH_BLEND_SRGB;
             int resolved = mixed ? vk_capture_mixed_resolve(images, mixed, ds, g_draw[t_rc].fs->si.sph[18])
@@ -10010,7 +10038,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     g_capture_draw.snapshot = NULL;
     draw_forget();
     if (complete) {
-        g_vk_drawn = before + 1;
+        drawn_set_mine(before + 1);
         g_vk_capture_draws++;
         g_vk_capture_primitives += (u64)dc->instances * (dc->count / vertices);
     }

@@ -99,7 +99,7 @@ static int index_first_pixel(u64 target, u8 out[4]) {
 /* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
 static u32 g_index_pred;
 static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
@@ -107,7 +107,7 @@ static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, Ind
     channel->owner.pred = g_index_pred;
     vk_render_draw(&channel->ds, call, &channel->owner);
     channel->owner.pred = 0;
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     CHECK(!index_pixels(target, px));
     vk_unlock();
     return 0;
@@ -1036,7 +1036,7 @@ static int fragment_query_volume_case(GpuChannel* channel, u64 target, u64 addre
         u8 first[4] = {0};
         index_first_pixel(target, first);
         fprintf(stderr, "fragment volume query: %u green, %u blue, %u red; first pixel %u %u %u %u (%llu draws, %llu skipped)\n",
-                px.green, px.blue, px.red, first[0], first[1], first[2], first[3], (unsigned long long)g_vk_drawn,
+                px.green, px.blue, px.red, first[0], first[1], first[2], first[3], (unsigned long long)vk_drawn(),
                 (unsigned long long)g_vk_skipped);
     }
     r[0x851] = 0x10000; /* the harness's fragment program again */
@@ -1619,7 +1619,7 @@ static int shadow_map_depth(u64 map, float* depth) {
 static int shadow_map_pass(GpuChannel* channel, u64 map, float* depth, int* ran) {
     u32* r = channel->r3d;
     const DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     vk_lock();
     r[0x487] = 0; /* no color target */
     r[0x54E] = 1;
@@ -1640,8 +1640,8 @@ static int shadow_map_pass(GpuChannel* channel, u64 map, float* depth, int* ran)
     int failed = shadow_map_depth(map, depth);
     vk_unlock();
     CHECK(!failed);
-    CHECK(g_vk_drawn - drawn + (g_vk_skipped - skipped) == 1);
-    *ran = g_vk_drawn != drawn;
+    CHECK(vk_drawn() - drawn + (g_vk_skipped - skipped) == 1);
+    *ran = vk_drawn() != drawn;
     return 0;
 }
 static u64 shadow_mov(u32 reg, float value) {
@@ -1969,7 +1969,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
         u64 offset;
         u8* staged = surface ? vk_stage(sizeof initial, 4, &upload, &offset) : NULL;
         u8* data = NULL;
-        u64 loops = g_vk_fb_draws, written = g_vk_rt_copy_writes, through = g_vk_rt_copies, drawn = g_vk_drawn;
+        u64 loops = g_vk_fb_draws, written = g_vk_rt_copy_writes, through = g_vk_rt_copies, drawn = vk_drawn();
         ok = staged != NULL;
         if (ok) {
             memcpy(staged, initial, sizeof initial);
@@ -1985,7 +1985,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
             g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
             vk_render_draw(&channel->ds, &call, &channel->owner);
             loops = g_vk_fb_draws - loops, written = g_vk_rt_copy_writes - written, through = g_vk_rt_copies - through;
-            ok = g_vk_drawn == drawn + 1;
+            ok = vk_drawn() == drawn + 1;
             vk_render_end();
             data = vk_readback_buffer(64, &readback);
         }
@@ -2172,7 +2172,7 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
         if (ok) {
             g_renderer->method_barrier(0); /* NVN's ORDER_FRAGMENTS | INVALIDATE_TEXTURE */
             /* the first draw begins a pass: each one begun after it orders what was drawn before it */
-            drawn = g_vk_drawn, loops = g_vk_fb_draws, through = g_vk_rt_copies,
+            drawn = vk_drawn(), loops = g_vk_fb_draws, through = g_vk_rt_copies,
             orders = g_vk_fb_barriers + g_vk_passes + 1, predraws = g_vk_predraws;
             vk_draw_counts(&kept[0]);
             for (u32 d = 0; ok && d < 2; d++) {
@@ -2201,7 +2201,7 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
                 mx_draw_state_sync(channel);
                 vk_render_draw(&channel->ds, &call, &channel->owner);
             }
-            drawn = g_vk_drawn - drawn, loops = g_vk_fb_draws - loops, through = g_vk_rt_copies - through,
+            drawn = vk_drawn() - drawn, loops = g_vk_fb_draws - loops, through = g_vk_rt_copies - through,
             orders = g_vk_fb_barriers + g_vk_passes - orders, predraws = g_vk_predraws - predraws;
             vk_draw_counts(&kept[1]);
             vk_render_end();

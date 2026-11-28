@@ -171,13 +171,13 @@ static int check_cb_address(void) {
     state->blend.en[0] = 0;
     state->blend.mask[0] = 15;
     vk_descriptor_heaps_get_stats(&before);
-    u64 drawn = g_vk_drawn, skipped = g_vk_skipped;
+    u64 drawn = vk_drawn(), skipped = g_vk_skipped;
     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(state, &draw, &channel->owner);
     vk_render_end();
     vk_finish();
     vk_descriptor_heaps_get_stats(&after);
-    int drew = g_vk_drawn == drawn + 1 && g_vk_skipped == skipped;
+    int drew = vk_drawn() == drawn + 1 && g_vk_skipped == skipped;
     vk_unlock();
     if (!drew) fprintf(stderr, "constant buffers by address: the draw was skipped\n");
     CHECK(drew);

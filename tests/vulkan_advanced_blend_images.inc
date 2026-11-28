@@ -86,10 +86,10 @@ static int check_advanced_blend_images(void) {
     channel->ds.gen[DS_BLEND] = ds_generation_next();
     DrawCall draw = {.topology = 4, .count = 3, .instances = 1};
     draw.advanced_blend[0] = advanced;
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_render_draw(&channel->ds, &draw, &channel->owner);
     vk_render_end();
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     Surf* surface = vk_rt_find(target);
     VkBuffer buffer;
     u8* actual = vk_readback_buffer(16 * 16, &buffer);

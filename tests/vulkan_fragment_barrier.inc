@@ -33,10 +33,10 @@ static void fragment_barrier_clear(GpuChannel* channel, u64 target) {
     engine_clear(channel, 15 << 2);
 }
 /* a draw with the storage bindings made since the last one was recorded, as render.c counts it: its writes are
-   committed, and it is a draw of its own (g_vk_drawn), which the order tells from the draws after it (vk_lock) */
+   committed, and it is a draw of its own (vk_drawn), which the order tells from the draws after it (vk_lock) */
 static void fragment_barrier_drawn(void) {
     vk_buf_writable_commit();
-    g_vk_drawn++;
+    vk_drawn_one();
 }
 /* what a barrier from all work orders that the renderer keeps count of (vk_lock) */
 static int fragment_barrier_counted(void) { return vk_buf_order_pending(0) || vk_pages_order_pending(); }

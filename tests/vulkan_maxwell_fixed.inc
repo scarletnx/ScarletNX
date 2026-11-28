@@ -60,11 +60,11 @@ static int mx_fixed_channel(u32 id, u64 gpu, u64 cpu, GpuChannel** made) {
 /* the pixels the 3D engine's draw of count vertices from first, of its topology, covers over a blue clear, in
    covered (fixed_state_covered's bits) */
 static int mx_fixed_draw(GpuChannel* channel, u32 topology, u32 first, u32 count, u64* covered) {
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     engine_clear(channel, 15 << 2); /* the color, blue: rt_clear_format's clear color */
     channel->r3d_dirty = ~0u;       /* the registers were set directly */
     r3d_draw(channel, 0, topology, first, count, 0, 0, 1);
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     vk_render_end();
     return fixed_state_covered(channel->r3d[0x201] | (u64)channel->r3d[0x200] << 32, "3D engine", covered);
 }

@@ -53,7 +53,7 @@ static int memo_sequence(GpuChannel* channel, const MemoDraw* draws, u32 n, int 
             maxwell3d_method(channel, 0x369, 1, 1);
         }
         if (draws[i].epoch) vk_ww_new_epoch();
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_lock();
         rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
         r[0x851] = draws[i].fragment;
@@ -64,7 +64,7 @@ static int memo_sequence(GpuChannel* channel, const MemoDraw* draws, u32 n, int 
         vk_render_draw(&channel->ds, &call, &channel->owner);
         vk_render_end();
         vk_unlock();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
     }
     for (u32 i = 0; i < n; i++) {
         vk_lock();
@@ -276,7 +276,7 @@ static int life_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, 
     for (u32 i = 0; i < n; i++) {
         const u64 target = MEMO_GPU + 0x20000 + i * 0x4000;
         CHECK(!life_event(channel, events[i]));
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_lock();
         rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
         r[0x851] = tex ? LIFE_TEX_PROGRAM : LIFE_CB_PROGRAM;
@@ -287,7 +287,7 @@ static int life_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, 
         vk_render_draw(&channel->ds, &call, &channel->owner);
         vk_render_end();
         vk_unlock();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
     }
     for (u32 i = 0; i < n; i++) {
         vk_lock();
@@ -792,7 +792,7 @@ static int over_target_cases(GpuChannel* channel) {
         CHECK(!pending_draw(channel, px[1], &kept[1]));
         copies[1] = g_vk_rt_copy_writes;
         /* a color program's draw into the sampled target, and the submission's end that lets a copy be made again */
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_lock();
         over_bind(channel, OVER_TARGET);
         r[0x851] = MEMO_GREEN;
@@ -805,7 +805,7 @@ static int over_target_cases(GpuChannel* channel) {
         over_bind(channel, MEMO_GPU + 0x20000);
         vk_unlock();
         vk_release_submit();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
         CHECK(!pending_draw(channel, px[2], &kept[2]));
         CHECK(!pending_draw(channel, px[3], &kept[3]));
         copies[2] = g_vk_rt_copy_writes;
@@ -1329,10 +1329,10 @@ static int inline_draw(GpuChannel* channel, u8 px[4], u64* kept, u64* staged) {
     channel->ds.bind.cb_inline[4][3] = DS_CB_BANK2;
     channel->ds.gen[DS_BIND] = ds_generation_next();
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
-    u64 drawn = g_vk_drawn;
+    u64 drawn = vk_drawn();
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_end();
-    CHECK(g_vk_drawn == drawn + 1);
+    CHECK(vk_drawn() == drawn + 1);
     Surf* t = vk_rt_find(target);
     CHECK(t);
     if (t) CHECK(!read_pixel_at(t, 0, 0, px));
@@ -1394,7 +1394,7 @@ static int empty_header_draw(GpuChannel* channel, u32 program, u32 handle, u8 px
        handle, its first word, and the table's entries, one each 16 bytes */
     for (u32 k = 0; k < 4; k++) snx_st_le32(GP(MEMO_CPU + (LIFE_POOL + 0x240 + 16 * k - MEMO_GPU)), handle);
     vk_ww_new_epoch();
-    const u64 before = g_vk_drawn;
+    const u64 before = vk_drawn();
     vk_lock();
     rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
     r[0x851] = program;
@@ -1408,7 +1408,7 @@ static int empty_header_draw(GpuChannel* channel, u32 program, u32 handle, u8 px
     CHECK(t);
     if (t) CHECK(!read_pixel_at(t, 0, 0, px));
     vk_unlock();
-    *drawn = g_vk_drawn - before;
+    *drawn = vk_drawn() - before;
     return 0;
 }
 static int empty_header_cases(GpuChannel* channel) {
@@ -1644,7 +1644,7 @@ static int last_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, 
                 break;
             default: break;
         }
-        u64 drawn = g_vk_drawn;
+        u64 drawn = vk_drawn();
         vk_lock();
         rt_clear(channel, target, MEMO_SIDE, MEMO_SIDE, 0, 0);
         r[0x851] = tex ? LIFE_TEX_PROGRAM : LIFE_CB_PROGRAM;
@@ -1664,7 +1664,7 @@ static int last_sequence(GpuChannel* channel, int tex, const u8* events, u32 n, 
                 for (u32 b = 0; b < ngone; b++) counts->reused |= views[a] == gone[b];
         }
         vk_unlock();
-        CHECK(g_vk_drawn == drawn + 1);
+        CHECK(vk_drawn() == drawn + 1);
     }
     VkDescriptorHeapStats after;
     vk_descriptor_heaps_get_stats(&after);

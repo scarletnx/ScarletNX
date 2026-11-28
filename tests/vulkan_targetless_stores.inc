@@ -4,14 +4,14 @@
 /* draws a triangle over the 4x4 viewport with four color targets of format 0 and no depth, the fragment program
    at code + 0x1000; *drawn and *skipped are whether the renderer recorded or skipped it */
 static void targetless_draw(GpuChannel* channel, int* drawn, int* skipped) {
-    u64 recorded = g_vk_drawn, dropped = g_vk_skipped;
+    u64 recorded = vk_drawn(), dropped = g_vk_skipped;
     vk_lock();
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
     vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_end();
     vk_unlock();
-    *drawn = g_vk_drawn == recorded + 1;
+    *drawn = vk_drawn() == recorded + 1;
     *skipped = g_vk_skipped == dropped + 1;
 }
 
