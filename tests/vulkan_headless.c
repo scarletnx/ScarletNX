@@ -19,6 +19,7 @@
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/spirv_opt.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/draw_texture_shader.h"
 #include "nx/gpu/vk/pagespace.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/descriptors.h"

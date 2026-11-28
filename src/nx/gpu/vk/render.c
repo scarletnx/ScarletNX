@@ -2347,6 +2347,9 @@ int vk_tic_unnormalized(const u32* tic) {
     if (!tic[0] || (tic[5] >> 31) || type == 6) return 0;
     return type == 1 || type == 7 ? 1 : 2;
 }
+int vk_tex_unnormalized_unheld(const VkSh* s, int i, const u32* tic) {
+    return vk_tic_unnormalized(tic) && !s->texture_draw && !(s->si.tex[i].flags & 3) && !(s->si.tex_rect_mask >> i & 1);
+}
 
 int vk_tex_num(const u32* tic, const Surf* t) {
     VkFmt f;
@@ -4575,8 +4578,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         /* a header with unnormalized coordinates that the program's key doesn't divide (vk_tic_unnormalized: another
            type than 2D, or a stage without the key) is sampled as normalized: said, not hidden */
-        int unnormalized = vk_tic_unnormalized(x->tic);
-        if (unnormalized && !(st->flags & 3) && !(s->si.tex_rect_mask >> i & 1))
+        if (vk_tex_unnormalized_unheld(s, i, x->tic))
             LOG_LIMIT(4,
                       "vulkan: texture %d of a stage %d program (handle %08x, type %u) takes unnormalized coordinates, "
                       "which its samples don't divide by the size: sampled as normalized\n",
