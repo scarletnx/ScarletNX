@@ -5415,23 +5415,31 @@ Surf* vk_tex_from_tic(const u32* tic) {
     tex_tag(t);
     return t;
 }
-/* whether a sample through the sampler tsc of a target in place, its coordinates scaled to a corner and clamped to the
-   corner's last texel centre (shader_corner_coords), reads what a sample of the corner's copy does: the sampler
+/* A sample through the sampler tsc of a target in place, its coordinates scaled to a corner and clamped to the
+   corner's last texel centre (shader_corner_coords), reads what a sample of the corner's copy does where the sampler
    clamps x and y to the edge, filters one way for minification and magnification (a clamped coordinate's level of
    detail can tip the choice at the edge), and reads no footprint that reaches past that centre (anisotropy, a min or
-   max reduction) nor compares */
-static int tsc_corner_exact(const u32* tsc) {
+   max reduction) nor compares; where the header's coordinates are normalized (an unnormalized one's are texels,
+   which the program divides by the bound size: ShaderInfo.tex_rect_mask); and where the target, rt when not NULL, is
+   an image of its own of one level at the guest's scale (tex_from_tic) */
+int vk_tex_corner_refusal(const u32* tic, const u32* tsc, const Surf* rt) {
     TscFields sf;
     tsc_decode(tsc, &sf);
-    return wrap(sf.wrap_u) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
-           wrap(sf.wrap_v) == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE && (sf.mag == 2) == (sf.min == 2) &&
-           !sf.anisotropy && !sf.reduction && !sf.compare;
+    if (wrap(sf.wrap_u) != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE ||
+        wrap(sf.wrap_v) != VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+        return VK_CORNER_WRAP;
+    if ((sf.mag == 2) != (sf.min == 2)) return VK_CORNER_FILTER;
+    if (sf.anisotropy) return VK_CORNER_ANISOTROPY;
+    if (sf.reduction) return VK_CORNER_REDUCTION;
+    if (sf.compare) return VK_CORNER_COMPARE;
+    if (!(tic[5] >> 31)) return VK_CORNER_UNNORMALIZED;
+    if (rt && (rt->host || rt->levels != 1 || rt->sw != rt->w || rt->sh != rt->h)) return VK_CORNER_TARGET;
+    return VK_CORNER_N;
 }
 Surf* vk_tex_from_tic_corner(const u32* tic, const u32* tsc, u32 corner[2]) {
     corner[0] = corner[1] = 0;
-    /* a header of normalized coordinates: an unnormalized one's are texels, which the program divides by the bound
-       size (ShaderInfo.tex_rect_mask) */
-    Surf* t = tex_from_tic(tic, 0, tsc_corner_exact(tsc) && (tic[5] >> 31) ? TEX_CORNER : TEX_SAMPLED, corner);
+    const int in_place = vk_tex_corner_refusal(tic, tsc, NULL) == VK_CORNER_N;
+    Surf* t = tex_from_tic(tic, 0, in_place ? TEX_CORNER : TEX_SAMPLED, corner);
     tex_take_drawn(t);
     tex_tag(t);
     return t;

@@ -1972,16 +1972,29 @@ void vk_render_stats_log(void) {
         double k[VK_SLOT_N], p[VK_POOL_N];
         for (int i = 0; i < VK_SLOT_N; i++) k[i] = (double)(n->slot[i] - w->slot[i]) / (double)presents;
         for (int i = 0; i < VK_POOL_N; i++) p[i] = (double)(n->pool[i] - w->pool[i]) / (double)presents;
+        /* the corners read through their copy by why (vk_tex_corner_refusal), each a present */
+        static const char* const refusal[VK_CORNER_N + 1] = {
+            [VK_CORNER_WRAP] = "a wrap mode",          [VK_CORNER_FILTER] = "two filters",
+            [VK_CORNER_ANISOTROPY] = "anisotropy",     [VK_CORNER_REDUCTION] = "a reduction",
+            [VK_CORNER_COMPARE] = "a depth compare",   [VK_CORNER_UNNORMALIZED] = "texel coordinates",
+            [VK_CORNER_TARGET] = "the target's image", [VK_CORNER_N] = "none of those"};
+        char why[256] = "";
+        int at = 0;
+        for (int i = 0; i <= VK_CORNER_N && at >= 0 && (size_t)at < sizeof why; i++)
+            if (n->corner_why[i] != w->corner_why[i])
+                at += snprintf(why + at, sizeof why - (size_t)at, "%s%.1f %s", at ? ", " : " (",
+                               (double)(n->corner_why[i] - w->corner_why[i]) / (double)presents, refusal[i]);
+        if (at > 0 && (size_t)at < sizeof why - 1) memcpy(why + at, ")", 2);
         LOG("vulkan: texture slots a present by handle: %.1f plain, %.1f bl2, %.1f indexed, %.1f memory, %.1f other; "
             "%.1f TIC indices named; for a draw's own path %.1f feedback, %.1f a copy of a bound target, %.1f read-only "
             "depth, %.1f color depth compares, %.1f min or max reductions, %.1f query hints; corners of a target %.1f "
             "read in place (%.1f of them no corner at the bind, read whole), %.1f through their copy where the program "
-            "could read them in place; pool headers on pages the CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f "
+            "could read them in place%s; pool headers on pages the CPU wrote: TIC %.1f (%.1f changed), TSC %.1f (%.1f "
             "changed)\n",
             k[VK_SLOT_PLAIN], k[VK_SLOT_BL2], k[VK_SLOT_INDEXED], k[VK_SLOT_MEMORY], k[VK_SLOT_OTHER], k[VK_SLOT_TICS],
             k[VK_SLOT_FEEDBACK], k[VK_SLOT_TARGET_COPY], k[VK_SLOT_DEPTH_RO], k[VK_SLOT_DC_COLOR], k[VK_SLOT_MINMAX],
             k[VK_SLOT_QUERY], k[VK_SLOT_CORNER] + k[VK_SLOT_CORNER_WHOLE], k[VK_SLOT_CORNER_WHOLE],
-            k[VK_SLOT_CORNER_COPY], p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
+            k[VK_SLOT_CORNER_COPY], why, p[VK_POOL_TIC_WRITTEN], p[VK_POOL_TIC_CHANGED], p[VK_POOL_TSC_WRITTEN],
             p[VK_POOL_TSC_CHANGED]);
     }
     LOG("vulkan: texture memo checks a present: headers after an epoch %.1f kept by their generations, %.1f checked; "
@@ -5502,8 +5515,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             v[6] = v[7] = 0.0f;
             ncorners++;
             g_stats.n.slot[x->corner[0] ? VK_SLOT_CORNER : VK_SLOT_CORNER_WHOLE]++;
-        } else if (corner_ok && sampled && sampled->corner == VK_RT_COPY_CROP + 1)
+        } else if (corner_ok && sampled && sampled->corner == VK_RT_COPY_CROP + 1) {
             g_stats.n.slot[VK_SLOT_CORNER_COPY]++;
+            g_stats.n.corner_why[vk_tex_corner_refusal(x->tic, x->tsc, vk_rt_find(sampled->gva))]++;
+        }
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
             scaled[0] |= 1ull << i;
             if (part_keep) tp->scaled[0] |= 1ull << i;

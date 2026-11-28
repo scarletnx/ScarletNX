@@ -2612,6 +2612,19 @@ Surf* vk_tex_from_tic(const u32* tic); /* tic: the header's words as host number
    target of one level and an image of its own, a sampler that clamps to the edge with one filter and no anisotropy,
    reduction or compare) */
 Surf* vk_tex_from_tic_corner(const u32* tic, const u32* tsc, u32 corner[2]);
+/* why a corner of the target rt (NULL: not asked) that the header tic shows, sampled through tsc, is read through its
+   copy and not in place: the first that holds, in this order, or VK_CORNER_N for none */
+enum {
+    VK_CORNER_WRAP,         /* a wrap mode other than clamp to edge in x or y */
+    VK_CORNER_FILTER,       /* one filter for minification, another for magnification */
+    VK_CORNER_ANISOTROPY,   /* the sampler's own anisotropy */
+    VK_CORNER_REDUCTION,    /* a min or max reduction */
+    VK_CORNER_COMPARE,      /* a depth compare */
+    VK_CORNER_UNNORMALIZED, /* a header of texel coordinates */
+    VK_CORNER_TARGET,       /* the target hosted, of several levels or scaled */
+    VK_CORNER_N
+};
+int vk_tex_corner_refusal(const u32* tic, const u32* tsc, const Surf* rt);
 /* whether t is one of render target rt's copies (its crops, rt_guest's), which a lookup refreshes from rt's pixels */
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt);
 /* Writable resolution bypasses read-only render-target crop snapshots. */
@@ -3860,6 +3873,7 @@ typedef struct {
     u64 sets_last; /* descriptor sets a stage took again from its last one, with no hash or lookup */
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
     u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
+    u64 corner_why[VK_CORNER_N + 1]; /* VK_SLOT_CORNER_COPY by vk_tex_corner_refusal's reason, VK_CORNER_N: none */
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end

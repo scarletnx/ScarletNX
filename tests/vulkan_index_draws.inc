@@ -2282,10 +2282,11 @@ static int feedback_interval_case(GpuChannel* channel, u64 target, u64 address) 
 /* A header that shows the top left 6x5 of an 8x8 target, as dynamic resolution samples the frame's size of a target of
    the full size: a fragment program reads the corner in place, its coordinates scaled to the corner and clamped at
    its last texel centre (ShaderInfo.corner_slots), where the sampler clamps to the edge and filters one way; through a
-   copy of the corner under the other wrap modes and filters. Either way each pixel is the corner's texel or texels
-   that the wrap mode and filter give, and a size query answers 6x5. The quad's generic goes from 0 to 1.5 across the
-   4x4 target, so the right and bottom columns sample past the corner's edge, where the target's texels go on: a sample
-   not clamped there reads them. Nearest is exact, linear within one of the texel's 8 bits */
+   copy of the corner under the other wrap modes and filters, counted by that reason (vk_tex_corner_refusal). Either
+   way each pixel is the corner's texel or texels that the wrap mode and filter give, and a size query answers 6x5.
+   The quad's generic goes from 0 to 1.5 across the 4x4 target, so the right and bottom columns sample past the
+   corner's edge, where the target's texels go on: a sample not clamped there reads them. Nearest is exact, linear
+   within one of the texel's 8 bits */
 static void corner_texel(const u8* pixels, int i, int j, u32 w, u32 h, u32 wrap, u8 out[4]) {
     const int size[2] = {(int)w, (int)h};
     int at[2] = {i, j};
@@ -2455,17 +2456,22 @@ static int corner_case(GpuChannel* channel, u64 target, u64 address) {
         const u64 read_in_place = after.slot[VK_SLOT_CORNER] - before.slot[VK_SLOT_CORNER],
                   through_copy = after.slot[VK_SLOT_CORNER_COPY] - before.slot[VK_SLOT_CORNER_COPY],
                   copied = copies_after.written[VK_RT_COPY_CROP] - copies_before.written[VK_RT_COPY_CROP];
-        if (want_in_place ? read_in_place != 1 || through_copy || copied : read_in_place || through_copy != 1) {
+        /* and through the copy, why: the wrap mode, else the two filters (vk_tex_corner_refusal) */
+        const int refusal = want_in_place ? VK_CORNER_N : mixed ? VK_CORNER_FILTER : VK_CORNER_WRAP;
+        const u64 refused = want_in_place ? 0 : after.corner_why[refusal] - before.corner_why[refusal];
+        if (want_in_place ? read_in_place != 1 || through_copy || copied
+                          : read_in_place || through_copy != 1 || refused != 1) {
             fprintf(stderr,
-                    "corner, %s%s%s: %llu reads in place, %llu through a copy, %llu copies of the corner written; "
-                    "expected %s\n",
+                    "corner, %s%s%s: %llu reads in place, %llu through a copy (%llu for the %s), %llu copies of the "
+                    "corner written; expected %s\n",
                     sizes ? "size query, " : "", wraps[wrap],
                     sizes    ? ""
                     : mixed  ? ", nearest over linear"
                     : linear ? ", linear"
                              : ", nearest",
-                    (unsigned long long)read_in_place, (unsigned long long)through_copy, (unsigned long long)copied,
-                    want_in_place ? "1 read in place and no copy" : "1 read through a copy");
+                    (unsigned long long)read_in_place, (unsigned long long)through_copy, (unsigned long long)refused,
+                    mixed ? "filters" : "wrap mode", (unsigned long long)copied,
+                    want_in_place ? "1 read in place and no copy" : "1 read through a copy, for that");
             ok = 0;
         }
         in_place += want_in_place;
