@@ -8183,6 +8183,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_fragment_barrier.inc"
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
+#include "vulkan_stamp_runtime.inc"
 #include "vulkan_owned_page_reads.inc"
 #include "vulkan_owned_kept_copy.inc"
 #include "vulkan_writeback_sweep.inc"
@@ -8908,6 +8909,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cube_take_frames();
         else if (!strcmp(name, "texture_quiet"))
             result = check_texture_quiet();
+        else if (!strcmp(name, "stamp_runtime"))
+            result = check_stamp_runtime();
         else if (!strcmp(name, "draw_texture"))
             result = check_draw_texture();
         else if (!strcmp(name, "descriptor_memo"))
@@ -9367,6 +9370,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_draw_texture());
     CHECK(!check_texture_quiet());
     CHECK(!check_cube_take());
+    CHECK(!check_stamp_runtime());
     CHECK(!check_texture_quiet_other());
     CHECK(!check_texture_quiet_alias());
     CHECK(!check_texture_quiet_present());

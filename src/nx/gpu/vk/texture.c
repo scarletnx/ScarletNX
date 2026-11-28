@@ -2175,7 +2175,12 @@ static void tex_hosted_publish(Surf* t) {
 static int tex_upload(Surf* t) {
     tex_hosted_publish(t);
     SNX_ZONE_V(z, "texture upload", t->size);
+    /* the console's GPU samples guest memory where it is: the upload is the runtime's own work, which a game that
+       sizes its frame by its GPU timer must not count (stamp.c). In a racing game's race the uploads were 2.3 ms of
+       the 13.7 ms a present its timer read, and 6 ms of 14.8 where memory ran short */
+    vk_stamp_runtime_begin();
     int r = tex_upload_(t);
+    vk_stamp_runtime_end();
     SNX_ZONE_END(z);
     return r;
 }
@@ -3615,7 +3620,14 @@ static int tex_zero(Surf* t) {
 }
 /* t, a texture with holes in its mapping: its image cleared, then the blocks of its mapped runs loaded; loaded whole
    when they are more than half of it. 1 when the image has them */
+static int tex_load_pieces_(Surf* t);
 static int tex_load_pieces(Surf* t) {
+    vk_stamp_runtime_begin(); /* an upload, as tex_upload's: the runtime's own work */
+    const int loaded = tex_load_pieces_(t);
+    vk_stamp_runtime_end();
+    return loaded;
+}
+static int tex_load_pieces_(Surf* t) {
     TexPieces p;
     TexRuns r = {0, t->gva, 0, 0, 0, 0, &p};
     u64 sum = 0;
