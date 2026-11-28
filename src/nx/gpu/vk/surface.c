@@ -238,6 +238,37 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
     *bytes = g_held[kind].bytes;
     *parked = kind == VK_LRU_RT ? g_parked : 0;
 }
+int vk_surf_census_kind(const Surf* s) {
+    if (s->is_rt) return VK_CENSUS_RT;
+    const VkFormat f = s->f.vk;
+    const int bc = f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK;
+    if (s->f.conv == VKC_ASTC)
+        return !bc                                                               ? VK_CENSUS_ASTC_DECODED
+               : f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK ? VK_CENSUS_ASTC_BC7
+                                                                                 : VK_CENSUS_ASTC_BCN;
+    if (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) return VK_CENSUS_ASTC;
+    if (s->f.conv != VKC_NONE) return VK_CENSUS_DECODED;
+    return bc ? VK_CENSUS_BC : VK_CENSUS_PLAIN;
+}
+const char* vk_surf_census_name(int kind) {
+    static const char* const names[VK_CENSUS_KINDS] = {"ASTC decoded",           "ASTC as BC7",
+                                                       "ASTC as BC1/BC4/BC5",    "ASTC as it is",
+                                                       "BC1 to BC7 as they are", "other formats converted",
+                                                       "uncompressed",           "render targets"};
+    return kind >= 0 && kind < VK_CENSUS_KINDS ? names[kind] : "?";
+}
+static void census_one(void* ctx, const Surf* s) {
+    VkSurfCensus* c = ctx;
+    const int k = vk_surf_census_kind(s);
+    c->n[k]++;
+    c->bytes[k] += s->bytes;
+    if (s->demoted) c->sys[k] += s->sys_bytes;
+}
+void vk_surf_census(VkSurfCensus* c) {
+    *c = (VkSurfCensus){0};
+    vk_surf_each(VK_LRU_TEX, census_one, c);
+    vk_surf_each(VK_LRU_RT, census_one, c);
+}
 void vk_surf_each(int kind, void (*fn)(void* ctx, const Surf* s), void* ctx) {
     for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
         for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) fn(ctx, g_rows.surf[r]);

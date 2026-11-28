@@ -617,6 +617,23 @@ and the descriptor pools. `vk_budget_mb` and `vk_max_allocation_mb` impose a sma
 GPU's behaviour on a large one ([Settings](../user/settings.md#debug)); `astc_mode` changes what ASTC textures cost
 on a GPU without ASTC ([Settings](../user/settings.md#graphics)).
 
+Every game log has, every 600 presents with no option, where the renderer's caches put that memory: the `vulkan:
+caches:` line (render targets, textures and buffers, in MB), then a line of the same textures and render targets by
+what their images hold, each with its count, its MB of the GPU's memory and its MB in system memory (an image moved
+there for want of room). A racing game's race on a GPU without ASTC, 157 s in, with 6175 MB of textures:
+
+```
+vulkan: the caches' textures and render targets by what their images hold: ASTC decoded 1629, 3648 MB (0 MB in
+system memory); ASTC as BC7 2, 859 MB (0 MB in system memory); ASTC as BC1/BC4/BC5 795, 435 MB (0 MB in system
+memory); BC1 to BC7 as they are 670, 582 MB (0 MB in system memory); uncompressed 324, 649 MB (0 MB in system memory);
+render targets 1013, 893 MB (0 MB in system memory)
+```
+
+`ASTC decoded` is ASTC held as RGBA8 where the GPU samples no ASTC, 4 to 36 times its blocks' size (4x4 to 12x12); `ASTC as BC7`
+and `ASTC as BC1/BC4/BC5` what the encoder made of it; `ASTC as it is` and `BC1 to BC7 as they are` what the GPU
+samples itself; `other formats converted` ETC2, EAC and the BC or 16-bit packings a GPU lacks; `uncompressed` the
+rest. A target's copies are in the targets' line after it, not here.
+
 ### Memory view: which allocations have a pool
 
 Tracy's Memory view groups allocations by pool. Guest mappings and Vulkan device memory are always tracked when a

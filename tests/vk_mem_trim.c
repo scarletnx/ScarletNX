@@ -474,9 +474,73 @@ static int sys_heap_short(void) {
     return oldest && hot_stays && g_rt_sys.n == 0 && g_rt_sys.bytes == 0;
 }
 
+/* The census of the caches' images by what they hold (vk_surf_census), one of each kind: ASTC decoded, held as BC7, as
+   BC4, as it is, a BC3 the GPU samples (in system memory), an ETC2 decoded, an uncompressed texture and a render
+   target. Each lands in its own kind with its bytes; the one in system memory counts there and not in the GPU's */
+static int census(void) {
+    static const struct {
+        VkFormat vk;
+        u8 conv, rt, demoted;
+        int kind;
+    } cases[] = {
+        {VK_FORMAT_R8G8B8A8_UNORM, VKC_ASTC, 0, 0, VK_CENSUS_ASTC_DECODED},
+        {VK_FORMAT_BC7_SRGB_BLOCK, VKC_ASTC, 0, 0, VK_CENSUS_ASTC_BC7},
+        {VK_FORMAT_BC4_UNORM_BLOCK, VKC_ASTC, 0, 0, VK_CENSUS_ASTC_BCN},
+        {VK_FORMAT_ASTC_8x8_UNORM_BLOCK, VKC_NONE, 0, 0, VK_CENSUS_ASTC},
+        {VK_FORMAT_BC3_UNORM_BLOCK, VKC_NONE, 0, 1, VK_CENSUS_BC},
+        {VK_FORMAT_R8G8B8A8_UNORM, VKC_ETC2, 0, 0, VK_CENSUS_DECODED},
+        {VK_FORMAT_R8G8B8A8_UNORM, VKC_NONE, 0, 0, VK_CENSUS_PLAIN},
+        {VK_FORMAT_B8G8R8A8_UNORM, VKC_NONE, 1, 0, VK_CENSUS_RT},
+    };
+    enum { N = sizeof cases / sizeof cases[0] };
+    static_assert(N == VK_CENSUS_KINDS, "a case for each kind");
+    VkSurfCensus before, after;
+    vk_surf_census(&before);
+    Surf* s[N];
+    for (u32 i = 0; i < N; i++) {
+        s[i] = calloc(1, sizeof *s[i]);
+        CHECK(s[i]);
+        s[i]->gva = 0x70000000 + (u64)i * 0x1000000;
+        s[i]->is_rt = cases[i].rt;
+        s[i]->f.vk = cases[i].vk;
+        s[i]->f.conv = cases[i].conv;
+        s[i]->demoted = cases[i].demoted;
+        s[i]->bytes = cases[i].demoted ? 0 : (u64)(i + 1) << 20; /* a demoted image takes none of the GPU's */
+        s[i]->sys_bytes = cases[i].demoted ? (u64)(i + 1) << 20 : 0;
+        row_take(s[i]);
+        lru_add(s[i], cases[i].rt ? VK_LRU_RT : VK_LRU_TEX);
+    }
+    vk_surf_census(&after);
+    int ok = 1;
+    for (u32 i = 0; i < N; i++) {
+        const int k = cases[i].kind;
+        const u64 dev = cases[i].demoted ? 0 : (u64)(i + 1) << 20, sys = cases[i].demoted ? (u64)(i + 1) << 20 : 0;
+        if (vk_surf_census_kind(s[i]) != k || after.n[k] != before.n[k] + 1 ||
+            after.bytes[k] != before.bytes[k] + dev || after.sys[k] != before.sys[k] + sys) {
+            fprintf(stderr,
+                    "census: case %u (format %d, conv %d) is kind %d (%s), not %d; %u of it, %llu and %llu bytes\n", i,
+                    (int)cases[i].vk, cases[i].conv, vk_surf_census_kind(s[i]),
+                    vk_surf_census_name(vk_surf_census_kind(s[i])), k, after.n[k] - before.n[k],
+                    (unsigned long long)(after.bytes[k] - before.bytes[k]),
+                    (unsigned long long)(after.sys[k] - before.sys[k]));
+            ok = 0;
+        }
+    }
+    for (u32 i = 0; i < N; i++) {
+        const int kind = cases[i].rt ? VK_LRU_RT : VK_LRU_TEX;
+        lru_unlink(s[i]->row);
+        g_held[kind].n--;
+        g_held[kind].bytes -= s[i]->bytes;
+        row_drop(s[i]);
+        free(s[i]);
+    }
+    return ok;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
+    CHECK(census());
     /* for headroom where the driver pages: kept a second and eight presents (68 presents here) */
     CHECK(!trim_takes(1, 0, 5) && !trim_takes(1, 0, 20) && !trim_takes(1, 0, 67) && trim_takes(1, 0, 69));
     CHECK(trim_takes(1, 1, 5) && !trim_takes(1, 1, 1)); /* for an allocation: taken after two presents */
