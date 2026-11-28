@@ -296,7 +296,7 @@ static void timeline(u32 bits) {
         } else
             without++;
     }
-    submit(301 * MS);
+    submit(302 * MS);
     finish(310 * MS);
     CHECK(with == STAMP_N - 2 && without == 102, "%u reports of %u have a timestamp in a pool of %u", with,
           STAMP_N + 100, STAMP_N);

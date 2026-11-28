@@ -5115,6 +5115,14 @@ static int take_level_back(Surf* t, u32 level) {
 /* the drawn targets a texture did not take for want of memory in their level, so far */
 static u64 g_takes_unbound;
 u64 vk_tex_take_unbound(void) { return g_takes_unbound; }
+/* The copies of a search are the runtime's own work, one stretch a search (stamp.c): the console's GPU samples the
+   target's memory where it is. Opened at the search's first copy, so a search that copies nothing writes no mark: a
+   racing game's race took 139 targets a present, 0.96 ms of the 13.7 ms its GPU timer read */
+static void take_stretch(int* open) {
+    if (*open) return;
+    vk_stamp_runtime_begin();
+    *open = 1;
+}
 static void tex_take_drawn(Surf* t) {
     /* a storage surface its texture hosts: what it takes is its host's to take, into the host's image */
     if (t && t->host) {
@@ -5136,6 +5144,7 @@ static void tex_take_drawn(Surf* t) {
     Surf** d = small;
     u64 stride = t->layer_size;
     u64 hi = t->gva + t->size;
+    int stretch = 0; /* a copy of this search opened the runtime's stretch (take_stretch) */
     int n = vk_rt_drawn_in(t->gva, hi, d, 32);
     if (n > 32) {
         d = malloc((size_t)n * sizeof *d);
@@ -5159,6 +5168,7 @@ static void tex_take_drawn(Surf* t) {
             t->h == s->h << ds_msaa_log2_y(s->msaa) && (s->layers == 1 || s->layer_size == stride) && vk_ms_moves(s) &&
             !copied_into(s, t) && vk_rt_drawn_fresh(s)) {
             u32 count = s->layers < t->layers ? s->layers : t->layers;
+            take_stretch(&stretch);
             vk_render_end();
             VkCommandBuffer cb = vk_cmd();
             for (u32 k = 0; k < count; k++) {
@@ -5218,6 +5228,7 @@ static void tex_take_drawn(Surf* t) {
                     settled = 0;
                     continue;
                 }
+                take_stretch(&stretch);
                 VkCommandBuffer cb = copy_begin(s, t);
                 if (scaled) {
                     VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
@@ -5273,6 +5284,7 @@ static void tex_take_drawn(Surf* t) {
                     (lbd || source_size == slab) && vk_rt_drawn_fresh(s)) {
                     u64 z = ((off - lo) / slab << lbd) + (off - lo) % slab / step;
                     if (z < ld) {
+                        take_stretch(&stretch);
                         if (copy_layers(copy_begin(s, t), s, t, l, (u32)z, 1, lw, lh, 1))
                             mark_copied(s, t);
                         else
@@ -5304,6 +5316,7 @@ static void tex_take_drawn(Surf* t) {
             settled = 0;
             continue;
         }
+        take_stretch(&stretch);
         if (copy_layers(copy_begin(s, t), s, t, at.l, at.layer, at.count, at.lw, at.lh, 0)) {
             mark_copied(s, t);
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its
@@ -5326,6 +5339,7 @@ static void tex_take_drawn(Surf* t) {
         } else
             settled = 0;
     }
+    if (stretch) vk_stamp_runtime_end();
     if (t->patch_run >= 8 && !t->take_said) take_say(t, d, n, NULL);
     if (d != small) free(d);
     if (settled && vk_rt_take_gen() == gen) {

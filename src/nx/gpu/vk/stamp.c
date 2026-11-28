@@ -38,7 +38,12 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 
-#define STAMP_N 4096 /* timestamps in the pool: each submission's start and end, and its reports' */
+/* timestamps in the pool: each submission's start and end, its reports', and two for each stretch of the runtime's own
+   work. A racing game's race has about 250 such stretches a present with its uploads, takes, write-backs and target
+   copies marked, 39 reports and 14 submissions: about 570 timestamps a present, which wait for their submissions to be
+   done. 4096 held seven presents of them, and a present that takes longer than that to be done loses marks; 16384
+   holds 28 */
+#define STAMP_N 16384
 #define SUB_N   1024 /* submissions with timestamps not yet done */
 /* values step at least this many ns, more than one GPU tick (625 / 384 ns), so that they strictly increase in ticks,
    as gpu_ticks's do */

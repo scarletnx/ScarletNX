@@ -1294,6 +1294,7 @@ static void count_copy_image(VkCommandBuffer cb, VkImage src, VkImageLayout sl, 
    settled too: the target's next draw moves the count */
 static void check_take_skip(void) {
     Surf t = tex(64, 64, 1, 1, 4, 2, 0, 1), s = tex(64, 64, 1, 1, 4, 2, 0, 1);
+    const u32 stretches = g_stretch_begins;
     s.is_rt = 1;
     s.sw = s.w;
     s.sh = s.h;
@@ -1322,6 +1323,8 @@ static void check_take_skip(void) {
     tex_take_drawn(&t);
     tex_take_drawn(&t);
     CHECK(g_drawn_searches == 5 && g_image_copies == 1); /* taken once */
+    /* the one search that copied is one stretch of the runtime's own work; those that copied nothing are none */
+    CHECK(g_stretch_begins == stretches + 1 && g_stretch_ends == g_stretch_begins);
     /* a texture sampled from level 1 on (made at half its resolution): its level 0 gets its memory back for the
        target drawn for it, which is copied into it, and the texture samples from level 0 again */
     Surf half = tex(64, 64, 1, 2, 4, 2, 0, 1);
