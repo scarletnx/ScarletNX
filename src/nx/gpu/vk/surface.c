@@ -200,9 +200,11 @@ static void ended_unlink(u32 r) {
     link_out(g_rows.ended, &g_rows.ended_list, r);
     g_rows.ended_by[r] = 0;
 }
+static void surf_sys_touch(Surf* s);
 void vk_surf_touch(Surf* s) {
     u32 r = s->row;
     if (r) ended_unlink(r); /* used: the game has an object there again */
+    if (s->demoted) surf_sys_touch(s);
     if (s->last_used == g_vk_present) return;
     s->last_used = g_vk_present;
     if (!r || !g_rows.list[r]) return;
@@ -697,7 +699,7 @@ static void surf_views_go(Surf* s) {
     vk_defer_image(VK_NULL_HANDLE, 0, s->att, s->att_linear);
     s->att = s->att_linear = VK_NULL_HANDLE;
 }
-static void rt_sys_left(Surf* s);
+static void surf_sys_left(Surf* s);
 static u64 g_rt_hosted, g_rt_unhosted; /* targets made views of a texture, and given images of their own again */
 /* set while a hosted surface gets an image of its own (vk_rt_own_): vk_cache_image_create makes no room for it then.
    A trim, or the shed and trim after no memory, can evict the host whose image the surface copies from, and the
@@ -712,7 +714,7 @@ void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
     vk_defer_image(s->img, s->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_defer_bytes(s->bytes);
     vk_surf_bytes(s, 0);
-    if (s->is_rt) rt_sys_left(s);
+    if (s->demoted) surf_sys_left(s);
     s->img = t->img;
     s->mem = 0;
     s->movable = 0;
@@ -916,13 +918,56 @@ int vk_rt_move(VkCommandBuffer cb, Surf* s, u64* bytes) {
 static struct {
     u64 out, back;        /* targets moved into system memory, and back, so far */
     u64 n, bytes;         /* those there now, and their bytes */
+    u64 tex_n;            /* textures in system memory now */
     u64 lost, lost_bytes; /* targets that went with pixels memory lacks, so far */
     u64 kept, reloads;    /* targets set aside so far (rt_aside), and those loaded again at their next use */
-    u64 press_usage;      /* system heap's usage when hard pressure last evicted: a climb bypasses the wait */
-    u32 press_at;         /* the present hard pressure last evicted (+1: 0 is none) */
-    u32 heap;             /* the heap they went to, plus one: 0 before the first */
+    u64 press_usage;      /* system heap's usage when pressure last evicted: a climb bypasses the wait */
+    u32 press_at;         /* the present pressure last evicted (+1: 0 is none) */
+    u32 heap;             /* the heap demoted surfaces went to, plus one: 0 before the first */
+    /* PCIe read-bandwidth tracking of demoted surfaces (textures + render targets) */
+    u32 bw_present;       /* the present bw_frame_* counts */
+    u64 bw_frame_bytes;   /* unique bytes of demoted surfaces touched in bw_present */
+    u64 bw_frame_touches; /* total touches of demoted surfaces in bw_present */
+    u32 bw_win_frames;    /* presents with at least one demoted-surface touch since the last 600-present report */
+    u64 bw_win_bytes;     /* sum of per-present unique bytes touched since the last report */
+    u64 bw_win_touches;   /* total touches since the last report */
+    u64 bw_win_peak;      /* peak single-present unique bytes touched since the last report */
+    u64 bw_promotes;      /* promotions made under PCIe read-bandwidth pressure since the last report */
 } g_rt_sys;
 static u64 trim_head(u64 budget);
+static void surf_sys_touch(Surf* s) {
+    if (g_rt_sys.bw_present != g_vk_present) {
+        if (g_rt_sys.bw_frame_bytes > g_rt_sys.bw_win_peak) g_rt_sys.bw_win_peak = g_rt_sys.bw_frame_bytes;
+        g_rt_sys.bw_frame_bytes = 0;
+        g_rt_sys.bw_frame_touches = 0;
+        g_rt_sys.bw_present = g_vk_present;
+        g_rt_sys.bw_win_frames++;
+    }
+    if (s->sys_read_at != g_vk_present) {
+        s->sys_read_at = g_vk_present;
+        s->sys_reads = 1;
+        g_rt_sys.bw_frame_bytes += s->sys_bytes;
+        g_rt_sys.bw_win_bytes += s->sys_bytes;
+    } else
+        s->sys_reads++;
+    g_rt_sys.bw_frame_touches++;
+    g_rt_sys.bw_win_touches++;
+}
+static u64 sys_bw_now(void) { return g_rt_sys.bw_present == g_vk_present ? g_rt_sys.bw_frame_bytes : 0; }
+void vk_sys_bw_stats(VkSysBwStats* st) {
+    u64 peak = g_rt_sys.bw_win_peak;
+    if (g_rt_sys.bw_frame_bytes > peak) peak = g_rt_sys.bw_frame_bytes;
+    *st = (VkSysBwStats){.frames = g_rt_sys.bw_win_frames,
+                         .touches = g_rt_sys.bw_win_touches,
+                         .unique_bytes = g_rt_sys.bw_win_bytes,
+                         .peak_bytes = peak,
+                         .bw_promotes = g_rt_sys.bw_promotes};
+    g_rt_sys.bw_win_frames = 0;
+    g_rt_sys.bw_win_bytes = 0;
+    g_rt_sys.bw_win_touches = 0;
+    g_rt_sys.bw_win_peak = 0;
+    g_rt_sys.bw_promotes = 0;
+}
 void vk_rt_sys_stats(VkRtSysStats* st) {
     *st = (VkRtSysStats){.out = g_rt_sys.out,
                          .back = g_rt_sys.back,
@@ -932,6 +977,21 @@ void vk_rt_sys_stats(VkRtSysStats* st) {
                          .lost_bytes = g_rt_sys.lost_bytes,
                          .kept = g_rt_sys.kept,
                          .reloads = g_rt_sys.reloads};
+}
+/* Whether demoting `bytes` into the system heap stays under its budget less trim_head */
+static int sys_heap_room(u64 bytes) {
+    if (!g_rt_sys.heap) return 1;
+    DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+    vk_devmem_budgets(heaps);
+    const DevMemBudget* sys = &heaps[g_rt_sys.heap - 1];
+    const u64 cap = sys->budget > trim_head(sys->budget) ? sys->budget - trim_head(sys->budget) : 0;
+    return !sys->budget || (sys->usage < cap && bytes <= cap - sys->usage);
+}
+static void sys_heap_note(DevMem mem) {
+    if (g_rt_sys.heap || !mem) return;
+    DevMemInfo info;
+    vk_devmem_info(mem, &info);
+    g_rt_sys.heap = vk_devmem_props()->memoryTypes[info.type].heapIndex + 1;
 }
 /* s's image moved into system memory (the frame's command buffer: a rendering pass open ends): the bytes of the GPU's
    memory it lets go, or 0, with why in *no */
@@ -945,15 +1005,9 @@ static u64 rt_demote(Surf* s, const char** no) {
         return 0;
     }
     const u64 was = s->bytes;
-    if (g_rt_sys.heap) {
-        DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
-        vk_devmem_budgets(heaps);
-        const DevMemBudget* sys = &heaps[g_rt_sys.heap - 1];
-        const u64 cap = sys->budget > trim_head(sys->budget) ? sys->budget - trim_head(sys->budget) : 0;
-        if (sys->budget && (sys->usage >= cap || was > cap - sys->usage)) {
-            *no = "the system memory heap is near its budget";
-            return 0;
-        }
+    if (!sys_heap_room(was)) {
+        *no = "the system memory heap is near its budget";
+        return 0;
     }
     const DevMemWant want = {.at = DM_SYSTEM, .image = 1};
     u64 bytes;
@@ -963,9 +1017,7 @@ static u64 rt_demote(Surf* s, const char** no) {
         *no = moved < 0 ? "a storage result of it still lands" : "no system memory took its image";
         return 0;
     }
-    DevMemInfo info;
-    vk_devmem_info(s->mem, &info);
-    g_rt_sys.heap = vk_devmem_props()->memoryTypes[info.type].heapIndex + 1;
+    sys_heap_note(s->mem);
     vk_surf_bytes(s, 0); /* none of the GPU's memory: the budget's bytes are those */
     s->demoted = 1;
     s->sys_bytes = bytes;
@@ -974,14 +1026,29 @@ static u64 rt_demote(Surf* s, const char** no) {
     g_rt_sys.bytes += bytes;
     return was;
 }
+static u64 tex_demote_one(Surf* t) {
+    if (!sys_heap_room(t->bytes)) return 0;
+    const u64 moved = vk_tex_demote(t);
+    if (!moved) return 0;
+    sys_heap_note(t->mem);
+    g_rt_sys.tex_n++;
+    return moved;
+}
 /* s out of system memory: moved back, or freed */
-static void rt_sys_left(Surf* s) {
-    if (!s->is_rt || !s->demoted) return;
-    s->demoted = 0;
-    g_rt_sys.n--;
-    g_rt_sys.bytes -= s->sys_bytes;
-    s->sys_bytes = 0;
-    if (!g_rt_sys.n) {
+static void surf_sys_left(Surf* s) {
+    if (!s->demoted) return;
+    if (s->is_rt) {
+        s->demoted = 0;
+        g_rt_sys.n--;
+        g_rt_sys.bytes -= s->sys_bytes;
+        s->sys_bytes = 0;
+        s->sys_reads = 0;
+        s->sys_read_at = 0;
+    } else {
+        if (g_rt_sys.tex_n) g_rt_sys.tex_n--;
+        vk_tex_sys_left(s);
+    }
+    if (!g_rt_sys.n && !g_rt_sys.tex_n) {
         g_rt_sys.press_at = 0;
         g_rt_sys.press_usage = 0;
     }
@@ -993,7 +1060,7 @@ static int rt_promote(Surf* s) {
     u64 bytes;
     vk_render_end();
     if (rt_move(vk_cmd(), s, &want, &bytes) <= 0) return 0;
-    rt_sys_left(s);
+    surf_sys_left(s);
     g_rt_sys.back++;
     return 1;
 }
@@ -3429,7 +3496,7 @@ static void surf_free(Surf* s) {
         row_drop(s);
     }
     if (s->is_rt) rt_pages(s, -1);
-    rt_sys_left(s);
+    surf_sys_left(s);
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
@@ -3481,7 +3548,7 @@ static u64 tex_give_way(Surf* s, u64 want) {
         }
         return 0; /* frees no device memory */
     }
-    const u64 moved = want != ~0ull ? vk_tex_demote(s) : 0;
+    const u64 moved = want != ~0ull ? tex_demote_one(s) : 0;
     if (moved) {
         SNX_ZONE_T(z, "vk mem texture reclaim", "%lluKB, epoch %u: moved to system memory",
                    (unsigned long long)(moved >> 10), vk_ww_epoch());
@@ -3853,32 +3920,35 @@ void vk_surf_mapping_changed(u64 gva, u64 size) {
     }
 }
 static int ended_live(u32 r) {
-    const u64 gva = g_rows.surf[r]->gva;
+    const u64 gva = g_rows.surf[r]->gva & ~(1ull << 63);
     return g_rows.ended_by[r] == 2 ? gmmu_translate(gva) != 0 : gpu_texture_live(gva);
 }
-/* row r at the head of the list of ended textures, ended as `by` says */
+/* row r at the head of the list of ended surfaces, ended as `by` says */
 static void ended_link(u32 r, u8 by) {
     g_rows.ended_by[r] = by;
     g_rows.ended_at[r] = g_vk_present;
     link_before(g_rows.ended, &g_rows.ended_list, r, g_rows.ended_list.head);
 }
-/* the textures in those ranges whose first page is mapped no more go on the list of the ended */
+/* the surfaces in those ranges whose first page is mapped no more go on the list of the ended */
 static void remapped_collect(void) {
     if (!g_remapped.n && !g_remapped.all) return;
-    for (int list = VK_LRU_TEX; list <= VK_LRU_TEX + LRU_AGED; list += LRU_AGED)
-        for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) {
-            const Surf* s = g_rows.surf[r];
-            int in = g_remapped.all;
-            for (u32 i = 0; i < g_remapped.n && !in; i++)
-                in = s->gva < g_remapped.gva[i] + g_remapped.size[i] &&
-                     g_remapped.gva[i] < s->gva + (s->size ? s->size : 1);
-            if (!in || s->is_rt || g_rows.ended_by[r] || gmmu_translate(s->gva)) continue;
-            ended_link(r, 2);
-        }
+    for (int kind = VK_LRU_TEX; kind <= VK_LRU_RT; kind++)
+        for (int list = kind; list <= kind + LRU_AGED; list += LRU_AGED)
+            for (u32 r = g_rows.lists[list].head; r; r = g_rows.lru[r].next) {
+                const Surf* s = g_rows.surf[r];
+                const u64 gva = s->gva & ~(1ull << 63);
+                const u64 len = s->is_rt ? rt_bytes(s) : (s->size ? s->size : 1);
+                int in = g_remapped.all;
+                for (u32 i = 0; i < g_remapped.n && !in; i++)
+                    in = gva < g_remapped.gva[i] + g_remapped.size[i] && g_remapped.gva[i] < gva + len;
+                if (!in || g_rows.ended_by[r] || gmmu_translate(gva)) continue;
+                ended_link(r, 2);
+            }
     g_remapped.n = 0;
     g_remapped.all = 0;
 }
-/* the textures at the addresses whose last object ended since the last call go on the list of those */
+/* the surfaces (textures and render targets, parked too) at the addresses whose last object ended since the last call
+   go on the list of those */
 static void ended_collect(void) {
     u64 gva[256];
     remapped_collect();
@@ -3886,23 +3956,32 @@ static void ended_collect(void) {
         for (u32 i = 0; i < n; i++)
             for (u32 r = g_rows.hash[hkey(gva[i])]; r; r = g_rows.hnext[r]) {
                 const Surf* s = g_rows.surf[r];
-                if (s->gva == gva[i] && !s->is_rt && !g_rows.ended_by[r] && g_rows.list[r]) ended_link(r, 1);
+                if ((s->gva & ~(1ull << 63)) == gva[i] && !g_rows.ended_by[r] && g_rows.list[r]) ended_link(r, 1);
             }
         if (n < 256) break;
     }
 }
-/* up to want bytes of them freed: those memory can give again, ended and unused since before `before`. One at whose
-   address the game made an object since is a texture as any other */
-static u64 ended_reclaim(u64 want, u32 before) {
+/* up to want bytes of them freed: ended and unused since before `before`. With lossy == 0 only lossless surfaces go;
+   with lossy == 1 lossy ended surfaces go before any live lossy surface is touched. Render-target bytes go in
+   *rt_freed when non-NULL */
+static u64 ended_reclaim(u64 want, u32 before, int lossy, u64* rt_freed) {
     u64 freed = 0;
     for (u32 r = g_rows.ended_list.head, n; r && freed < want; r = n) {
         n = g_rows.ended[r].next;
         Surf* s = g_rows.surf[r];
         if (ended_live(r))
             ended_unlink(r);
-        else if ((i32)((u32)s->last_used - before) < 0 && (i32)(g_rows.ended_at[r] - before) < 0 && lossless(s) &&
-                 !vk_gfx_image_holds(s))
-            freed += surf_evict(s);
+        else if ((i32)((u32)s->last_used - before) < 0 && (i32)(g_rows.ended_at[r] - before) < 0 &&
+                 (lossy ? !lossless(s) : lossless(s)) && !vk_gfx_image_holds(s)) {
+            const int is_rt = s->is_rt;
+            if (lossy && is_rt && !s->demoted) {
+                g_rt_sys.lost++;
+                g_rt_sys.lost_bytes += s->bytes;
+            }
+            const u64 b = surf_evict(s);
+            freed += b;
+            if (is_rt && rt_freed) *rt_freed += b;
+        }
     }
     g_ended_freed += freed;
     return freed;
@@ -3915,10 +3994,12 @@ u64 vk_surf_ended_freed(void) { return g_ended_freed; }
    where it loads 49 */
 void vk_surf_ended_frame(void) {
     ended_collect();
-    if (!g_rows.ended_list.head) return;
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
-    if (usage >= budget / 5 * 4) ended_reclaim(~0ull, vk_present_before(2000000000ull, 30));
+    if (usage < budget / 5 * 4) return;
+    const u32 before = vk_present_before(2000000000ull, 30);
+    if (g_rows.ended_list.head) ended_reclaim(~0ull, before, 0, NULL);
+    vk_buf_reclaim_ended(before, ~0ull);
 }
 /* What a trim leaves free of the budget: a sixteenth of it, 128 MiB at least and 256 MiB at most, and never more
    than a quarter. The trim started at 90% of the budget and freed what had gone unused for a second down to 80%: a
@@ -4015,9 +4096,18 @@ void vk_tex_refine_frame(void) {
    GPU's memory never had any in a racing game's race, and the textures its frames used stayed in system memory,
    sampled over the bus. The use counted is less what waits to be freed: what a swap lets go is the GPU's again when
    the frame is done, and the move back that finds no memory now is tried again at the next present */
-/* room within high for bytes more of the GPU's memory, its use *use: textures no present used since cold moved into
-   system memory, the least recently used first, from row *coldr on (0: none). 1 when it fits */
-static int room_for(u64* use, u64 bytes, u64 high, u32* coldr, u32 cold) {
+/* room within high for bytes more of the GPU's memory, its use *use: first ended lossless surfaces/buffers (Level 1),
+   then textures no present used since cold moved into system memory, the least recently used first, from row *coldr
+   on (0: none), and under PCIe bandwidth pressure idle lossless textures evicted when demoting leaves no room. 1 when
+   it fits */
+static int room_for(u64* use, u64 bytes, u64 high, u32* coldr, u32 cold, int bw_press) {
+    if (*use + bytes > high) {
+        const u32 ended_before = vk_present_before(0, 2);
+        const u64 need = *use + bytes - high;
+        u64 got = g_rows.ended_list.head ? ended_reclaim(need, ended_before, 0, NULL) : 0;
+        if (got < need) got += vk_buf_reclaim_ended(ended_before, need - got);
+        *use = *use > got ? *use - got : 0;
+    }
     while (*use + bytes > high && *coldr) {
         Surf* c = g_rows.surf[*coldr];
         *coldr = g_rows.lru[*coldr].next;
@@ -4026,51 +4116,92 @@ static int room_for(u64* use, u64 bytes, u64 high, u32* coldr, u32 cold) {
             break;
         }
         if (c->demoted || vk_gfx_image_holds(c)) continue;
-        const u64 got = vk_tex_demote(c);
+        u64 got = tex_demote_one(c);
+        if (!got && bw_press && lossless(c)) got = surf_evict(c);
         *use = *use > got ? *use - got : 0;
     }
     return *use + bytes <= high;
 }
-void vk_tex_promote_frame(void) {
-    if (!g_settings.texture_system_memory) return;
+/* Per-frame PCIe read-bandwidth mark (32 MiB/frame ~ 1.9 GB/s at 60 fps) where promotion switches to most-read first
+   and expands its per-present budget from 16 to 64 MiB */
+#define SYS_BW_PRESS_BYTES (32ull << 20)
+#define SYS_PROMOTE_CAP    (16ull << 20)
+#define SYS_PROMOTE_BW_CAP (64ull << 20)
+static u64 surf_bw_score(const Surf* s) {
+    const u64 reads = s->sys_read_at == g_vk_present ? (u64)s->sys_reads : 0ull;
+    return reads * s->sys_bytes;
+}
+static void promote_kind(int kind) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     const u64 head = trim_head(budget), high = budget > head ? budget - head : 0, pending = vk_deferred_bytes();
     u64 use = usage > pending ? usage - pending : 0, moved = 0;
     const u32 hot = vk_present_before(0, 2), cold = vk_present_before(0, 30);
-    u32 looked = 0, coldr = g_rows.lists[VK_LRU_TEX].head;
-    for (u32 r = g_rows.lists[VK_LRU_TEX].tail, p; r && looked < 256 && moved < (16ull << 20); r = p, looked++) {
+    const int bw_press = sys_bw_now() >= SYS_BW_PRESS_BYTES;
+    const u64 limit = bw_press ? SYS_PROMOTE_BW_CAP : SYS_PROMOTE_CAP;
+    u32 coldr = g_settings.texture_system_memory || bw_press ? g_rows.lists[VK_LRU_TEX].head : 0;
+    /* Collect hot demoted candidates (last_used >= hot, strictly disjoint from ended_reclaim and cold evictions) */
+    Surf* cand[64];
+    u32 ncand = 0, looked = 0;
+    for (u32 r = g_rows.lists[kind].tail, p; r && looked < 256 && ncand < 64; r = p, looked++) {
         p = g_rows.lru[r].prev;
-        Surf* t = g_rows.surf[r];
-        if ((i32)((u32)t->last_used - hot) < 0) break;
-        if (!t->demoted) continue;
-        if (!room_for(&use, t->sys_bytes, high, &coldr, cold)) break;
-        const u64 b = t->sys_bytes;
-        if (vk_tex_promote(t)) moved += b, use += b;
+        Surf* s = g_rows.surf[r];
+        if ((i32)((u32)s->last_used - hot) < 0) break;
+        if (!s->demoted || vk_gfx_image_holds(s)) continue;
+        cand[ncand++] = s;
+    }
+    if (bw_press && ncand > 1) {
+        /* Insertion sort by PCIe read traffic descending, preserving MRU order on ties */
+        for (u32 i = 1; i < ncand; i++) {
+            Surf* key = cand[i];
+            const u64 ks = surf_bw_score(key);
+            u32 j = i;
+            while (j > 0 && surf_bw_score(cand[j - 1]) < ks) {
+                cand[j] = cand[j - 1];
+                j--;
+            }
+            cand[j] = key;
+        }
+    }
+    for (u32 i = 0; i < ncand && moved < limit; i++) {
+        Surf* s = cand[i];
+        if (!s->demoted) continue;
+        const u64 b = s->sys_bytes;
+        if (!room_for(&use, b, high, &coldr, cold, bw_press)) {
+            if (bw_press) continue; /* a smaller hot surface may still fit */
+            break;
+        }
+        const int ok = kind == VK_LRU_RT ? rt_promote(s) : vk_tex_promote(s);
+        if (ok) {
+            if (kind == VK_LRU_TEX && g_rt_sys.tex_n) g_rt_sys.tex_n--;
+            if (bw_press) g_rt_sys.bw_promotes++;
+            moved += b;
+            use += b;
+        }
     }
 }
-/* Once a present, the render targets in system memory (rt_demote): those the last two presents used go back into the
-   GPU's memory as the demoted textures do (vk_tex_promote_frame), the most recently used first, while it has room.
-   Targets stay while the system heap has headroom; once it passes its budget less rt_sys_head, they go on any present
-   (paced by RT_SYS_PRESS_WAIT presents for deferred frees unless usage climbs): first those whose guest texture
-   object has ended, then the rest oldest first, only for the excess */
+/* Once a present, the surfaces in system memory (rt_demote, vk_tex_demote): those the last two presents used go back
+   into the GPU's memory while it has room (most-read first with a 64 MiB cap under PCIe bandwidth pressure).
+   Surfaces stay while the system heap has headroom; once it passes its budget less rt_sys_head, they go on any present
+   (paced by RT_SYS_PRESS_WAIT presents for deferred frees unless usage climbs): Level 1 ended objects first (textures
+   then render targets), Level 2 lossless demoted textures, then Level 4 live-object render targets oldest first */
 #define RT_SYS_PRESS_WAIT 4u
-/* Headroom below the system heap's budget where demoted targets are evicted ahead of it: an eighth of the budget, or
+/* Headroom below the system heap's budget where demoted surfaces are evicted ahead of it: an eighth of the budget, or
    trim_head where that is larger (trim_head caps at 256 MiB, where a burst of demotions on a large system heap ran
    past the budget before the next check) */
 static u64 rt_sys_head(u64 budget) {
     const u64 head = trim_head(budget), eighth = budget / 8;
     return eighth > head ? eighth : head;
 }
-/* Whether a render target's address has no live guest texture object (parked targets set bit 63 on gva). Only asked
-   when the front end reports texture objects (gpu_textures_added) */
+/* Whether a surface's address has no live guest texture object (parked targets set bit 63 on gva). Only asked when the
+   front end reports texture objects (gpu_textures_added) */
 static int rt_obj_dead(const Surf* s) { return !gpu_texture_live(s->gva & ~(1ull << 63)); }
-/* Demoted render targets last used before `before`, oldest first, up to `want` bytes: bytes freed, count in *went.
-   With dead_only set, only targets whose guest texture object has ended go */
-static u64 rt_sys_evict(u32 before, u64 want, int dead_only, u32* went) {
+/* Demoted surfaces of `kind` last used before `before`, oldest first, up to `want` bytes: bytes freed, count in *went.
+   With dead_only set, only surfaces whose guest texture object has ended go */
+static u64 sys_evict_kind(int kind, u32 before, u64 want, int dead_only, u32* went) {
     u64 freed = 0;
     u32 n = 0;
-    for (int lru = VK_LRU_RT + LRU_AGED; lru >= VK_LRU_RT && freed < want; lru -= LRU_AGED)
+    for (int lru = kind + LRU_AGED; lru >= kind && freed < want; lru -= LRU_AGED)
         for (u32 r = g_rows.lists[lru].head, next; r && freed < want; r = next) {
             next = g_rows.lru[r].next;
             Surf* s = g_rows.surf[r];
@@ -4079,8 +4210,10 @@ static u64 rt_sys_evict(u32 before, u64 want, int dead_only, u32* went) {
             if (dead_only && !rt_obj_dead(s)) continue;
             freed += s->sys_bytes;
             n++;
-            g_rt_sys.lost++;
-            g_rt_sys.lost_bytes += s->sys_bytes;
+            if (kind == VK_LRU_RT) {
+                g_rt_sys.lost++;
+                g_rt_sys.lost_bytes += s->sys_bytes;
+            }
             surf_evict(s);
         }
     *went = n;
@@ -4090,9 +4223,9 @@ static int rt_sys_press_ready(u64 usage) {
     if (!g_rt_sys.press_at || usage > g_rt_sys.press_usage) return 1;
     return (u32)(g_vk_present + 1u - g_rt_sys.press_at) >= RT_SYS_PRESS_WAIT;
 }
-/* Pressure sweep of demoted targets when the system heap passes its budget less rt_sys_head: targets with no live
-   texture object go first, then the rest oldest first only for what remains. Safe to call outside surf_reclaim's walk
-*/
+/* Pressure sweep of demoted surfaces when the system heap passes its budget less rt_sys_head: Level 1 ended objects
+   first (textures then render targets), Level 2 lossless demoted textures, then live-object render targets oldest
+   first only for what remains. Safe to call outside surf_reclaim's walk */
 static void rt_sys_pressure(const DevMemBudget* sys, u32 hot) {
     if (!sys->budget) return;
     const u64 head = rt_sys_head(sys->budget);
@@ -4105,47 +4238,40 @@ static void rt_sys_pressure(const DevMemBudget* sys, u32 hot) {
     if (!rt_sys_press_ready(sys->usage)) return;
     const u64 over = sys->usage - sys_high;
     const int has_objs = gpu_textures_added() != 0;
-    u32 went_dead = 0, went_live = 0;
-    u64 freed = has_objs ? rt_sys_evict(hot, over, 1, &went_dead) : 0;
-    if (freed < over) freed += rt_sys_evict(hot, over - freed, 0, &went_live);
-    if (!went_dead && !went_live) return;
+    u32 dead_tex = 0, dead_rt = 0, live_tex = 0, live_rt = 0;
+    u64 freed = 0;
+    if (has_objs) {
+        freed += sys_evict_kind(VK_LRU_TEX, hot, over, 1, &dead_tex);
+        if (freed < over) freed += sys_evict_kind(VK_LRU_RT, hot, over - freed, 1, &dead_rt);
+    }
+    if (freed < over) freed += sys_evict_kind(VK_LRU_TEX, hot, over - freed, 0, &live_tex);
+    if (freed < over) freed += sys_evict_kind(VK_LRU_RT, hot, over - freed, 0, &live_rt);
+    const u32 total = dead_tex + dead_rt + live_tex + live_rt;
+    if (!total) return;
     g_rt_sys.press_at = g_vk_present + 1u;
     g_rt_sys.press_usage = sys->usage;
-    if (has_objs)
-        LOG_LIMIT(8,
-                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less %llu MB: %u "
-                  "render targets moved there went, %llu MB (%u with no live texture object, %u with one)\n",
-                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
-                  (unsigned long long)(head >> 20), went_dead + went_live, (unsigned long long)(freed >> 20), went_dead,
-                  went_live);
-    else
-        LOG_LIMIT(8,
-                  "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less %llu MB: %u "
-                  "render targets moved there went, %llu MB, with pixels memory lacks\n",
-                  g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
-                  (unsigned long long)(head >> 20), went_live, (unsigned long long)(freed >> 20));
+    LOG_LIMIT(8,
+              "vulkan: system memory heap %u has %llu MB in use of a budget of %llu MB, past it less %llu MB: %u "
+              "demoted surfaces went, %llu MB (%u textures, %u render targets; %u with no live texture object)\n",
+              g_rt_sys.heap - 1, (unsigned long long)(sys->usage >> 20), (unsigned long long)(sys->budget >> 20),
+              (unsigned long long)(head >> 20), total, (unsigned long long)(freed >> 20), dead_tex + live_tex,
+              dead_rt + live_rt, dead_tex + dead_rt);
+}
+void vk_tex_promote_frame(void) {
+    if (g_settings.texture_system_memory) promote_kind(VK_LRU_TEX);
+    if ((g_rt_sys.n || g_rt_sys.tex_n) && g_rt_sys.heap) {
+        DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(heaps);
+        rt_sys_pressure(&heaps[g_rt_sys.heap - 1], vk_present_before(0, 2));
+    }
 }
 void vk_rt_sys_frame(void) {
-    if (!g_rt_sys.n) return;
-    u64 usage, budget;
-    vk_mem_use(&usage, &budget);
-    const u64 head = trim_head(budget), high = budget > head ? budget - head : 0, pending = vk_deferred_bytes();
-    u64 use = usage > pending ? usage - pending : 0, moved = 0;
-    const u32 hot = vk_present_before(0, 2), cold = vk_present_before(0, 30);
-    u32 looked = 0, coldr = g_settings.texture_system_memory ? g_rows.lists[VK_LRU_TEX].head : 0;
-    for (u32 r = g_rows.lists[VK_LRU_RT].tail, p; r && looked < 256 && moved < (16ull << 20); r = p, looked++) {
-        p = g_rows.lru[r].prev;
-        Surf* s = g_rows.surf[r];
-        if ((i32)((u32)s->last_used - hot) < 0) break;
-        if (!s->demoted || vk_gfx_image_holds(s)) continue;
-        if (!room_for(&use, s->sys_bytes, high, &coldr, cold)) break;
-        const u64 b = s->sys_bytes;
-        if (rt_promote(s)) moved += b, use += b;
+    if (g_rt_sys.n) promote_kind(VK_LRU_RT);
+    if ((g_rt_sys.n || g_rt_sys.tex_n) && g_rt_sys.heap) {
+        DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
+        vk_devmem_budgets(heaps);
+        rt_sys_pressure(&heaps[g_rt_sys.heap - 1], vk_present_before(0, 2));
     }
-    if (!g_rt_sys.n || !g_rt_sys.heap) return;
-    DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
-    vk_devmem_budgets(heaps);
-    rt_sys_pressure(&heaps[g_rt_sys.heap - 1], hot);
 }
 /* vk_surf_reclaim with the most bytes an entry may have */
 static u64 trim_reclaim(int kind, u32 before, u64 want, int lossy, u64 most, int keep_back) {
@@ -4189,12 +4315,13 @@ void vk_mem_trim(u64 extra, int force) {
             g_trimmed += vk_tex_reclaim_superseded(before, ~0ull);
             g_trimmed += rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
             ended_collect();
-            g_trimmed += ended_reclaim(~0ull, before);
+            g_trimmed += ended_reclaim(~0ull, before, 0, NULL);
+            g_trimmed += vk_buf_reclaim_ended(before, ~0ull);
         }
         return;
     }
     SNX_ZONE_V(z, "vk mem trim", force);
-    if (g_rt_sys.n && g_rt_sys.heap) {
+    if ((g_rt_sys.n || g_rt_sys.tex_n) && g_rt_sys.heap) {
         DevMemBudget heaps[VK_MAX_MEMORY_HEAPS];
         vk_devmem_budgets(heaps);
         rt_sys_pressure(&heaps[g_rt_sys.heap - 1], vk_present_before(0, 2));
@@ -4236,15 +4363,23 @@ void vk_mem_trim(u64 extra, int force) {
     u64 freed = superseded + tex_superseded_bytes, by[3] = {tex_superseded_bytes, 0, superseded}, working = 0,
         step_big = 0, step_back = 0;
     int short_of = 0;
-    /* first the textures the game has ended, down to the lowest mark: no later frame asks for them */
+    /* Level 1: objects the game has ended (lossless textures/RTs and unmapped own buffers), down to the lowest mark */
     ended_collect();
     {
         const u64 low = budget - 2 * head, left = usage > freed ? usage - freed : 0;
         u64 want = left > low ? left - low : 0;
         if (want < need) want = need;
         /* under the budget's pressure, after two presents: a draw recorded before the object ended may hold one */
-        const u64 got = want ? ended_reclaim(want, vk_present_before(0, 2)) : 0;
-        by[0] += got;
+        const u32 ended_before = vk_present_before(0, 2);
+        u64 rt_ended = 0;
+        u64 got = want ? ended_reclaim(want, ended_before, 0, &rt_ended) : 0;
+        by[0] += got - rt_ended;
+        by[2] += rt_ended;
+        if (got < want) {
+            const u64 b = vk_buf_reclaim_ended(ended_before, want - got);
+            by[1] += b;
+            got += b;
+        }
         freed += got;
     }
     /* then the textures sparse for their levels, a level each, down to the first step's mark: what the steps would
@@ -4257,11 +4392,26 @@ void vk_mem_trim(u64 extra, int force) {
         by[0] += got;
         freed += got;
     }
+    int ended_lossy = 0;
     for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++) {
         u64 mark = budget - steps[i].mark * (head / 2), left = usage > freed ? usage - freed : 0;
         u64 want = left > mark ? left - mark : 0;
         if (freed < need && want < need - freed) want = need - freed;
         if (!want) continue;
+        if (steps[i].lossy && !ended_lossy) {
+            /* Level 1 before any live lossy surface: ended lossy targets and textures go first */
+            ended_lossy = 1;
+            u64 rt_ended = 0;
+            const u64 eg = ended_reclaim(want, vk_present_before(0, 2), 1, &rt_ended);
+            by[0] += eg - rt_ended;
+            by[2] += rt_ended;
+            freed += eg;
+            if (eg >= want) {
+                short_of = 0;
+                continue;
+            }
+            want -= eg;
+        }
         u32 before = vk_present_before((u64)steps[i].ms * 1000000ull, steps[i].presents);
         int level = steps[i].lossy ? VK_RECLAIM_ANY : VK_RECLAIM_LOSSLESS;
         /* A step for headroom takes no entry of more than twice what it wants: it would free far past its mark, and

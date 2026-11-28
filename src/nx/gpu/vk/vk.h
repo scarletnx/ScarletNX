@@ -1392,8 +1392,9 @@ typedef struct Surf {
        (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
     u8 sparse;
     /* its image is in system memory (texture.c vk_tex_demote, a render target's surface.c rt_demote), bytes 0 while it
-       is: sys_bytes its size */
+       is: sys_bytes its size; sys_read_at / sys_reads count touches in the current present (PCIe read pressure) */
     u8 demoted;
+    u32 sys_read_at, sys_reads;
     u64 sys_bytes;
     /* render targets the caches would have let go with pixels memory lacks, kept (surface.c rt_aside): the guest's
        memory as of then, its write-tracking clock (aside_wseen, 0 without tracking: aside_hash its bytes' hash), so
@@ -1854,6 +1855,7 @@ int vk_tex_finer(Surf* t);
    1 when it went. vk_tex_sysmem_stats: textures moved out and back, and the bytes in system memory now */
 u64 vk_tex_demote(Surf* t);
 int vk_tex_promote(Surf* t);
+void vk_tex_sys_left(Surf* t);
 void vk_tex_sysmem_stats(u64* out, u64* back, u64* bytes);
 u64 vk_mirror_system(void); /* mirror.c: its granules that took system memory so far */
 /* surface.c: once a present, the demoted textures the last presents used moved back while the GPU's memory has room */
@@ -1871,6 +1873,14 @@ typedef struct {
        as the guest had written their memory meanwhile */
     u64 kept, reloads;
 } VkRtSysStats;
+typedef struct {
+    u32 frames;       /* presents with at least one GPU use of a demoted surface since the last report */
+    u64 touches;      /* total touches of demoted surfaces since the last report */
+    u64 unique_bytes; /* sum of per-present unique bytes of demoted surfaces touched */
+    u64 peak_bytes;   /* peak single-present unique bytes touched */
+    u64 bw_promotes;  /* promotions made under PCIe read-bandwidth pressure */
+} VkSysBwStats;
+void vk_sys_bw_stats(VkSysBwStats* st);
 void vk_rt_sys_stats(VkRtSysStats* st);
 /* surface.c: once a present, shed textures used lately a level finer while the heap has room */
 void vk_tex_refine_frame(void);
@@ -2869,6 +2879,8 @@ void vk_buf_writable_commit(void);
    commit moved it staged one */
 u64 vk_buf_commits_staged(void);
 void vk_buf_mem_need(u64 gva, u64 len);
+/* own buffers last used before `before` whose guest GPU mapping is gone, oldest first, up to `want` bytes */
+u64 vk_buf_reclaim_ended(u32 before, u64 want);
 /* own buffers last used before the present `before`, the least recently used first, dropped until `want` bytes went
    (their ranges are copied again when next read). Returns the bytes */
 u64 vk_buf_reclaim(u32 before, u64 want);

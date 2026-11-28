@@ -1848,14 +1848,20 @@ u64 vk_tex_demote(Surf* t) {
     g_sys_bytes += bytes;
     return was;
 }
+void vk_tex_sys_left(Surf* t) {
+    if (t->is_rt || !t->demoted) return;
+    t->demoted = 0;
+    g_sys_bytes -= t->sys_bytes;
+    t->sys_bytes = 0;
+    t->sys_reads = 0;
+    t->sys_read_at = 0;
+}
 int vk_tex_promote(Surf* t) {
     if (!t->demoted || !tex_moves(t)) return 0;
     DevMemWant want = {.at = DM_DEVICE, .image = 1, .low = !t->took_drawn, .moves = t->movable}; /* low: a texture's */
     u64 bytes;
     if (!tex_move_now(t, &want, &bytes)) return 0;
-    t->demoted = 0;
-    g_sys_bytes -= t->sys_bytes;
-    t->sys_bytes = 0;
+    vk_tex_sys_left(t);
     g_sys_back++;
     return 1;
 }

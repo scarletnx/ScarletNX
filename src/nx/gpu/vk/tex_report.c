@@ -336,6 +336,14 @@ void vk_tex_report_log(void) {
         LOG("vulkan: %llu textures moved into system memory for room in place of an eviction (texture_sysmem), %llu "
             "moved back; %llu MB there now\n",
             (unsigned long long)sys_out, (unsigned long long)sys_back, MB(sys_bytes));
+    VkSysBwStats bw;
+    vk_sys_bw_stats(&bw);
+    if (bw.touches)
+        LOG("vulkan: GPU reads of system-memory surfaces over 600 presents: %u frames, %llu touches, %.1f MB/frame "
+            "avg (%.1f MB peak), %llu bandwidth-driven promotions\n",
+            bw.frames, (unsigned long long)bw.touches,
+            bw.frames ? (double)bw.unique_bytes / (double)bw.frames / 1048576.0 : 0.0,
+            (double)bw.peak_bytes / 1048576.0, (unsigned long long)bw.bw_promotes);
     VkRtSysStats rts;
     vk_rt_sys_stats(&rts);
     if (rts.kept || rts.lost)

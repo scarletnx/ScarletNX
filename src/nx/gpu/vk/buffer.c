@@ -4950,6 +4950,19 @@ int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
     return 1;
 }
 
+u64 vk_buf_reclaim_ended(u32 before, u64 want) {
+    u64 freed = 0;
+    for (u32 i = g_buffer.head, next; i && freed < want && (i32)(g_vb[i].used - before) < 0; i = next) {
+        next = g_vb[i].own_next;
+        if (gmmu_translate(g_vb[i].start)) continue;
+        const u64 len = g_vb[i].len;
+        freed += len;
+        drop_own(i);
+        vk_defer_bytes(len);
+    }
+    return freed;
+}
+
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;
     while (g_buffer.head && freed < want && (i32)(g_vb[g_buffer.head].used - before) < 0) {

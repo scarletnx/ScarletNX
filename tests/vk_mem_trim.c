@@ -67,11 +67,18 @@ u64 gmmu_translate(u64 gva) {
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { stub_hit("gpu_mem_dirty_since"); }
 u64 gpu_mem_generation(void) { stub_hit("gpu_mem_generation"); }
 void gpu_mem_written(u64 gva, u64 size) { stub_hit("gpu_mem_written"); }
-/* the guest's live texture objects (gpu/guest_textures.h), for checks that set them; empty otherwise */
+/* the guest's live and ended texture objects, plus hooks for ended-buffer reclaim and texture promotion checks */
 static struct {
     u64 added;
     u64 live[8];
     u32 nlive;
+    u64 ended[8];
+    u32 nended;
+    u64 buf_ended_avail;
+    u32 buf_ended_calls;
+    int promote_ok;
+    Surf* promoted[8];
+    u32 npromoted;
 } g_tex_objs;
 int gpu_texture_live(u64 gva) {
     for (u32 i = 0; i < g_tex_objs.nlive; i++)
@@ -215,7 +222,22 @@ int vk_tex_image_own(Surf* s, VkImage* img, DevMem* mem, u64* bytes) {
 }
 int vk_tex_finer(Surf* t) { stub_hit("vk_tex_finer"); }
 void vk_tex_note_writeback(Surf* s) { stub_hit("vk_tex_note_writeback"); }
-int vk_tex_promote(Surf* t) { stub_hit("vk_tex_promote"); }
+void vk_tex_sys_left(Surf* t) {
+    if (t->is_rt || !t->demoted) return;
+    t->demoted = 0;
+    t->sys_bytes = 0;
+    t->sys_reads = 0;
+    t->sys_read_at = 0;
+}
+int vk_tex_promote(Surf* t) {
+    if (!g_tex_objs.promote_ok) stub_hit("vk_tex_promote");
+    if (g_tex_objs.npromoted < 8) g_tex_objs.promoted[g_tex_objs.npromoted++] = t;
+    const u64 b = t->sys_bytes;
+    t->demoted = 0;
+    t->sys_bytes = 0;
+    vk_surf_bytes(t, b);
+    return 1;
+}
 int vk_uma_held(u64 cpu, u64 len) { stub_hit("vk_uma_held"); }
 void vk_unlock(void) { stub_hit("vk_unlock"); }
 void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf, VkFormat raw) { stub_hit("vk_view_formats"); }
@@ -235,10 +257,21 @@ int mem_lock_held(void) { stub_hit("mem_lock_held"); }
 
 /* the clock of the resource statistics (vk_resource_begin) */
 uint64_t plat_ns(void) { return 0; }
-/* the texture objects the game ended (gpu.c): none */
-u32 gpu_textures_ended(u64* out, u32 cap) { return 0; }
-/* the buffer cache and the ASTC and BC7 forms of textures: nothing held there */
+/* the texture objects the game ended (gpu.c) */
+u32 gpu_textures_ended(u64* out, u32 cap) {
+    u32 n = g_tex_objs.nended < cap ? g_tex_objs.nended : cap;
+    for (u32 i = 0; i < n; i++) out[i] = g_tex_objs.ended[i];
+    g_tex_objs.nended -= n;
+    return n;
+}
+/* the buffer cache and the ASTC and BC7 forms of textures: nothing held there unless a test seeds ended buffers */
 u64 vk_buf_reclaim(u32 before, u64 want) { return 0; }
+u64 vk_buf_reclaim_ended(u32 before, u64 want) {
+    g_tex_objs.buf_ended_calls++;
+    u64 got = g_tex_objs.buf_ended_avail < want ? g_tex_objs.buf_ended_avail : want;
+    g_tex_objs.buf_ended_avail -= got;
+    return got;
+}
 void vk_astc_auto_trimmed(u64 usage, u64 left, u64 budget, int force) {}
 void vk_stamp_runtime_begin(void) {}
 void vk_stamp_runtime_end(void) {}
@@ -873,6 +906,149 @@ static int rt_demote_stops_at_sys_budget(void) {
     return stopped;
 }
 
+/* Level 1 (render targets): a lossy render target whose guest texture object ended goes in vk_mem_trim before an
+   older live-object render target. 1 when ended went and live stayed */
+static int ended_rt_reclaimed_before_live(void) {
+    g_vk.mem_model = VK_MEM_UMA; /* no demotion, so lossy targets evict directly */
+    g_vk_present += 1000;
+    Surf* live = target(0x79000000ull, 16 << 20, 1);
+    live->last_used = g_vk_present - 600;
+    Surf* ended = target(0x79800000ull, 16 << 20, 2);
+    ended->last_used = g_vk_present - 10;
+    g_tex_objs.added = 2;
+    g_tex_objs.live[0] = 0x79000000ull;
+    g_tex_objs.nlive = 1;
+    g_tex_objs.ended[0] = 0x79800000ull;
+    g_tex_objs.nended = 1;
+    g_use = 0;
+    vk_surf_ended_frame(); /* the cache learns of the end while memory has room */
+    g_vk_present += 3;
+    /* past steps[2]'s mark (budget - head) by 8 MiB: taking ended (16 MiB) satisfies want and leaves live alone */
+    g_use = g_budget - trim_head(g_budget) + (8ull << 20);
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    const int ok = targets_held() == 1 && !g_rows.lists[VK_LRU_RT].head &&
+                   g_rows.surf[g_rows.lists[VK_LRU_RT + LRU_AGED].head] == live && g_deferred == 16 << 20;
+    if (!ok)
+        fprintf(stderr, "ended_rt_reclaimed_before_live: %u held, deferred %llu MB\n", targets_held(),
+                (unsigned long long)(g_deferred >> 20));
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    while (g_rows.lists[VK_LRU_RT + LRU_AGED].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT + LRU_AGED].head]);
+    g_tex_objs.added = g_tex_objs.nlive = g_tex_objs.nended = 0;
+    g_vk.mem_model = VK_MEM_SMALL_BAR;
+    return ok;
+}
+
+/* Level 1 (buffers): vk_mem_trim reclaims ended (unmapped) own buffers before touching live textures. 1 when ended
+   buffers satisfied the trim and the live texture stayed */
+static int ended_buf_reclaimed_first(void) {
+    g_vk_present += 1000;
+    Surf* t = calloc(1, sizeof *t);
+    CHECK(t);
+    t->gva = 0x7a000000ull;
+    t->size = t->bytes = 16 << 20;
+    row_take(t);
+    lru_add(t, VK_LRU_TEX);
+    t->last_used = g_vk_present - 100;
+    g_tex_objs.buf_ended_avail = 256ull << 20;
+    g_tex_objs.buf_ended_calls = 0;
+    g_use = g_budget - trim_head(g_budget) + (8ull << 20);
+    g_deferred = 0;
+    vk_mem_trim(0, 0);
+    const int ok = g_tex_objs.buf_ended_calls > 0 && g_rows.lists[VK_LRU_TEX].head == t->row;
+    if (!ok)
+        fprintf(stderr, "ended_buf_reclaimed_first: calls=%u tex_kept=%d\n", g_tex_objs.buf_ended_calls,
+                g_rows.lists[VK_LRU_TEX].head == t->row);
+    while (g_rows.lists[VK_LRU_TEX].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_TEX].head]);
+    g_tex_objs.buf_ended_avail = 0;
+    g_tex_objs.buf_ended_calls = 0;
+    return ok;
+}
+
+/* Level 2 across types: under system-heap pressure, a lossless demoted texture goes before an older live-object
+   demoted render target. 1 when the demoted texture went and the live-object target stayed */
+static int sys_pressure_evicts_demoted_tex_before_live_rt(void) {
+    g_vk_present += 1000;
+    Surf* rt = target(0x7b000000ull, 4 << 20, 1);
+    rt->last_used = g_vk_present - 500;
+    rt->demoted = 1;
+    rt->sys_bytes = 4u << 20;
+    vk_surf_bytes(rt, 0);
+    g_rt_sys.n++;
+    g_rt_sys.bytes += 4u << 20;
+    Surf* t = calloc(1, sizeof *t);
+    CHECK(t);
+    t->gva = 0x7b400000ull;
+    t->size = 4u << 20;
+    t->demoted = 1;
+    t->sys_bytes = 4u << 20;
+    g_rt_sys.tex_n++;
+    row_take(t);
+    lru_add(t, VK_LRU_TEX);
+    t->last_used = g_vk_present - 50;
+    g_tex_objs.added = 2;
+    g_tex_objs.live[0] = 0x7b000000ull;
+    g_tex_objs.live[1] = 0x7b400000ull;
+    g_tex_objs.nlive = 2;
+    g_rt_sys.heap = 1;
+    g_sys_budget = 16ull << 30;
+    g_sys_use = (14ull << 30) + (2u << 20); /* 2 MiB over sys_high: the 4 MiB demoted texture covers it */
+    g_use = g_budget;
+    const u64 lost = g_rt_sys.lost;
+    vk_rt_sys_frame();
+    const int ok = !g_rows.lists[VK_LRU_TEX].head && targets_held() == 1 && g_rt_sys.lost == lost && rt->demoted;
+    if (!ok)
+        fprintf(stderr, "sys_pressure_evicts_demoted_tex_before_live_rt: tex_left=%u rt_held=%u lost=%llu\n",
+                g_rows.lists[VK_LRU_TEX].head != 0, targets_held(), (unsigned long long)(g_rt_sys.lost - lost));
+    while (g_rows.lists[VK_LRU_TEX].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_TEX].head]);
+    while (g_rows.lists[VK_LRU_RT].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_RT].head]);
+    g_tex_objs.added = g_tex_objs.nlive = 0;
+    return ok;
+}
+
+/* Level 3 (bandwidth pressure): when GPU reads of demoted surfaces cross the per-frame PCIe bandwidth mark (32 MiB),
+   the most-read demoted surface promotes first (even when another sits at the MRU tail) and the per-present promotion
+   cap expands past 16 MiB. 1 when the 24 MiB heavily-read texture promoted instead of the 8 MiB tail texture */
+static int sys_bw_promotes_most_read(void) {
+    g_settings.texture_system_memory = 1;
+    g_vk_present += 1000;
+    Surf* heavy = calloc(1, sizeof *heavy);
+    Surf* light = calloc(1, sizeof *light);
+    CHECK(heavy && light);
+    heavy->gva = 0x7c000000ull;
+    heavy->size = heavy->sys_bytes = 24u << 20;
+    heavy->demoted = 1;
+    g_rt_sys.tex_n++;
+    row_take(heavy);
+    lru_add(heavy, VK_LRU_TEX);
+    light->gva = 0x7e000000ull;
+    light->size = light->sys_bytes = 8u << 20;
+    light->demoted = 1;
+    g_rt_sys.tex_n++;
+    row_take(light);
+    lru_add(light, VK_LRU_TEX);
+    g_sys_use = 2ull << 30; /* headroom on system heap so only promotion runs */
+    /* touch heavy 20 times, then light once at the tail: total unique bytes read this present = 32 MiB */
+    for (int i = 0; i < 20; i++) vk_surf_touch(heavy);
+    vk_surf_touch(light);
+    /* VRAM room for 24 MiB only: heavy (24 MiB) fits alone; if light went first, only 16 MiB would remain */
+    g_use = g_budget - trim_head(g_budget) - (24ull << 20);
+    g_releasing = 0;
+    g_tex_objs.promote_ok = 1;
+    g_tex_objs.npromoted = 0;
+    vk_tex_promote_frame();
+    const int ok = g_tex_objs.npromoted == 1 && g_tex_objs.promoted[0] == heavy && !heavy->demoted && light->demoted;
+    if (!ok)
+        fprintf(stderr, "sys_bw_promotes_most_read: npromoted=%u first_is_heavy=%d heavy_dem=%u light_dem=%u\n",
+                g_tex_objs.npromoted, g_tex_objs.npromoted && g_tex_objs.promoted[0] == heavy, heavy->demoted,
+                light->demoted);
+    while (g_rows.lists[VK_LRU_TEX].head) surf_evict(g_rows.surf[g_rows.lists[VK_LRU_TEX].head]);
+    g_tex_objs.promote_ok = 0;
+    g_tex_objs.npromoted = 0;
+    g_settings.texture_system_memory = 0;
+    return ok;
+}
+
 int main(void) {
     g_budget = 1ull << 30;
     g_vk_present = 1000;
@@ -914,6 +1090,11 @@ int main(void) {
     CHECK(sys_dead_before_live());
     CHECK(sys_pressure_scales_and_paces());
     CHECK(rt_demote_stops_at_sys_budget());
+    /* 4-level eviction across RTs, buffers and textures, plus PCIe read-bandwidth promotion */
+    CHECK(ended_rt_reclaimed_before_live());
+    CHECK(ended_buf_reclaimed_first());
+    CHECK(sys_pressure_evicts_demoted_tex_before_live_rt());
+    CHECK(sys_bw_promotes_most_read());
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
