@@ -311,10 +311,14 @@ static void bp_log(void) {
 /* The targets read_targets found last, kept while their group's generation (DsState.gen[DS_TARGETS], a new one
    whenever DsTargets' bytes change, from one count for every owner) and the surface table (g_vk_surf_epoch) stay the
    same: most draws draw where the one before did, and each found its targets again through the surface table. Each
-   kept target still gets the read check its lookup makes (vk_rt_note_read). A set where a lookup found nothing isn't
-   kept, so it is tried again */
+   kept target still gets the read check its lookup makes (vk_rt_note_read), once a present while guest memory has no
+   GPU-side write since it was made (noted): a repeat touches nothing, as the surface is touched for the present
+   already and its memory is unchanged. With draw_batches=2 each of those checks was a take of the share lock at each
+   draw. A set where a lookup found nothing isn't kept, so it is tried again */
 static struct {
     u64 gen; /* 0: nothing kept */
+    u64 noted_gen; /* gpu_mem_generation() before the last read checks of the kept set, in present noted_present */
+    u32 noted_present, noted; /* noted: those checks were made and none of the set was put aside */
     u32 epoch, n;
     Surf *rt[8], *zt;
 } g_targets[RC_SLOTS];
@@ -330,12 +334,25 @@ static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
         memcpy(rt, g_targets[t_rc].rt, sizeof g_targets[t_rc].rt);
         *zt = g_targets[t_rc].zt;
         *n = g_targets[t_rc].n;
-        vk_share_lock(); /* one take for the targets (draw_batches=2) */
-        for (u32 i = 0; i < 8; i++)
-            if (rt[i]) vk_rt_note_read(rt[i]);
-        if (*zt) vk_rt_note_read(*zt);
-        vk_share_unlock();
         CNT(g_vk_targets_kept)++;
+        const u64 mg = gpu_mem_generation(); /* before the checks: a write during them makes the next draw check again */
+        if (g_targets[t_rc].noted && g_targets[t_rc].noted_present == g_vk_present && g_targets[t_rc].noted_gen == mg)
+            return;
+        vk_share_lock(); /* one take for the targets (draw_batches=2) */
+        int aside = 0;
+        for (u32 i = 0; i < 8; i++)
+            if (rt[i]) {
+                vk_rt_note_read(rt[i]);
+                aside |= rt[i]->aside;
+            }
+        if (*zt) {
+            vk_rt_note_read(*zt);
+            aside |= (*zt)->aside;
+        }
+        vk_share_unlock();
+        g_targets[t_rc].noted = !aside; /* one put aside is checked at each draw (rt_aside_check) */
+        g_targets[t_rc].noted_present = g_vk_present;
+        g_targets[t_rc].noted_gen = mg;
         return;
     }
     if (gpu_spec()) { /* a lookup can make a target: the renderer thread's (prep.c) */
@@ -384,6 +401,7 @@ static void read_targets(const DsState* ds, Surf** rt, Surf** zt, u32* n) {
     }
     /* the table as the lookups left it: one that made a target changed it */
     g_targets[t_rc].gen = found ? gen : 0;
+    g_targets[t_rc].noted = 0; /* the lookups made their own checks: the next kept draw makes the set's */
     g_targets[t_rc].epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
     g_targets[t_rc].n = *n;
     memcpy(g_targets[t_rc].rt, rt, sizeof g_targets[t_rc].rt);
