@@ -131,7 +131,7 @@ static _Atomic int g_on = -1;
 static _Atomic int g_asked = -1;
 static GpSlot* g_slot[VK_FRAMES];
 static GpKey g_key[GP_KEYS];
-static u64 g_pass_ns, g_span_ns, g_frames, g_lost;
+static u64 g_pass_ns, g_span_ns, g_frames, g_lost, g_missing; /* g_missing: stamps no command wrote */
 static u64 g_draws_at_begin;
 static void gp_ops_done(GpOps* o, const u64* ts, double period, int ctx);
 /* the gaps between passes by what was recorded in them: dispatches, else copies, else barriers, else nothing (the
@@ -705,10 +705,31 @@ void vk_gpuprof_frame_done(u32 slot) {
     profile = gp_on();
     /* one buffer: the recording thread under vk_lock is its only writer, frame_recycle its only reader */
     static u64 ts[GP_QUERIES];
-    /* no wait: the slot's submissions are done (frame_recycle waited for them), and a failed one's results aren't
-       there, which leaves its frame out */
-    if (!g->ops.used || !gp_timed() ||
-        vkGetQueryPoolResults(g_vk.dev, g->ops.pool, 0, g->ops.used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+    /* no wait: the slot's submissions are done (frame_recycle waited for them). A query that no command wrote leaves
+       the frame's read not ready: with draw_batches=2 that left out most frames, and the queue line read 0.3 ms busy a
+       present at 56 fps. Then each one's availability is read, and a stamp not written takes the one before it, so its
+       span counts as empty and the frame stays (gp_missing counts them). A failed submission's results are all
+       missing, which leaves its frame out as before */
+    if (!g->ops.used || !gp_timed()) {
+        g_stats_busy.ended = 0;
+        return;
+    }
+    VkResult r = vkGetQueryPoolResults(g_vk.dev, g->ops.pool, 0, g->ops.used, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT);
+    if (r == VK_NOT_READY) {
+        static u64 av[2 * GP_QUERIES];
+        u32 have = 0;
+        if (vkGetQueryPoolResults(g_vk.dev, g->ops.pool, 0, g->ops.used, sizeof av, av, 16,
+                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) >= 0)
+            for (u32 i = 0; i < g->ops.used; i++) {
+                if (av[2 * i + 1])
+                    have++;
+                else
+                    g_missing++;
+                ts[i] = av[2 * i + 1] ? av[2 * i] : i ? ts[i - 1] : 0;
+            }
+        r = have && ts[0] ? VK_SUCCESS : r;
+    }
+    if (r != VK_SUCCESS) {
         g_stats_busy.ended = 0;
         return;
     }
@@ -941,7 +962,7 @@ static void gp_report(void) {
         memset(g_gaps, 0, sizeof g_gaps);
         memset(g_key, 0, sizeof g_key);
         memset(g_slow, 0, sizeof g_slow);
-        g_pass_ns = g_span_ns = g_frames = g_lost = 0;
+        g_pass_ns = g_span_ns = g_frames = g_lost = g_missing = 0;
         gp_idle_report();
         return;
     }
@@ -949,9 +970,9 @@ static void gp_report(void) {
     memcpy(sorted, g_key, sizeof sorted);
     qsort(sorted, GP_KEYS, sizeof *sorted, key_cmp);
     LOG("vulkan: GPU over %llu frames: %.2f ms a frame in passes, %.2f ms from the first pass to the last, %llu passes "
-        "untimed\n",
+        "untimed, %llu timestamps no command wrote\n",
         (unsigned long long)g_frames, (double)g_pass_ns / 1e6 / (double)g_frames,
-        (double)g_span_ns / 1e6 / (double)g_frames, (unsigned long long)g_lost);
+        (double)g_span_ns / 1e6 / (double)g_frames, (unsigned long long)g_lost, (unsigned long long)g_missing);
     for (int c = 0; c < 4; c++)
         if (g_gaps[c])
             LOG("vulkan: GPU   gaps %s: %.2f ms a frame, %llu of them\n", g_gap_name[c],
@@ -1034,6 +1055,6 @@ static void gp_report(void) {
         memset(g_dkey, 0, sizeof g_dkey);
         g_disp_ns = g_disps = 0;
     }
-    g_pass_ns = g_span_ns = g_frames = g_lost = 0;
+    g_pass_ns = g_span_ns = g_frames = g_lost = g_missing = 0;
     gp_idle_report();
 }
